@@ -1,0 +1,608 @@
+/* ============================================================================
+   Mobile-first, map-first layout: the map fills the whole screen and every
+   control (search card, next-turn banner, bottom sheet, recenter button)
+   floats on top of it as a rounded, shadowed card — the same visual language
+   as Google Maps' mobile app — rather than stacking flat panels that push
+   the map into a small strip. This is meant to be used on a phone, mounted
+   or handheld, screen on — so: big touch targets, high contrast.
+   ============================================================================ */
+
+:root {
+  --bg: #10151c;
+  --panel: #182130;
+  --panel-2: #1f2a3d;
+  --text: #eef2f8;
+  --text-dim: #9aabc2;
+  --accent: #3d8bfd;
+  --accent-2: #22c55e;
+  --danger: #ef4444;
+  --border: #2a3547;
+  --radius: 16px;
+  --shadow: 0 8px 28px rgba(0,0,0,0.5);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  position: relative;
+  height: 100dvh;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#map { position: absolute; inset: 0; }
+
+/* ---------------------------------------------------------------- top overlay */
+
+/* A transparent flex column pinned to the top of the screen. Its own
+   background is invisible so map gestures pass through the gaps between
+   cards; each card inside opts back into being clickable/touchable. */
+#top-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: max(12px, env(safe-area-inset-top)) 12px 0;
+  pointer-events: none;
+}
+#top-overlay > * { pointer-events: auto; }
+
+#status-banner {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+#status-banner.info    { background: #16324a; color: #cfe8ff; }
+#status-banner.success { background: #123a26; color: #bdf2d0; }
+#status-banner.error   { background: #401616; color: #ffd0d0; }
+#status-banner.hidden  { display: none; }
+
+/* ---------------------------------------------------------------- search card */
+
+#search-card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 10px 12px 12px;
+}
+#search-card.hidden { display: none; }
+
+.search-top { display: flex; align-items: center; gap: 6px; }
+.search-fields { flex: 1; min-width: 0; }
+
+.search-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 9px 4px; }
+.search-row.plain { padding: 6px 4px; }
+.search-icon { flex-shrink: 0; color: var(--text-dim); }
+
+.dot { flex-shrink: 0; width: 10px; height: 10px; }
+.dot-origin { border-radius: 50%; background: var(--accent-2); }
+.dot-dest { border-radius: 3px; background: var(--danger); }
+
+.search-row input {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px; /* prevents iOS zoom-on-focus */
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 4px 0;
+}
+.search-row input::placeholder { color: var(--text-dim); }
+.search-row input:focus { outline: none; }
+
+.search-divider { height: 1px; background: var(--border); margin-left: 22px; }
+
+.icon-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.suggestions {
+  position: absolute;
+  top: 100%;
+  left: -4px;
+  right: -4px;
+  z-index: 30;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  max-height: 45vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+.suggestions.hidden { display: none; }
+.suggestions li {
+  padding: 10px 8px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+.suggestions li:active,
+.suggestions li.active { background: var(--accent); color: #fff; }
+
+.suggestions li.loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-dim);
+  cursor: default;
+}
+.suggestions li.loading:active { background: none; }
+
+.suggestions li.quick-option { display: flex; align-items: center; gap: 10px; color: var(--accent); font-weight: 500; }
+.suggestions li.quick-option:active { background: var(--accent); color: #fff; }
+
+/* Recent-trip / favorite rows shown inside the suggestions dropdown when an
+ * empty field is focused (Milestone 3C) — same dropdown, same footprint as
+ * a normal search result, nothing permanent on screen. */
+.quick-pick-text { display: inline-flex; align-items: center; gap: 10px; color: var(--accent); }
+
+.spinner {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Milestone 4C: Drive/Transit segmented control, only shown when OTP2_URL is configured. */
+#travel-mode-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 4px;
+  margin-top: 8px;
+}
+#travel-mode-toggle.hidden { display: none; }
+.mode-btn {
+  flex: 1;
+  padding: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  background: none;
+  color: var(--text-dim);
+  border-radius: 9px;
+}
+.mode-btn.active { background: var(--accent); color: #fff; }
+
+#plan-route-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  font-size: 16px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+}
+#plan-route-btn:disabled { opacity: 0.5; }
+
+/* ---------------------------------------------------------------- search results: save-to-favorites star */
+
+.suggestions li.result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+}
+.result-text {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 8px;
+}
+.save-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.save-btn.saved { color: #f5b942; }
+.save-btn.saved svg { fill: currentColor; }
+
+/* ---------------------------------------------------------------- place card */
+
+#place-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 10px 10px 10px 16px;
+}
+#place-card.hidden { display: none; }
+#place-card-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.place-card-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#place-directions-btn {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---------------------------------------------------------------- saved-item rows (downloaded areas list) */
+
+.saved-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow-y: auto; }
+.saved-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 10px;
+}
+.saved-list li:not(.empty):active { background: var(--panel-2); }
+.saved-list li.empty { padding: 8px; color: var(--text-dim); font-size: 13px; }
+
+.saved-item-body { flex: 1; min-width: 0; padding: 8px; }
+.saved-item-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-item-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.icon-btn.small { width: 28px; height: 28px; flex-shrink: 0; margin-right: 4px; }
+.delete-btn { color: var(--danger); }
+
+/* ---------------------------------------------------------------- favorite prompt (long-press on map) */
+
+#favorite-prompt {
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+#favorite-prompt.hidden { display: none; }
+#favorite-prompt-input {
+  width: 100%;
+  font-size: 15px;
+  padding: 10px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.favorite-prompt-actions { display: flex; gap: 8px; justify-content: flex-end; }
+#favorite-prompt-save { padding: 10px 18px; font-size: 14px; font-weight: 600; background: var(--accent); color: #fff; }
+
+/* ---------------------------------------------------------------- next-turn card */
+
+#nav-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  box-shadow: var(--shadow);
+}
+#nav-banner.hidden { display: none; }
+
+#nav-banner-icon {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#nav-banner-text { min-width: 0; }
+#nav-banner-instruction {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+}
+#nav-banner-distance {
+  margin-top: 2px;
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- floating buttons */
+
+/* Google-Maps-style control stack: zoom +/- above a "my location" button,
+   pinned bottom-right and raised clear of the bottom sheet once it appears. */
+#map-controls {
+  position: fixed;
+  right: 14px;
+  bottom: 24px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  transition: bottom 0.25s ease;
+}
+#map-controls.raised { bottom: 148px; }
+
+.fab {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fab.small { width: 38px; height: 38px; }
+.fab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* markers built from plain DOM/SVG, no image assets */
+.pin-marker { width: 30px; height: 40px; display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
+.puck-marker { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; }
+
+/* ---------------------------------------------------------------- bottom sheet */
+
+#bottom-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: var(--panel);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0,0,0,0.5);
+  max-height: 136px;
+  overflow: hidden;
+  transition: max-height 0.25s ease;
+}
+#bottom-sheet.expanded { max-height: 72vh; }
+#bottom-sheet.hidden { display: none; }
+
+#sheet-handle {
+  width: 100%;
+  background: none;
+  color: inherit;
+  text-align: left;
+  padding: 8px 16px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.handle-bar { width: 36px; height: 4px; border-radius: 2px; background: var(--border); }
+#sheet-summary { align-self: stretch; text-align: center; font-size: 14px; font-weight: 500; color: var(--text-dim); }
+
+#sheet-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 16px 10px;
+}
+#sheet-actions button {
+  flex: 1;
+  padding: 13px;
+  font-size: 15px;
+  font-weight: 600;
+}
+#start-nav-btn { background: var(--accent-2); color: #06240f; }
+#end-nav-btn.danger { background: var(--danger); color: #fff; }
+#sheet-actions button.hidden { display: none; }
+
+#maneuver-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 calc(12px + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  max-height: calc(72vh - 118px);
+}
+
+#maneuver-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.m-icon {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.m-body { min-width: 0; padding-top: 2px; }
+#maneuver-list li .instr { font-weight: 500; font-size: 14px; }
+#maneuver-list li .meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+#maneuver-list li.active { background: var(--panel-2); }
+#maneuver-list li.active .m-icon { background: var(--accent); color: #fff; }
+#maneuver-list li.done { opacity: 0.45; }
+
+/* ---------------------------------------------------------------- Mapillary viewer (Milestone 4A) */
+
+#mapillary-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(6, 9, 14, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+#mapillary-viewer.hidden { display: none; }
+
+.mapillary-card {
+  width: min(92vw, 480px);
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.mapillary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.mapillary-body {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#mapillary-image { width: 100%; height: 100%; object-fit: cover; }
+#mapillary-image.hidden { display: none; }
+.mapillary-placeholder { padding: 24px; text-align: center; color: var(--text-dim); font-size: 14px; }
+.mapillary-placeholder.hidden { display: none; }
+
+.nav-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 38px;
+  height: 38px;
+  background: rgba(16, 21, 28, 0.7);
+}
+.nav-arrow.left { left: 8px; }
+.nav-arrow.right { right: 8px; }
+.nav-arrow.hidden { display: none; }
+
+.mapillary-attribution {
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- offline maps panel (Milestone 3A) */
+
+#offline-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--bg);
+  overflow-y: auto;
+  padding: max(16px, env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+#offline-panel.hidden { display: none; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.panel-title { font-size: 20px; font-weight: 700; }
+
+.panel-section {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.panel-section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+.field-label input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  font-size: 15px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.zoom-range-row { display: flex; gap: 12px; }
+.zoom-range-row .field-label { flex: 1; }
+
+.tile-estimate { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+
+#download-area-btn, #cancel-download-btn {
+  width: 100%;
+  padding: 13px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+}
+#download-area-btn:disabled { opacity: 0.5; }
+button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+
+#download-progress { margin-top: 12px; }
+#download-progress.hidden { display: none; }
+.progress-bar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; margin-bottom: 8px; }
+#download-progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s ease; }
+#download-progress-text { font-size: 13px; color: var(--text-dim); margin-bottom: 10px; text-align: center; }
+
+.storage-estimate { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+
+/* ---------------------------------------------------------------- misc */
+
+.hidden { display: none !important; }

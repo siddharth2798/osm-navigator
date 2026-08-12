@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Navigator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10151c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Navigator">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Map fills the entire screen; every control below floats on top of it. -->
+  <div id="map"></div>
+
+  <div id="top-overlay">
+    <!-- Status / error banner. Always plain language, never a raw exception. -->
+    <div id="status-banner" class="hidden" role="status" aria-live="polite"></div>
+
+    <div id="search-card">
+      <!-- ============ Default: single search box (Google Maps "search here") ============ -->
+      <div id="search-simple">
+        <div class="search-row plain">
+          <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/><path d="M21 21 L16.5 16.5"/>
+          </svg>
+          <input id="place-input" type="text" placeholder="Search here" autocomplete="off" inputmode="search">
+          <ul id="place-suggestions" class="suggestions hidden"></ul>
+          <button id="offline-btn" class="icon-btn" type="button" aria-label="Offline maps">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 18 a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.5 A4 4 0 0 1 18 16"/>
+              <path d="M12 11 v7 M9 15 l3 3 3-3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- ============ Directions mode: from/to fields, shown after tapping "Directions" ============ -->
+      <div id="search-directions" class="hidden">
+        <div class="search-top">
+          <button id="directions-back-btn" class="icon-btn" type="button" aria-label="Back to search">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 L8 12 L15 19"/></svg>
+          </button>
+          <div class="search-fields">
+            <div class="search-row">
+              <span class="dot dot-origin" aria-hidden="true"></span>
+              <input id="from-input" type="text" placeholder="Choose starting point" autocomplete="off" inputmode="search">
+              <ul id="from-suggestions" class="suggestions hidden"></ul>
+            </div>
+            <div class="search-divider"></div>
+            <div class="search-row">
+              <span class="dot dot-dest" aria-hidden="true"></span>
+              <input id="to-input" type="text" placeholder="Choose destination" autocomplete="off" inputmode="search">
+              <ul id="to-suggestions" class="suggestions hidden"></ul>
+            </div>
+          </div>
+          <button id="swap-btn" class="icon-btn" type="button" title="Swap starting point and destination" aria-label="Swap starting point and destination">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M7 4 L7 18 M7 4 L3 8 M7 4 L11 8"/>
+              <path d="M17 20 L17 6 M17 20 L13 16 M17 20 L21 16"/>
+            </svg>
+          </button>
+        </div>
+        <!-- Milestone 4C: only ever revealed by app.js if OTP2_URL is set -->
+        <div id="travel-mode-toggle" class="hidden">
+          <button type="button" class="mode-btn active" data-mode="drive">Drive</button>
+          <button type="button" class="mode-btn" data-mode="transit">Transit</button>
+        </div>
+        <button id="plan-route-btn" type="button">Get directions</button>
+      </div>
+    </div>
+
+    <!-- ============ Picked-place card: name + Directions / clear ============ -->
+    <div id="place-card" class="hidden">
+      <div id="place-card-label">—</div>
+      <div id="place-card-actions" class="place-card-actions">
+        <button id="place-directions-btn" type="button">Directions</button>
+        <button id="place-clear-btn" class="icon-btn" type="button" aria-label="Clear selection">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- ============ Long-press-on-map "save as favorite" prompt ============ -->
+    <div id="favorite-prompt" class="hidden">
+      <input id="favorite-prompt-input" type="text" placeholder="Name this place">
+      <div class="favorite-prompt-actions">
+        <button id="favorite-prompt-cancel" class="icon-btn" type="button" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+        <button id="favorite-prompt-save" type="button">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ Milestone 2: floating "next turn" card ============ -->
+    <div id="nav-banner" class="hidden">
+      <div id="nav-banner-icon" aria-hidden="true"></div>
+      <div id="nav-banner-text">
+        <div id="nav-banner-instruction">—</div>
+        <div id="nav-banner-distance">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
+  <div id="map-controls">
+    <button id="zoom-in-btn" class="fab small" type="button" aria-label="Zoom in">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
+    </button>
+    <button id="zoom-out-btn" class="fab small" type="button" aria-label="Zoom out">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12 h14"/></svg>
+    </button>
+    <button id="locate-btn" class="fab" type="button" title="Show my location" aria-label="Show my location">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="3"/><path d="M12 2 v3.5 M12 18.5 v3 M2.5 12 h3.5 M18.5 12 h3"/>
+      </svg>
+    </button>
+    <!-- Milestone 4A: only ever revealed by app.js if MAPILLARY_ACCESS_TOKEN is set -->
+    <button id="mapillary-toggle-btn" class="fab hidden" type="button" title="Show street-level imagery coverage" aria-label="Show street-level imagery coverage">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 8 h3 l2-2 h6 l2 2 h3 v11 H4 Z"/><circle cx="12" cy="13" r="3.2"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- ============ Bottom sheet: summary / itinerary / nav controls ============ -->
+  <div id="bottom-sheet" class="hidden">
+    <button id="sheet-handle" type="button" aria-label="Expand or collapse route details">
+      <span class="handle-bar" aria-hidden="true"></span>
+      <div id="sheet-summary">—</div>
+    </button>
+    <div id="sheet-actions">
+      <button id="start-nav-btn" class="hidden" type="button">Start navigation</button>
+      <button id="end-nav-btn" class="hidden danger" type="button">End</button>
+    </div>
+    <ol id="maneuver-list"></ol>
+  </div>
+
+  <!-- ============ Milestone 4A: Mapillary street-level imagery viewer ============ -->
+  <div id="mapillary-viewer" class="hidden">
+    <div class="mapillary-card">
+      <div class="mapillary-header">
+        <span>Street-level imagery</span>
+        <button id="mapillary-close-btn" class="icon-btn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+      </div>
+      <div class="mapillary-body">
+        <img id="mapillary-image" class="hidden" alt="Street-level photo">
+        <div id="mapillary-loading" class="mapillary-placeholder hidden">Loading…</div>
+        <div id="mapillary-empty" class="mapillary-placeholder hidden">No street-level imagery found near this point.</div>
+        <div id="mapillary-error" class="mapillary-placeholder hidden"></div>
+        <button id="mapillary-prev-btn" class="icon-btn nav-arrow left hidden" type="button" aria-label="Previous image">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 L8 12 L15 19"/></svg>
+        </button>
+        <button id="mapillary-next-btn" class="icon-btn nav-arrow right hidden" type="button" aria-label="Next image">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg>
+        </button>
+      </div>
+      <div class="mapillary-attribution">Imagery © Mapillary contributors · CC BY-SA</div>
+    </div>
+  </div>
+
+  <!-- ============ Milestone 3A: offline maps management screen ============ -->
+  <div id="offline-panel" class="hidden">
+    <div class="panel-header">
+      <div class="panel-title">Offline maps</div>
+      <button id="offline-close-btn" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-section-title">Download current view</div>
+      <label class="field-label">Area name (optional)
+        <input id="area-name-input" type="text" placeholder="e.g. Home city">
+      </label>
+      <div class="zoom-range-row">
+        <label class="field-label">Min zoom
+          <input id="zoom-min-input" type="number" min="0" max="20">
+        </label>
+        <label class="field-label">Max zoom
+          <input id="zoom-max-input" type="number" min="0" max="20">
+        </label>
+      </div>
+      <div id="tile-estimate" class="tile-estimate">—</div>
+      <button id="download-area-btn" type="button">Download this area</button>
+      <div id="download-progress" class="hidden">
+        <div class="progress-bar"><div id="download-progress-fill"></div></div>
+        <div id="download-progress-text">—</div>
+        <button id="cancel-download-btn" class="secondary" type="button">Cancel download</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-section-title">Downloaded areas</div>
+      <ul id="downloaded-areas-list" class="saved-list"></ul>
+      <div id="storage-estimate" class="storage-estimate">—</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

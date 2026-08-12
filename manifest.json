@@ -1,0 +1,14 @@
+{
+  "name": "Navigator",
+  "short_name": "Navigator",
+  "description": "Personal turn-by-turn navigation on OpenStreetMap data.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#10151c",
+  "theme_color": "#10151c",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

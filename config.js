@@ -1,0 +1,90 @@
+// ============================================================================
+// CONFIG — everything you'd want to change when pointing this app at your
+// own self-hosted services lives here. Nothing else in the codebase should
+// need editing for that.
+// ============================================================================
+export const CONFIG = {
+  // --- Geocoding: self-hosted Nominatim -------------------------------------
+  // Point this at your own instance, e.g. 'https://geocode.mydomain.com'.
+  // Default is the public demo instance, which is fine for local testing but
+  // enforces a hard 1 request/second limit and asks that you identify your
+  // app via a User-Agent header (browsers don't let page JS set that header,
+  // so please switch to your own instance before relying on this day to day).
+  NOMINATIM_URL: 'https://nominatim.openstreetmap.org',
+
+  // Minimum gap between outgoing Nominatim requests, in ms. Combined with the
+  // debounce on the input field, this keeps us under the 1 req/sec limit.
+  NOMINATIM_MIN_INTERVAL_MS: 1100,
+
+  // How long to wait after the user stops typing before firing a search.
+  NOMINATIM_DEBOUNCE_MS: 400,
+
+  // --- Routing: self-hosted Valhalla ------------------------------------------
+  // Point this at your own instance, e.g. 'https://valhalla.mydomain.com'.
+  // Default is the public OpenStreetMap Valhalla demo server — fair-use policy
+  // asks for roughly 1 call/second, enforced below.
+  VALHALLA_URL: 'https://valhalla1.openstreetmap.de',
+  VALHALLA_MIN_INTERVAL_MS: 1100,
+
+  // --- Map tiles: OpenFreeMap (no API key needed) -----------------------------
+  MAP_STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
+
+  // --- Navigation / voice guidance behaviour ----------------------------------
+  // Speak the next instruction once the live position is within this many
+  // metres of the upcoming maneuver.
+  VOICE_PROMPT_DISTANCE_M: 200,
+
+  // Perpendicular distance (metres) from the route line beyond which the
+  // driver is considered "off route".
+  DEVIATION_THRESHOLD_M: 50,
+
+  // How long (ms) the driver must remain continuously off-route before the
+  // app automatically requests a new route.
+  DEVIATION_DURATION_MS: 5000,
+
+  // Camera behaviour while auto-following during navigation.
+  NAV_ZOOM: 17,
+  NAV_PITCH: 45,
+  FOLLOW_EASE_MS: 700,
+
+  // Passed straight to navigator.geolocation.watchPosition.
+  GEOLOCATION_OPTIONS: {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 15000,
+  },
+
+  // --- Offline map tiles (Milestone 3A) ---------------------------------------
+  // Cache API name used for downloaded/opportunistically-cached map tiles.
+  // NOTE: if you change MAP_STYLE_URL to a self-hosted style/tile server,
+  // also update TILE_HOSTS at the top of sw.js — the service worker can't
+  // import this file (Safari doesn't support module service workers yet),
+  // so that one setting is duplicated there and must be kept in sync.
+  TILE_CACHE_NAME: 'offline-tiles',
+  OFFLINE_MIN_ZOOM_DEFAULT: 10,
+  OFFLINE_MAX_ZOOM_DEFAULT: 16,
+  OFFLINE_TILE_CONCURRENCY: 6,   // simultaneous tile fetches while downloading an area
+  OFFLINE_TILE_MAX_RETRIES: 2,   // per-tile retries before it's counted as failed and skipped
+
+  // --- Saved places (Milestone 3C) --------------------------------------------
+  MAX_RECENT_TRIPS: 20,
+
+  // --- Street-level imagery: Mapillary (Milestone 4A) -------------------------
+  // Get a free client token at https://www.mapillary.com/dashboard/developers
+  // (create an app, copy its "Client Token", starts with "MLY|..."). Leave
+  // this empty to disable the feature entirely — no coverage layer, no
+  // street-view buttons, no API calls. There is no public shared demo token
+  // (unlike Nominatim/Valhalla's public instances) since Mapillary requires
+  // every app to register its own.
+  MAPILLARY_ACCESS_TOKEN: '',
+  MAPILLARY_COVERAGE_MIN_ZOOM: 14, // below this zoom the coverage layer stays off (too many tiles, not useful at a glance)
+  MAPILLARY_SEARCH_RADIUS_M: 60,   // how far from a tapped/picked point to look for the nearest image
+
+  // --- Transit (Milestone 4C) --------------------------------------------------
+  // Point at a self-hosted OpenTripPlanner 2 instance loaded with your OSM
+  // extract + a GTFS feed, e.g. 'https://otp.mydomain.com'. Leave empty and
+  // the transit mode toggle simply never appears — there's no public OTP2
+  // demo server to default to (unlike Valhalla), and a GTFS feed is specific
+  // to whichever local transit agency you care about.
+  OTP2_URL: '',
+};
