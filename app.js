@@ -37,6 +37,7 @@ const el = {
   categoryChips: document.getElementById('category-chips'),
   routeOptionsRow: document.getElementById('route-options'),
   routeChips: document.getElementById('route-chips'),
+  routeChipsInline: document.getElementById('route-chips-inline'),
   poiResultsHeader: document.getElementById('poi-results-header'),
   poiResultsLabel: document.getElementById('poi-results-label'),
   poiBackBtn: document.getElementById('poi-back-btn'),
@@ -2049,12 +2050,12 @@ el.routeSearchBtn.addEventListener('click', () => {
   else goBackInApp();
 });
 
-/** Shows/hides the along-route search feature as a whole (the FAB, not just
- * the popover) — used everywhere the feature becomes available or
- * unavailable (route planned/canceled, navigation started/ended, transit
- * mode). If the popover happens to be open when the feature is hidden out
- * from under it (e.g. Cancel while it's open), close it too rather than
- * leaving an orphaned open popover with an invisible trigger button. */
+/** Shows/hides the along-route search FAB + its floating popover — reachable
+ * only once navigation has actually started (see #route-chips-inline for the
+ * pre-navigation equivalent). If the popover happens to be open when the
+ * feature is hidden out from under it (e.g. "End" while it's open), close it
+ * too rather than leaving an orphaned open popover with an invisible trigger
+ * button. */
 function showRouteSearchFeature() {
   el.routeSearchBtn.classList.remove('hidden');
 }
@@ -2064,6 +2065,17 @@ function hideRouteSearchFeature() {
     forgetBackLayerIfTop(closeRouteChipsPopover);
     closeRouteChipsPopover();
   }
+}
+
+/** Shows/hides the inline "search along the route" chip row under the
+ * from/to fields — the pre-navigation equivalent of the FAB+popover above.
+ * Visible from a successful drive plan until "Start navigation" is tapped
+ * (or the route is canceled/replaced with a transit plan). */
+function showRouteChipsInline() {
+  el.routeChipsInline.classList.remove('hidden');
+}
+function hideRouteChipsInline() {
+  el.routeChipsInline.classList.add('hidden');
 }
 
 /** What "along the route" means depends on whether you're still planning or
@@ -2106,38 +2118,49 @@ function routeSearchScope() {
   };
 }
 
-el.routeChips.querySelectorAll('.chip').forEach((btn) => {
-  btn.addEventListener('click', async () => {
-    if (!state.route) return;
-    forgetBackLayerIfTop(closeRouteChipsPopover); // closing by side effect of picking a category, not via goBackInApp
-    closeRouteChipsPopover();
-    const tag = CHIP_CATEGORY_TAGS[btn.dataset.category];
-    const label = btn.dataset.label;
-    const scope = routeSearchScope();
+/** Shared by both chip rows (the floating popover and the inline row) —
+ * they show the same 8 categories with identical search-along-the-route
+ * behaviour, just in different containers. `isPopover` is the only thing
+ * that differs: the popover needs closing before its results take over the
+ * bottom sheet, the inline row has nothing to close. */
+function wireRouteChipButtons(container, { isPopover }) {
+  container.querySelectorAll('.chip').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!state.route) return;
+      if (isPopover) {
+        forgetBackLayerIfTop(closeRouteChipsPopover); // closing by side effect of picking a category, not via goBackInApp
+        closeRouteChipsPopover();
+      }
+      const tag = CHIP_CATEGORY_TAGS[btn.dataset.category];
+      const label = btn.dataset.label;
+      const scope = routeSearchScope();
 
-    el.poiResultsLabel.textContent = state.navigating ? `${label} ahead` : `${label} along your route`;
-    el.poiResultsHeader.classList.remove('hidden');
-    el.maneuverList.classList.add('hidden');
-    el.bottomSheet.classList.add('expanded');
-    pushBackLayer(resetToRouteView);
-    showSuggestionLoading(el.poiResultsList);
+      el.poiResultsLabel.textContent = state.navigating ? `${label} ahead` : `${label} along your route`;
+      el.poiResultsHeader.classList.remove('hidden');
+      el.maneuverList.classList.add('hidden');
+      el.bottomSheet.classList.add('expanded');
+      pushBackLayer(resetToRouteView);
+      showSuggestionLoading(el.poiResultsList);
 
-    try {
-      const rawResults = await categorySearchAlongRoute(tag, scope.coords, scope.totalDistM, scope.waypoints);
-      const results = decorateWithRouteDistance(rawResults, scope.lineFeature);
-      const onPick = (r) => { clearPoiMarkers(); addStopFromPoi(r); };
-      showPoiMarkers(results, onPick);
-      renderSuggestionResults(
-        el.poiResultsList, null, results, onPick,
-        `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`,
-        state.navigating ? 'ahead' : 'along your route',
-      );
-    } catch (err) {
-      hideSuggestionList(el.poiResultsList);
-      showStatus(err.message, 'error');
-    }
+      try {
+        const rawResults = await categorySearchAlongRoute(tag, scope.coords, scope.totalDistM, scope.waypoints);
+        const results = decorateWithRouteDistance(rawResults, scope.lineFeature);
+        const onPick = (r) => { clearPoiMarkers(); addStopFromPoi(r); };
+        showPoiMarkers(results, onPick);
+        renderSuggestionResults(
+          el.poiResultsList, null, results, onPick,
+          `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`,
+          state.navigating ? 'ahead' : 'along your route',
+        );
+      } catch (err) {
+        hideSuggestionList(el.poiResultsList);
+        showStatus(err.message, 'error');
+      }
+    });
   });
-});
+}
+wireRouteChipButtons(el.routeChips, { isPopover: true });
+wireRouteChipButtons(el.routeChipsInline, { isPopover: false });
 
 /** Switches the search card between the single-search view and the from/to
  * directions editor. Shared by the "Directions" button, the back arrow, and
@@ -3300,6 +3323,7 @@ el.planBtn.addEventListener('click', async () => {
       el.startNavBtn.classList.add('hidden'); // no live transit navigation — see scope note above
       el.cancelRouteBtn.classList.remove('hidden');
       hideRouteSearchFeature(); // along-route search is drive-only (see scope note above addStopFromPoi)
+      hideRouteChipsInline();
       clearStatus();
     } else {
       state.currentLegIndex = 0;
@@ -3312,7 +3336,7 @@ el.planBtn.addEventListener('click', async () => {
       el.bottomSheet.classList.remove('expanded');
       el.startNavBtn.classList.remove('hidden');
       el.cancelRouteBtn.classList.remove('hidden');
-      showRouteSearchFeature();
+      showRouteChipsInline(); // not navigating yet — see #route-chips-inline vs the FAB in startNavigation
       const warning = checkRoutePlausibility(trip, state.from, state.to, stops.length > 0);
       if (warning) showStatus(warning, 'error'); else clearStatus();
     }
@@ -3408,6 +3432,7 @@ function cancelPlannedRoute() {
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
   hideRouteSearchFeature();
+  hideRouteChipsInline();
   el.mapControls.classList.remove('raised');
 
   el.fromInput.value = '';
@@ -3660,8 +3685,12 @@ async function startNavigation() {
   el.bottomSheet.classList.remove('expanded');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
-  // Along-route search stays available while driving (see routeCoordsAhead) —
+  // Along-route search stays available while driving (see routeSearchScope) —
   // scoped to what's still ahead of you rather than the whole original route.
+  // It moves from the inline row (under the now-hidden search card) to the
+  // floating FAB+popover, which is reachable without the search card on screen.
+  hideRouteChipsInline();
+  showRouteSearchFeature();
   el.routeOptionsRow.classList.add('hidden'); // no more switching routes once you're committed and driving
   map.getSource('route-alternates').setData(emptyFeatureCollection());
   el.endNavBtn.classList.remove('hidden');
@@ -3705,7 +3734,8 @@ function endNavigation() {
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');
-  showRouteSearchFeature(); // endNavigation is only reachable from a drive-mode session
+  hideRouteSearchFeature(); // endNavigation is only reachable from a drive-mode session
+  showRouteChipsInline(); // back to "planned, not driving" — chips move back under the search card
   el.searchCard.classList.remove('hidden');
   renderRouteOptions(); // typically just re-hides the row: rerouting while driving collapses options down to one
   updateLocateBtnState();
@@ -3756,7 +3786,7 @@ if ('serviceWorker' in navigator) {
       el.mapControls.classList.add('raised');
       el.startNavBtn.classList.remove('hidden');
       el.cancelRouteBtn.classList.remove('hidden');
-      showRouteSearchFeature(); // currentTrip only ever persists a drive route (transit has none)
+      showRouteChipsInline(); // currentTrip only ever persists a drive route not yet navigating (transit has none, and navigating never restores)
       goToDirections({ from: state.from, to: state.to }); // also clears stops — repopulate after
       replaceTopBackLayer(cancelPlannedRoute); // a route is already active here, not just the bare directions form
       (saved.stops || []).forEach((stop) => addStopRow(stop));
