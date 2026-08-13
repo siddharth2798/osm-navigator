@@ -4,6 +4,18 @@
 // need editing for that.
 // ============================================================================
 export const CONFIG = {
+  // How long any single network request to a routing/geocoding service is
+  // allowed to hang before the app gives up and shows an error, in ms. A
+  // public demo server under load can be slow to respond rather than
+  // failing outright — without a ceiling, "Finding route…" would just spin
+  // forever instead of eventually failing in a way you can retry.
+  FETCH_TIMEOUT_MS: 20000,
+
+  // How long to wait for the map's style/tiles to finish loading before
+  // giving up — guards every "touch a map source" call that would otherwise
+  // hang forever if the map never fires its own 'load' event.
+  MAP_LOAD_TIMEOUT_MS: 15000,
+
   // --- Geocoding: self-hosted Nominatim -------------------------------------
   // Point this at your own instance, e.g. 'https://geocode.mydomain.com'.
   // Default is the public demo instance, which is fine for local testing but
@@ -73,7 +85,7 @@ export const CONFIG = {
     timeout: 15000,
   },
 
-  // --- Offline map tiles (Milestone 3A) ---------------------------------------
+  // --- Offline map tiles ---------------------------------------------------
   // Cache API name used for downloaded/opportunistically-cached map tiles.
   // NOTE: if you change MAP_STYLE_URL to a self-hosted style/tile server,
   // also update TILE_HOSTS at the top of sw.js — the service worker can't
@@ -85,13 +97,13 @@ export const CONFIG = {
   OFFLINE_TILE_CONCURRENCY: 6,   // simultaneous tile fetches while downloading an area
   OFFLINE_TILE_MAX_RETRIES: 2,   // per-tile retries before it's counted as failed and skipped
 
-  // --- Saved places (Milestone 3C) --------------------------------------------
+  // --- Saved places ----------------------------------------------------------
   MAX_RECENT_TRIPS: 20,
 
   // --- Multi-stop routing -------------------------------------------------------
   MAX_STOPS: 8, // soft cap so the directions card doesn't grow unreasonably tall
 
-  // --- Street-level imagery: Mapillary (Milestone 4A) -------------------------
+  // --- Street-level imagery: Mapillary -----------------------------------------
   // Get a free client token at https://www.mapillary.com/dashboard/developers
   // (create an app, copy its "Client Token", starts with "MLY|..."). Leave
   // this empty to disable the feature entirely — no coverage layer, no
@@ -102,7 +114,7 @@ export const CONFIG = {
   MAPILLARY_COVERAGE_MIN_ZOOM: 14, // below this zoom the coverage layer stays off (too many tiles, not useful at a glance)
   MAPILLARY_SEARCH_RADIUS_M: 60,   // how far from a tapped/picked point to look for the nearest image
 
-  // --- Transit (Milestone 4C) --------------------------------------------------
+  // --- Transit -------------------------------------------------------------
   // Point at a self-hosted OpenTripPlanner 2 instance loaded with your OSM
   // extract + a GTFS feed, e.g. 'https://otp.mydomain.com'. Leave empty and
   // the transit mode toggle simply never appears — there's no public OTP2

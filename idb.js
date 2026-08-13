@@ -1,18 +1,20 @@
 import { CONFIG } from './config.js';
 
 // ============================================================================
-// Tiny plain-IndexedDB helper — no external library. Four object stores:
-//   favorites      — saved places (name, lat, lon, note)
+// Tiny plain-IndexedDB helper — no external library. Five object stores:
+//   favorites      — saved places (name, lat, lon, note, listId)
+//   lists          — renameable collections a favorite can be filed under
+//                     (Google-Maps-style "Favorites"/"Want to go"/custom)
 //   recentTrips    — auto-recorded origin/destination pairs, capped & pruned
-//   downloadedAreas — metadata for each offline tile download (Milestone 3A)
-//   currentTrip    — a single "resume where I left off" record (Milestone 3B)
+//   downloadedAreas — metadata for each offline tile download
+//   currentTrip    — a single "resume where I left off" record
 // Every exported function rejects with a plain Error on failure; callers are
 // expected to catch and show a plain-language status message, same as every
 // other async operation in this app.
 // ============================================================================
 
 const DB_NAME = 'navigator-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -30,6 +32,13 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains('currentTrip')) {
         db.createObjectStore('currentTrip', { keyPath: 'id' });
+      }
+      // Added in DB_VERSION 2: existing favorites (saved before lists
+      // existed) have no listId yet — getFavorites() below migrates them
+      // to whatever the default list turns out to be, the first time
+      // they're read, rather than needing a one-off migration pass here.
+      if (!db.objectStoreNames.contains('lists')) {
+        db.createObjectStore('lists', { keyPath: 'id', autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -65,14 +74,70 @@ async function idbDelete(storeName, key) {
   return reqToPromise(db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key));
 }
 
+// ---- lists (favorites organized into renameable collections, Google-Maps-style "Saved" screen) ----
+
+export async function addList({ name }) {
+  return idbAdd('lists', { name, createdAt: Date.now() });
+}
+export async function getLists() {
+  const all = await idbGetAll('lists');
+  return all.sort((a, b) => a.createdAt - b.createdAt); // creation order, so the default list stays first
+}
+export async function renameList(id, name) {
+  const list = await idbGet('lists', id);
+  if (!list) throw new Error('That list no longer exists.');
+  return idbPut('lists', { ...list, name });
+}
+/** Deleting a list keeps its favorites rather than deleting them — they're
+ * reassigned to whichever list is now first (oldest). Any list can be
+ * deleted, including the only one: if that leaves affected favorites with
+ * nowhere to go, a fresh "Favorites" list is created to hold them (the
+ * same self-healing fallback getFavorites()/openSaveToListPrompt already
+ * rely on for a brand-new install with zero lists). */
+export async function deleteList(id) {
+  const lists = await getLists();
+  const remaining = lists.filter((l) => l.id !== id);
+  const favorites = await idbGetAll('favorites');
+  const affected = favorites.filter((f) => f.listId === id);
+  if (affected.length) {
+    const fallbackId = remaining.length ? remaining[0].id : await addList({ name: 'Favorites' });
+    for (const fav of affected) await idbPut('favorites', { ...fav, listId: fallbackId });
+  }
+  return idbDelete('lists', id);
+}
+async function getOrCreateDefaultListId() {
+  const lists = await getLists();
+  if (lists.length) return lists[0].id;
+  return addList({ name: 'Favorites' });
+}
+
 // ---- favorites --------------------------------------------------------------
 
-export async function addFavorite({ label, lat, lon, note }) {
-  return idbAdd('favorites', { name: label, lat, lon, note: note || '', createdAt: Date.now() });
+export async function addFavorite({ label, lat, lon, note, listId }) {
+  const finalListId = listId != null ? listId : await getOrCreateDefaultListId();
+  return idbAdd('favorites', { name: label, lat, lon, note: note || '', listId: finalListId, createdAt: Date.now() });
 }
-export async function getFavorites() {
+/** Returns favorites sorted newest-first, optionally filtered to a single
+ * list. Also self-heals favorites saved before lists existed (no listId
+ * yet) by filing them under the default list the first time they're read,
+ * rather than needing a one-off migration pass at DB-upgrade time. */
+export async function getFavorites(listId) {
   const all = await idbGetAll('favorites');
-  return all.sort((a, b) => b.createdAt - a.createdAt);
+  const legacy = all.filter((f) => f.listId == null);
+  if (legacy.length) {
+    const defaultId = await getOrCreateDefaultListId();
+    for (const fav of legacy) {
+      fav.listId = defaultId;
+      await idbPut('favorites', fav);
+    }
+  }
+  const sorted = all.sort((a, b) => b.createdAt - a.createdAt);
+  return listId == null ? sorted : sorted.filter((f) => f.listId === listId);
+}
+export async function moveFavoriteToList(id, listId) {
+  const fav = await idbGet('favorites', id);
+  if (!fav) throw new Error('That favorite no longer exists.');
+  return idbPut('favorites', { ...fav, listId });
 }
 export async function deleteFavorite(id) {
   return idbDelete('favorites', id);
@@ -80,12 +145,21 @@ export async function deleteFavorite(id) {
 
 // ---- recent trips -------------------------------------------------------------
 
+/** Re-searching/re-planning the same origin→destination just bumps its
+ * existing entry to the top instead of piling up near-duplicates, the same
+ * way Google Maps' recent-search list behaves. */
 export async function addRecentTrip(trip) {
-  await idbAdd('recentTrips', { ...trip, createdAt: Date.now() });
-  // Cap at MAX_RECENT_TRIPS, dropping the oldest first.
   const all = await idbGetAll('recentTrips');
-  all.sort((a, b) => b.createdAt - a.createdAt);
-  const excess = all.slice(CONFIG.MAX_RECENT_TRIPS);
+  const dup = all.find((t) => t.originLabel === trip.originLabel && t.destLabel === trip.destLabel);
+  if (dup) {
+    await idbPut('recentTrips', { ...dup, ...trip, createdAt: Date.now() });
+  } else {
+    await idbAdd('recentTrips', { ...trip, createdAt: Date.now() });
+  }
+  // Cap at MAX_RECENT_TRIPS, dropping the oldest first.
+  const updated = await idbGetAll('recentTrips');
+  updated.sort((a, b) => b.createdAt - a.createdAt);
+  const excess = updated.slice(CONFIG.MAX_RECENT_TRIPS);
   for (const item of excess) await idbDelete('recentTrips', item.id);
 }
 export async function getRecentTrips() {
@@ -96,7 +170,7 @@ export async function deleteRecentTrip(id) {
   return idbDelete('recentTrips', id);
 }
 
-// ---- downloaded areas (Milestone 3A) -------------------------------------------
+// ---- downloaded areas -----------------------------------------------------------
 
 export async function addDownloadedArea(area) {
   return idbAdd('downloadedAreas', { ...area, createdAt: Date.now() });
@@ -109,7 +183,7 @@ export async function deleteDownloadedArea(id) {
   return idbDelete('downloadedAreas', id);
 }
 
-// ---- current trip (Milestone 3B resilience) ------------------------------------
+// ---- current trip -----------------------------------------------------------
 // A singleton record (fixed key 'active') so a killed/reloaded tab mid-drive
 // can restore the in-progress route without a network round trip.
 

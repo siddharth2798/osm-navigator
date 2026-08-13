@@ -1,5 +1,5 @@
-# Milestone 4B (Capacitor Android shell) build artifacts — the actual app
-# source lives in the project root; these are all generated/copied.
+# Capacitor Android shell build artifacts — the actual app source lives in
+# the project root; these are all generated/copied.
 node_modules/
 www/
 android/app/build/

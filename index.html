@@ -35,6 +35,11 @@
           </svg>
           <input id="place-input" type="text" placeholder="Search here" autocomplete="off" inputmode="search">
           <ul id="place-suggestions" class="suggestions hidden"></ul>
+          <button id="saved-btn" class="icon-btn" type="button" aria-label="Saved places">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 3 h12 a1 1 0 0 1 1 1 v17 l-7-4 -7 4 V4 a1 1 0 0 1 1-1 Z"/>
+            </svg>
+          </button>
           <button id="offline-btn" class="icon-btn" type="button" aria-label="Offline maps">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 18 a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.5 A4 4 0 0 1 18 16"/>
@@ -112,7 +117,7 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
           Add stop
         </button>
-        <!-- Milestone 4C: only ever revealed by app.js if OTP2_URL is set -->
+        <!-- Only ever revealed by app.js if OTP2_URL is set -->
         <div id="travel-mode-toggle" class="hidden">
           <button type="button" class="mode-btn active" data-mode="drive">Drive</button>
           <button type="button" class="mode-btn" data-mode="transit">Transit</button>
@@ -130,6 +135,9 @@
       </div>
       <div id="place-card-actions" class="place-card-actions">
         <button id="place-directions-btn" type="button">Directions</button>
+        <button id="place-card-save-btn" class="icon-btn" type="button" aria-label="Save to favorites">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 L14.6 9 L21 9.8 L16.3 14.1 L17.6 20.5 L12 17.3 L6.4 20.5 L7.7 14.1 L3 9.8 L9.4 9 Z"/></svg>
+        </button>
         <button id="place-clear-btn" class="icon-btn" type="button" aria-label="Clear selection">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
         </button>
@@ -147,7 +155,39 @@
       </div>
     </div>
 
-    <!-- ============ Milestone 2: floating "next turn" card ============ -->
+    <!-- ============ "Which list?" prompt — shared by every save-to-favorites
+         entry point, and by renaming/creating a list from the Saved panel. ============ -->
+    <div id="save-to-list-prompt" class="hidden">
+      <div id="save-to-list-place-name" class="save-to-list-place-name"></div>
+      <ul id="save-to-list-options" class="saved-list radio-list"></ul>
+      <div class="save-to-list-new-row">
+        <input id="save-to-list-new-name" type="text" placeholder="New list name">
+        <button id="save-to-list-new-btn" class="icon-btn" type="button" aria-label="Create list">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
+        </button>
+      </div>
+      <div class="favorite-prompt-actions">
+        <button id="save-to-list-cancel" class="icon-btn" type="button" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+        <button id="save-to-list-save" type="button">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ Create/rename-list prompt — reused for both (title text
+         and input value are set by app.js depending on which). ============ -->
+    <div id="list-name-prompt" class="hidden">
+      <div id="list-name-prompt-title" class="list-name-prompt-title">New list</div>
+      <input id="list-name-prompt-input" type="text" placeholder="List name">
+      <div class="favorite-prompt-actions">
+        <button id="list-name-prompt-cancel" class="icon-btn" type="button" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+        <button id="list-name-prompt-save" type="button">Save</button>
+      </div>
+    </div>
+
+    <!-- ============ Floating "next turn" card ============ -->
     <div id="nav-banner" class="hidden">
       <div id="nav-banner-icon" aria-hidden="true"></div>
       <div id="nav-banner-text">
@@ -179,7 +219,7 @@
         <circle cx="12" cy="12" r="3"/><path d="M12 2 v3.5 M12 18.5 v3 M2.5 12 h3.5 M18.5 12 h3"/>
       </svg>
     </button>
-    <!-- Milestone 4A: only ever revealed by app.js if MAPILLARY_ACCESS_TOKEN is set -->
+    <!-- Only ever revealed by app.js if MAPILLARY_ACCESS_TOKEN is set -->
     <button id="mapillary-toggle-btn" class="fab hidden" type="button" title="Show street-level imagery coverage" aria-label="Show street-level imagery coverage">
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 8 h3 l2-2 h6 l2 2 h3 v11 H4 Z"/><circle cx="12" cy="13" r="3.2"/>
@@ -190,9 +230,9 @@
   <!-- "Search along the route" popover — toggled by #route-search-btn above.
        Positioned dynamically (see app.js) just above whichever button
        triggered it, so it never depends on knowing the map-controls stack's
-       exact height (which varies: Mapillary's button is conditional). A
-       single scrollable chip row, same as the other category-chip rows in
-       this app, so it stays compact instead of covering the map. -->
+       exact height (which varies: Mapillary's button is conditional).
+       Chips are laid out as a vertical list (see .route-chips-popover in
+       style.css), sized and capped so it stays clear of covering the map. -->
   <div id="route-chips" class="category-chips route-chips-popover hidden">
     <button class="chip" type="button" data-category="fuel" data-label="Petrol pumps">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21 V6 a2 2 0 0 1 2-2 h6 a2 2 0 0 1 2 2 v15"/><path d="M4 21 h10 M8 10 h2 M14 8 h2 a2 2 0 0 1 2 2 v6 a1.5 1.5 0 0 0 3 0 V9 l-2-2"/></svg>
@@ -258,7 +298,7 @@
     <ol id="maneuver-list"></ol>
   </div>
 
-  <!-- ============ Milestone 4A: Mapillary street-level imagery viewer ============ -->
+  <!-- ============ Mapillary street-level imagery viewer ============ -->
   <div id="mapillary-viewer" class="hidden">
     <div class="mapillary-card">
       <div class="mapillary-header">
@@ -283,7 +323,7 @@
     </div>
   </div>
 
-  <!-- ============ Milestone 3A: offline maps management screen ============ -->
+  <!-- ============ Offline maps management screen ============ -->
   <div id="offline-panel" class="hidden">
     <div class="panel-header">
       <div class="panel-title">Offline maps</div>
@@ -318,6 +358,44 @@
       <div class="panel-section-title">Downloaded areas</div>
       <ul id="downloaded-areas-list" class="saved-list"></ul>
       <div id="storage-estimate" class="storage-estimate">—</div>
+    </div>
+  </div>
+
+  <!-- ============ Saved places — Google-Maps-style lists of favorites ============ -->
+  <div id="saved-panel" class="hidden">
+    <div class="panel-header">
+      <button id="saved-back-btn" class="icon-btn hidden" type="button" aria-label="Back to lists">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 L8 12 L15 19"/></svg>
+      </button>
+      <div id="saved-panel-title" class="panel-title">Saved places</div>
+      <button id="saved-close-btn" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+
+    <!-- Overview: every list, tap one to see what's saved in it. -->
+    <div id="saved-lists-view">
+      <div class="panel-section">
+        <div class="panel-section-title">Your lists</div>
+        <ul id="saved-lists-list" class="saved-list"></ul>
+        <button id="new-list-btn" class="secondary" type="button">+ New list</button>
+      </div>
+    </div>
+
+    <!-- Detail: one list's saved places, with rename/delete for the list itself. -->
+    <div id="saved-list-detail-view" class="hidden">
+      <div class="panel-section">
+        <div class="list-detail-header">
+          <div id="saved-list-detail-name" class="panel-section-title">—</div>
+          <button id="rename-list-btn" class="icon-btn small" type="button" aria-label="Rename list">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 l0.8-4 L16 4.8 a1.5 1.5 0 0 1 2 0 l1.2 1.2 a1.5 1.5 0 0 1 0 2 L8 19.2 Z M14 6.8 L17.2 10"/></svg>
+          </button>
+          <button id="delete-list-detail-btn" class="icon-btn small delete-btn" type="button" aria-label="Delete list">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7 h16 M9 7 V4.5 a1 1 0 0 1 1-1 h4 a1 1 0 0 1 1 1 V7 M6 7 l1 13 a1 1 0 0 0 1 1 h8 a1 1 0 0 0 1-1 l1-13"/></svg>
+          </button>
+        </div>
+        <ul id="saved-list-detail-items" class="saved-list"></ul>
+      </div>
     </div>
   </div>
 

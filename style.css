@@ -102,7 +102,7 @@ button {
 
 /* One-tap POI category chips (Google-Maps style) — a single horizontally
    scrollable row, never more, so it can't turn into the kind of permanent
-   multi-section clutter the favorites/recent card used to be. */
+   multi-section clutter a favorites/recent card would. */
 .category-chips {
   display: flex;
   gap: 8px;
@@ -235,8 +235,8 @@ button {
 .suggestions li.quick-option:active { background: var(--accent); color: #fff; }
 
 /* Recent-trip / favorite rows shown inside the suggestions dropdown when an
- * empty field is focused (Milestone 3C) — same dropdown, same footprint as
- * a normal search result, nothing permanent on screen. */
+ * empty field is focused — same dropdown, same footprint as a normal
+ * search result, nothing permanent on screen. */
 .quick-pick-text { display: inline-flex; align-items: center; gap: 10px; color: var(--accent); }
 
 .spinner {
@@ -252,7 +252,7 @@ button {
   to { transform: rotate(360deg); }
 }
 
-/* Milestone 4C: Drive/Transit segmented control, only shown when OTP2_URL is configured. */
+/* Drive/Transit segmented control, only shown when OTP2_URL is configured. */
 #travel-mode-toggle {
   display: flex;
   gap: 4px;
@@ -420,6 +420,89 @@ button {
 }
 .favorite-prompt-actions { display: flex; gap: 8px; justify-content: flex-end; }
 #favorite-prompt-save { padding: 10px 18px; font-size: 14px; font-weight: 600; background: var(--accent); color: #fff; }
+
+/* ---------------------------------------------------------------- save-to-list / list-name prompts */
+/* Unlike #favorite-prompt above (which only ever opens over the bare map,
+   in its own spot in #top-overlay's normal flow), these two can be opened
+   from inside the full-screen Saved panel (z-index 50, "move to another
+   list") or while a search-suggestions dropdown is still open (z-index 30,
+   the save-star on a result) — so they need to be fixed+centered with a
+   z-index above both rather than just sitting in the document's flow. No
+   dimming backdrop, though, consistent with every other prompt here. */
+
+#save-to-list-prompt, #list-name-prompt {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100vw - 32px));
+  z-index: 60;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+#save-to-list-prompt.hidden, #list-name-prompt.hidden { display: none; }
+
+.save-to-list-place-name { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.list-name-prompt-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+#list-name-prompt-input {
+  width: 100%;
+  font-size: 15px;
+  padding: 10px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.radio-list { max-height: 30vh; }
+.radio-list li {
+  padding: 10px 8px;
+  cursor: pointer;
+}
+.radio-list li:active { background: var(--panel-2); }
+.radio-dot {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  position: relative;
+}
+.radio-list li.selected .radio-dot { border-color: var(--accent); }
+.radio-list li.selected .radio-dot::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.save-to-list-new-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 8px 12px;
+}
+.save-to-list-new-row input {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------- saved-places panel (lists of favorites) */
+
+.list-detail-header { display: flex; align-items: center; gap: 4px; margin-bottom: 12px; }
+.list-detail-header .panel-section-title { flex: 1; min-width: 0; margin-bottom: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------------------------------------------------------- next-turn card */
 
@@ -590,26 +673,49 @@ button {
 .route-option-dist { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
 .route-option-tag { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 3px; }
 
-/* "Search along the route" popover — the chip row itself is unchanged
-   (.category-chips above), but as a floating popover (opened from the
-   search icon in #map-controls, see app.js) rather than embedded content it
-   needs its own card chrome and fixed positioning. `bottom` is set inline
-   by app.js at open time — computed from the button's own position so it
-   always lands just above it regardless of how tall the FAB stack is
-   (Mapillary's button is conditional). `max-width` keeps it well short of
-   covering the screen even with all 8 categories on a narrow phone. */
+/* "Search along the route" popover — reuses .category-chips/.chip for
+   content and click handling, laid out as a vertical list of full-width
+   rows so it's easy to tap one-handed while the phone is mounted driving.
+   As a floating popover (opened from the search icon in #map-controls, see
+   app.js) it needs its own card chrome and fixed positioning. `bottom` and
+   `max-height` are set inline by app.js at open time, computed from the
+   button's own live position, so it always lands just above it regardless
+   of how tall the FAB stack is (Mapillary's button is conditional) and
+   never runs past the top of the screen on a short phone. `max-width`
+   keeps it well short of covering the screen on a narrow phone; the
+   `max-height`/`overflow-y` below are a fallback in case the inline value
+   isn't set, with internal scrolling once the list is taller than that. */
 .route-chips-popover {
   position: fixed;
   right: 14px;
   z-index: 22;
   max-width: calc(100vw - 28px);
+  width: 230px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   background: var(--panel);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 6px 8px;
+  padding: 6px;
   margin-top: 0;
 }
 .route-chips-popover.hidden { display: none; }
+
+/* Inside the popover, chips become full-width list rows (icon + label,
+   left-aligned) rather than the small centered pill shape used in the
+   horizontal category rows elsewhere — a wider, taller tap target that's
+   easier to hit one-handed and reads as a normal vertical menu. */
+.route-chips-popover .chip {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 10px;
+  padding: 13px 14px;
+  font-size: 14.5px;
+}
 
 #poi-results-header {
   display: flex;
@@ -663,7 +769,7 @@ button {
 #maneuver-list li.active .m-icon { background: var(--accent); color: #fff; }
 #maneuver-list li.done { opacity: 0.45; }
 
-/* ---------------------------------------------------------------- Mapillary viewer (Milestone 4A) */
+/* ---------------------------------------------------------------- Mapillary viewer */
 
 #mapillary-viewer {
   position: fixed;
@@ -724,9 +830,9 @@ button {
   text-align: center;
 }
 
-/* ---------------------------------------------------------------- offline maps panel (Milestone 3A) */
+/* ---------------------------------------------------------------- offline maps panel */
 
-#offline-panel {
+#offline-panel, #saved-panel {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -734,7 +840,7 @@ button {
   overflow-y: auto;
   padding: max(16px, env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
-#offline-panel.hidden { display: none; }
+#offline-panel.hidden, #saved-panel.hidden { display: none; }
 
 .panel-header {
   display: flex;

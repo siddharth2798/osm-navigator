@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import {
-  addFavorite, getFavorites, deleteFavorite,
+  addFavorite, getFavorites, deleteFavorite, moveFavoriteToList,
+  addList, getLists, renameList, deleteList,
   addRecentTrip, getRecentTrips, deleteRecentTrip,
   addDownloadedArea, getDownloadedAreas, deleteDownloadedArea,
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
@@ -29,8 +30,10 @@ const el = {
   placeCardSecondary: document.getElementById('place-card-secondary'),
   placeCardActions: document.getElementById('place-card-actions'),
   placeDirectionsBtn: document.getElementById('place-directions-btn'),
+  placeCardSaveBtn: document.getElementById('place-card-save-btn'),
   placeClearBtn: document.getElementById('place-clear-btn'),
   offlineBtn: document.getElementById('offline-btn'),
+  savedBtn: document.getElementById('saved-btn'),
   categoryChips: document.getElementById('category-chips'),
   routeOptionsRow: document.getElementById('route-options'),
   routeChips: document.getElementById('route-chips'),
@@ -42,6 +45,18 @@ const el = {
   favoritePromptInput: document.getElementById('favorite-prompt-input'),
   favoritePromptCancel: document.getElementById('favorite-prompt-cancel'),
   favoritePromptSave: document.getElementById('favorite-prompt-save'),
+  listNamePrompt: document.getElementById('list-name-prompt'),
+  listNamePromptTitle: document.getElementById('list-name-prompt-title'),
+  listNamePromptInput: document.getElementById('list-name-prompt-input'),
+  listNamePromptCancel: document.getElementById('list-name-prompt-cancel'),
+  listNamePromptSave: document.getElementById('list-name-prompt-save'),
+  saveToListPrompt: document.getElementById('save-to-list-prompt'),
+  saveToListPlaceName: document.getElementById('save-to-list-place-name'),
+  saveToListOptions: document.getElementById('save-to-list-options'),
+  saveToListNewName: document.getElementById('save-to-list-new-name'),
+  saveToListNewBtn: document.getElementById('save-to-list-new-btn'),
+  saveToListCancel: document.getElementById('save-to-list-cancel'),
+  saveToListSave: document.getElementById('save-to-list-save'),
   searchDirections: document.getElementById('search-directions'),
   directionsBackBtn: document.getElementById('directions-back-btn'),
   fromInput: document.getElementById('from-input'),
@@ -81,6 +96,18 @@ const el = {
   cancelDownloadBtn: document.getElementById('cancel-download-btn'),
   downloadedAreasList: document.getElementById('downloaded-areas-list'),
   storageEstimate: document.getElementById('storage-estimate'),
+  savedPanel: document.getElementById('saved-panel'),
+  savedBackBtn: document.getElementById('saved-back-btn'),
+  savedPanelTitle: document.getElementById('saved-panel-title'),
+  savedCloseBtn: document.getElementById('saved-close-btn'),
+  savedListsView: document.getElementById('saved-lists-view'),
+  savedListsList: document.getElementById('saved-lists-list'),
+  newListBtn: document.getElementById('new-list-btn'),
+  savedListDetailView: document.getElementById('saved-list-detail-view'),
+  savedListDetailName: document.getElementById('saved-list-detail-name'),
+  renameListBtn: document.getElementById('rename-list-btn'),
+  deleteListDetailBtn: document.getElementById('delete-list-detail-btn'),
+  savedListDetailItems: document.getElementById('saved-list-detail-items'),
   mapillaryToggleBtn: document.getElementById('mapillary-toggle-btn'),
   mapillaryViewer: document.getElementById('mapillary-viewer'),
   mapillaryCloseBtn: document.getElementById('mapillary-close-btn'),
@@ -102,7 +129,7 @@ const state = {
   route: null,         // {coords, maneuvers, totalDistM, totalTimeS, lineFeature}
   routeOptions: [],    // raw Valhalla trip objects: [primary, ...meaningfully-different alternates]
   selectedRouteIndex: 0, // which entry of routeOptions is currently drawn/active
-  travelMode: 'drive', // 'drive' | 'transit' (Milestone 4C — transit has no live-navigation counterpart)
+  travelMode: 'drive', // 'drive' | 'transit' — transit has no live-navigation counterpart
   transitItinerary: null, // last-planned OTP2 itinerary, kept separate from `route` since it's a different shape
   originMarker: null,
   destMarker: null,
@@ -222,16 +249,43 @@ window.addEventListener('popstate', () => {
 // Small utilities
 // ============================================================================
 
+/** Plain `fetch()` has no timeout — a degraded or throttled connection to a
+ * public demo server can otherwise leave "Finding route…" (or a search)
+ * spinning forever on a promise that may never settle, instead of ever
+ * failing with a clear, retryable error. AbortController gives fetch itself
+ * something to reject on once the clock runs out. */
+async function fetchWithTimeout(url, options = {}, timeoutMs = CONFIG.FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Ensures calls spaced at least `minIntervalMs` apart — used to respect the
- * fair-use / rate limits of the public Nominatim and Valhalla instances. */
+ * fair-use / rate limits of the public Nominatim and Valhalla instances.
+ * Callers are chained onto a shared queue so concurrent calls (e.g. a
+ * debounced search firing again before an earlier keystroke's request has
+ * finished) take their turn one at a time, rather than racing to read/write
+ * `lastCall` independently — that race let bursts of calls through at once
+ * instead of properly spacing them out, which is exactly the kind of burst
+ * a fair-use rate limit is meant to prevent, and public instances that see
+ * one tend to throttle the offending client hard for a while afterward. */
 function createLimiter(minIntervalMs) {
   let lastCall = 0;
-  return async function wait() {
-    const now = Date.now();
-    const remaining = lastCall + minIntervalMs - now;
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
-    lastCall = Date.now();
-  };
+  let queue = Promise.resolve();
+  function wait() {
+    const myTurn = queue.then(async () => {
+      const remaining = lastCall + minIntervalMs - Date.now();
+      if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
+      lastCall = Date.now();
+    });
+    queue = myTurn;
+    return myTurn;
+  }
+  return wait;
 }
 
 function formatDistance(m) {
@@ -442,6 +496,26 @@ function emptyFeatureCollection() {
 }
 
 const mapLoad = new Promise((resolve) => map.on('load', resolve));
+
+/** `mapLoad` itself never rejects — MapLibre's 'load' event either fires or
+ * it doesn't, with nothing to catch. If the map's style/tiles never finish
+ * loading (a flaky connection, a blocked CDN, anything short of a full
+ * network failure that map.on('error') would already surface elsewhere),
+ * every caller awaiting the bare promise directly would hang forever with
+ * no way to recover short of reloading the page — indistinguishable from
+ * "Finding route…" or a search just spinning endlessly. This races it
+ * against a bounded timeout instead, so the wait always eventually ends in
+ * a clear, actionable error. */
+function awaitMapLoad() {
+  return Promise.race([
+    mapLoad,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('The map failed to load — check your connection and reload the page.')),
+      CONFIG.MAP_LOAD_TIMEOUT_MS,
+    )),
+  ]);
+}
+
 mapLoad.then(() => {
   // Alternate routes render UNDER the primary line (added first, so later
   // layers draw on top) — muted gray, tappable to switch to that option,
@@ -469,9 +543,9 @@ mapLoad.then(() => {
   map.on('mouseenter', 'route-alternates-line', () => { map.getCanvas().style.cursor = 'pointer'; });
   map.on('mouseleave', 'route-alternates-line', () => { map.getCanvas().style.cursor = ''; });
 
-  // Milestone 4C: harmless to always add — an empty source costs nothing,
-  // and it keeps the "is transit configured" gating limited to the UI/network
-  // logic below rather than needing to be threaded through map setup too.
+  // Harmless to always add — an empty source costs nothing, and it keeps
+  // the "is transit configured" gating limited to the UI/network logic
+  // below rather than needing to be threaded through map setup too.
   map.addSource('transit-route', { type: 'geojson', data: emptyFeatureCollection() });
   map.addLayer({
     id: 'transit-route-walk',
@@ -690,7 +764,7 @@ el.locateBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// Milestone 4A — Mapillary street-level imagery peek
+// Mapillary street-level imagery peek
 //
 // Entirely config-gated: with no MAPILLARY_ACCESS_TOKEN set, none of this
 // runs — no coverage layer, no street-view buttons anywhere, no network
@@ -728,7 +802,7 @@ if (MAPILLARY_ENABLED) {
   el.mapillaryToggleBtn.addEventListener('click', async () => {
     mapillaryLayerVisible = !mapillaryLayerVisible;
     el.mapillaryToggleBtn.classList.toggle('active', mapillaryLayerVisible);
-    await mapLoad;
+    await awaitMapLoad();
     map.setLayoutProperty('mapillary-coverage-layer', 'visibility', mapillaryLayerVisible ? 'visible' : 'none');
     if (mapillaryLayerVisible && map.getZoom() < CONFIG.MAPILLARY_COVERAGE_MIN_ZOOM) {
       showStatus('Zoom in to see where street-level imagery is available.', 'info');
@@ -871,7 +945,7 @@ function streetViewButton(lat, lon) {
 }
 
 // ============================================================================
-// Milestone 3A — offline map tiles for a chosen region
+// Offline map tiles for a chosen region
 //
 // The download itself doesn't go through the service worker at all: the
 // Cache API is available from the page just as it is from a service worker,
@@ -1127,9 +1201,9 @@ el.cancelDownloadBtn.addEventListener('click', () => {
 // ============================================================================
 const nominatimLimiter = createLimiter(CONFIG.NOMINATIM_MIN_INTERVAL_MS);
 
-// Session-only cache keyed by normalized query text (Milestone 3B): re-searching
-// something already looked up this session returns instantly with no network
-// call, no rate-limit wait, and works even with no connection at all.
+// Session-only cache keyed by normalized query text: re-searching something
+// already looked up this session returns instantly with no network call,
+// no rate-limit wait, and works even with no connection at all.
 const nominatimCache = new Map();
 
 /** Empty string when GEOCODE_COUNTRY_CODES is unset, so callers can just
@@ -1148,9 +1222,11 @@ async function nominatimSearch(qParam, extraParams = '') {
   const url = `${CONFIG.NOMINATIM_URL}/search?format=jsonv2&limit=10&q=${encodeURIComponent(qParam)}${countryCodesParam()}${extraParams}`;
   let res;
   try {
-    res = await fetch(url, { headers: { Accept: 'application/json' } });
+    res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
   } catch (err) {
-    throw new Error('Could not reach the geocoding service. Check your connection or the Nominatim server address.');
+    throw new Error(err.name === 'AbortError'
+      ? 'The geocoding service is taking too long to respond. Try again in a moment.'
+      : 'Could not reach the geocoding service. Check your connection or the Nominatim server address.');
   }
   if (!res.ok) throw new Error(`The geocoding service returned an error (HTTP ${res.status}).`);
   const data = await res.json();
@@ -1176,7 +1252,7 @@ function decorateWithDistance(results, lat, lon) {
 
 /** Same idea as decorateWithDistance, but for "along the route" results:
  * snaps each result onto the route line (the same turf.nearestPointOnLine
- * used for live GPS snapping in Milestone 2) so `.distanceM` is distance
+ * used for live GPS snapping) so `.distanceM` is distance
  * *along the route* to the nearest point — "comes up in 12km", not a
  * straight-line distance from the start that a winding road would make
  * misleading. Also drops anything too far off the route to plausibly be
@@ -1419,22 +1495,25 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
       onSelect(r);
     });
 
-    // Save-to-favorites star (Milestone 3C) — stopPropagation so tapping
-    // it saves the place without also picking it as the field's value.
+    // Save-to-favorites star — stopPropagation so tapping it opens the
+    // "which list?" prompt without also picking the result as the field's
+    // value. See openSaveToListPrompt.
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     saveBtn.className = 'save-btn';
     saveBtn.setAttribute('aria-label', 'Save to favorites');
     saveBtn.innerHTML = starIcon();
-    saveBtn.addEventListener('click', async (e) => {
+    saveBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      try {
-        await addFavorite({ label: r.label, lat: r.lat, lon: r.lon });
-        saveBtn.classList.add('saved');
-        showStatus('Saved to favorites.', 'success');
-      } catch (err) {
-        showStatus('Could not save this favorite: ' + err.message, 'error');
-      }
+      openSaveToListPrompt(splitPlaceLabel(r.label).primary, null, async (listId) => {
+        try {
+          await addFavorite({ label: r.label, lat: r.lat, lon: r.lon, listId });
+          saveBtn.classList.add('saved');
+          showStatus('Saved to favorites.', 'success');
+        } catch (err) {
+          showStatus('Could not save this favorite: ' + err.message, 'error');
+        }
+      });
     });
 
     li.appendChild(text);
@@ -1597,8 +1676,8 @@ async function addStopFromPoi(picked) {
   try {
     // Mid-drive (picked from the "ahead" search), route from where you
     // actually are, through only the stops not yet visited — exactly like
-    // triggerReroute's off-route recalculation. Otherwise (still planning)
-    // this is unchanged: from the origin, through every stop.
+    // triggerReroute's off-route recalculation. Otherwise (still planning),
+    // route from the origin through every stop, as usual.
     const isMidDrive = state.navigating && state.lastFix;
     const fromPoint = isMidDrive ? { lat: state.lastFix.lat, lon: state.lastFix.lng } : state.from;
     const stops = isMidDrive ? getStops().slice(state.currentLegIndex) : getStops();
@@ -1623,7 +1702,16 @@ async function addStopFromPoi(picked) {
  * both close it via goBackInApp. */
 function openRouteChipsPopover() {
   const btnRect = el.routeSearchBtn.getBoundingClientRect();
-  el.routeChips.style.bottom = `${window.innerHeight - btnRect.top + 10}px`;
+  const bottomOffset = window.innerHeight - btnRect.top + 10;
+  el.routeChips.style.bottom = `${bottomOffset}px`;
+  // A vertical list can be tall enough to run past the top of a short
+  // phone screen — cap its height to whatever space is actually left above
+  // it (minus a small margin), with a floor so it doesn't collapse to
+  // nothing on the shortest screens; the popover scrolls internally (see
+  // .route-chips-popover overflow-y) if even that isn't enough room for
+  // all 8 categories.
+  const availableHeight = window.innerHeight - bottomOffset - 10;
+  el.routeChips.style.maxHeight = `${Math.max(availableHeight, 160)}px`;
   el.routeChips.classList.remove('hidden');
   el.routeSearchBtn.classList.add('active');
   el.routeSearchBtn.setAttribute('aria-expanded', 'true');
@@ -1740,7 +1828,7 @@ el.routeChips.querySelectorAll('.chip').forEach((btn) => {
 
 /** Switches the search card between the single-search view and the from/to
  * directions editor. Shared by the "Directions" button, the back arrow, and
- * tapping a favorite/recent entry (Milestone 3C), so there's one place that
+ * tapping a favorite/recent entry, so there's one place that
  * knows which sibling elements need to hide/show together. Doesn't touch the
  * back-stack itself — callers decide whether entering directions is a new
  * layer (pushBackLayer) or just a mode flip within a layer already tracked
@@ -1795,7 +1883,7 @@ el.placeDirectionsBtn.addEventListener('click', () => {
 el.directionsBackBtn.addEventListener('click', goBackInApp);
 
 // ============================================================================
-// Milestone 3C — favorites & recent trips
+// Favorites & recent trips
 //
 // Google-Maps-style placement: these never occupy permanent screen space.
 // They appear inside a field's own suggestions dropdown the moment you focus
@@ -1985,7 +2073,7 @@ async function handleLongPress(lngLat) {
   showStatus('Looking up this location…', 'info');
   let label = `${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)}`;
   try {
-    const res = await fetch(`${CONFIG.NOMINATIM_URL}/reverse?format=jsonv2&lat=${lngLat.lat}&lon=${lngLat.lng}`);
+    const res = await fetchWithTimeout(`${CONFIG.NOMINATIM_URL}/reverse?format=jsonv2&lat=${lngLat.lat}&lon=${lngLat.lng}`);
     if (res.ok) {
       const data = await res.json();
       if (data && data.display_name) label = data.display_name;
@@ -2013,18 +2101,326 @@ function hideFavoritePrompt() {
   if (favoritePromptMarker) { favoritePromptMarker.remove(); favoritePromptMarker = null; }
 }
 el.favoritePromptCancel.addEventListener('click', goBackInApp);
-el.favoritePromptSave.addEventListener('click', async () => {
+el.favoritePromptSave.addEventListener('click', () => {
   const name = el.favoritePromptInput.value.trim() || 'Saved place';
   const lat = parseFloat(el.favoritePrompt.dataset.lat);
   const lon = parseFloat(el.favoritePrompt.dataset.lon);
+  // Closes as a side effect of Save (not its own dismiss control) — pop our
+  // own stack entry directly rather than goBackInApp(), so the very next
+  // line can safely pushBackLayer() again for the list-picker without
+  // racing history's own (asynchronous) popstate delivery.
+  forgetBackLayerIfTop(hideFavoritePrompt);
+  hideFavoritePrompt();
+  openSaveToListPrompt(name, null, async (listId) => {
+    try {
+      await addFavorite({ label: name, lat, lon, listId });
+      showStatus('Saved to favorites.', 'success');
+    } catch (err) {
+      showStatus('Could not save this favorite: ' + err.message, 'error');
+    }
+  });
+});
+
+// ============================================================================
+// Saved places — a real, browsable "Saved" screen (opened via the bookmark
+// icon in the search bar) organized into renameable lists, Google-Maps-style.
+// Every "save to favorites" entry point in the app (the star on a search
+// result, the star on the place card, and the long-press-on-map prompt
+// above) funnels through openSaveToListPrompt so saving always means
+// "saving to a specific list", not just a flat undifferentiated pile.
+// ============================================================================
+
+function folderIcon() {
+  return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" '
+    + 'stroke-linecap="round" stroke-linejoin="round"><path d="M3 6 a1 1 0 0 1 1-1 h5 l2 2 h9 a1 1 0 0 1 1 1 v10 '
+    + 'a1 1 0 0 1-1 1 H4 a1 1 0 0 1-1-1 Z"/></svg>';
+}
+
+// ---- "Which list?" prompt: shared by every save action and by moving an
+// existing favorite to a different list from the Saved screen. ------------
+
+let saveToListConfirm = null;
+let saveToListSelectedId = null;
+
+/** Opens the list-picker for saving/moving `placeLabel`. `preselectedListId`
+ * is highlighted first (a favorite's current list when moving it; null when
+ * saving something new, which falls back to the first/default list).
+ * `onConfirm(listId)` runs only if Save is tapped, never on Cancel. */
+async function openSaveToListPrompt(placeLabel, preselectedListId, onConfirm) {
+  // The save-star that opens this lives inside a still-open suggestions
+  // dropdown — tidy it away so it's not sitting underneath the prompt.
+  [el.placeSuggestions, el.fromSuggestions, el.toSuggestions].forEach(hideSuggestionList);
+  el.saveToListPlaceName.textContent = placeLabel;
+  let lists = [];
   try {
-    await addFavorite({ label: name, lat, lon });
-    showStatus('Saved to favorites.', 'success');
+    lists = await getLists();
+    if (!lists.length) { await addList({ name: 'Favorites' }); lists = await getLists(); }
   } catch (err) {
-    showStatus('Could not save this favorite: ' + err.message, 'error');
-  } finally {
-    goBackInApp();
+    showStatus('Could not load your lists: ' + err.message, 'error');
   }
+  saveToListSelectedId = (preselectedListId != null && lists.some((l) => l.id === preselectedListId))
+    ? preselectedListId
+    : (lists[0] ? lists[0].id : null);
+  renderSaveToListOptions(lists);
+  el.saveToListNewName.value = '';
+  saveToListConfirm = onConfirm;
+  if (el.saveToListPrompt.classList.contains('hidden')) pushBackLayer(closeSaveToListPrompt);
+  el.saveToListPrompt.classList.remove('hidden');
+}
+function closeSaveToListPrompt() {
+  el.saveToListPrompt.classList.add('hidden');
+}
+function renderSaveToListOptions(lists) {
+  el.saveToListOptions.innerHTML = '';
+  lists.forEach((list) => {
+    const li = document.createElement('li');
+    li.className = list.id === saveToListSelectedId ? 'selected' : '';
+    li.innerHTML = `<span class="radio-dot" aria-hidden="true"></span><span>${escapeHtml(list.name)}</span>`;
+    li.addEventListener('click', () => {
+      saveToListSelectedId = list.id;
+      renderSaveToListOptions(lists);
+    });
+    el.saveToListOptions.appendChild(li);
+  });
+}
+el.saveToListNewBtn.addEventListener('click', async () => {
+  const name = el.saveToListNewName.value.trim();
+  if (!name) return;
+  try {
+    const id = await addList({ name });
+    saveToListSelectedId = id;
+    el.saveToListNewName.value = '';
+    renderSaveToListOptions(await getLists());
+  } catch (err) {
+    showStatus('Could not create that list: ' + err.message, 'error');
+  }
+});
+el.saveToListCancel.addEventListener('click', goBackInApp);
+el.saveToListSave.addEventListener('click', () => {
+  const confirmFn = saveToListConfirm;
+  const listId = saveToListSelectedId;
+  goBackInApp(); // closes the prompt; none of the confirm callbacks below push a back-layer of their own
+  if (confirmFn && listId != null) confirmFn(listId);
+});
+
+// ---- Create/rename-list prompt: reused for both (the title and prefilled
+// value are set by the caller depending on which). -------------------------
+
+let listNamePromptConfirm = null;
+function openListNamePrompt(title, initialValue, onConfirm) {
+  el.listNamePromptTitle.textContent = title;
+  el.listNamePromptInput.value = initialValue;
+  listNamePromptConfirm = onConfirm;
+  if (el.listNamePrompt.classList.contains('hidden')) pushBackLayer(closeListNamePrompt);
+  el.listNamePrompt.classList.remove('hidden');
+  el.listNamePromptInput.focus();
+}
+function closeListNamePrompt() {
+  el.listNamePrompt.classList.add('hidden');
+}
+el.listNamePromptCancel.addEventListener('click', goBackInApp);
+el.listNamePromptSave.addEventListener('click', () => {
+  const name = el.listNamePromptInput.value.trim();
+  if (!name) { showStatus('Enter a list name.', 'error'); return; }
+  const confirmFn = listNamePromptConfirm;
+  goBackInApp();
+  if (confirmFn) confirmFn(name);
+});
+
+// ---- The Saved screen itself: an overview of every list, and a per-list
+// detail view with rename/delete for the list and move/delete per place. --
+
+let openSavedListId = null; // which list the detail view is currently showing, if any
+
+async function renderSavedLists() {
+  let lists = [];
+  let favorites = [];
+  try {
+    lists = await getLists();
+    if (!lists.length) { await addList({ name: 'Favorites' }); lists = await getLists(); }
+    favorites = await getFavorites();
+  } catch (err) {
+    showStatus('Could not load your saved lists: ' + err.message, 'error');
+  }
+  el.savedListsList.innerHTML = '';
+  lists.forEach((list) => {
+    const count = favorites.filter((f) => f.listId === list.id).length;
+    const li = document.createElement('li');
+    const body = document.createElement('div');
+    body.className = 'saved-item-body';
+    body.innerHTML = `<div class="saved-item-title">${escapeHtml(list.name)}</div>`
+      + `<div class="saved-item-meta">${count} place${count === 1 ? '' : 's'}</div>`;
+    body.addEventListener('click', () => openSavedListDetail(list.id));
+    li.appendChild(body);
+    el.savedListsList.appendChild(li);
+  });
+}
+
+async function renderSavedListDetail(listId) {
+  const lists = await getLists().catch(() => []);
+  const list = lists.find((l) => l.id === listId);
+  const name = list ? list.name : 'List';
+  el.savedListDetailName.textContent = name;
+  el.savedPanelTitle.textContent = name;
+
+  let favorites = [];
+  try {
+    favorites = await getFavorites(listId);
+  } catch (err) {
+    showStatus('Could not load this list: ' + err.message, 'error');
+  }
+  el.savedListDetailItems.innerHTML = '';
+  if (!favorites.length) {
+    el.savedListDetailItems.innerHTML = '<li class="empty">Nothing saved here yet.</li>';
+    return;
+  }
+  favorites.forEach((fav) => {
+    const li = document.createElement('li');
+    const body = document.createElement('div');
+    body.className = 'saved-item-body';
+    body.innerHTML = `<div class="saved-item-title">${escapeHtml(splitPlaceLabel(fav.name).primary)}</div>`;
+    body.addEventListener('click', () => {
+      closeSavedPanelEntirely();
+      goToDirections({ to: { label: fav.name, lat: fav.lat, lon: fav.lon } });
+    });
+
+    const moveBtn = document.createElement('button');
+    moveBtn.type = 'button';
+    moveBtn.className = 'icon-btn small';
+    moveBtn.setAttribute('aria-label', 'Move to another list');
+    moveBtn.innerHTML = folderIcon();
+    moveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSaveToListPrompt(splitPlaceLabel(fav.name).primary, fav.listId, async (newListId) => {
+        try {
+          await moveFavoriteToList(fav.id, newListId);
+          await renderSavedListDetail(listId);
+        } catch (err) {
+          showStatus('Could not move this favorite: ' + err.message, 'error');
+        }
+      });
+    });
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'icon-btn small delete-btn';
+    del.setAttribute('aria-label', 'Delete');
+    del.innerHTML = trashIcon();
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await deleteFavorite(fav.id);
+        await renderSavedListDetail(listId);
+      } catch (err) {
+        showStatus('Could not delete this favorite: ' + err.message, 'error');
+      }
+    });
+
+    li.appendChild(body);
+    li.appendChild(moveBtn);
+    li.appendChild(del);
+    el.savedListDetailItems.appendChild(li);
+  });
+}
+
+function showSavedListsView() {
+  openSavedListId = null;
+  el.savedListDetailView.classList.add('hidden');
+  el.savedListsView.classList.remove('hidden');
+  el.savedBackBtn.classList.add('hidden');
+  el.savedPanelTitle.textContent = 'Saved places';
+}
+/** The detail view's own back-layer close callback: stepping back from a
+ * list always lands on the overview, never fully closes the Saved screen
+ * (see #saved-close-btn below for that). Refreshes the overview's per-list
+ * counts since favorites may have moved/been deleted while inside. */
+function closeSavedListDetail() {
+  showSavedListsView();
+  renderSavedLists().catch(() => { /* non-critical UI refresh */ });
+}
+async function openSavedListDetail(listId) {
+  openSavedListId = listId;
+  pushBackLayer(closeSavedListDetail);
+  el.savedListsView.classList.add('hidden');
+  el.savedListDetailView.classList.remove('hidden');
+  el.savedBackBtn.classList.remove('hidden');
+  await renderSavedListDetail(listId);
+}
+
+function closeSavedPanel() {
+  el.savedPanel.classList.add('hidden');
+}
+/** Closes the whole Saved screen as a side effect of picking a place to
+ * route to, regardless of whether the detail view is open on top of the
+ * overview — same two-layers-at-once teardown pattern as
+ * hideRouteSearchFeature/closeRouteChipsPopover elsewhere in this file. */
+function closeSavedPanelEntirely() {
+  if (!el.savedListDetailView.classList.contains('hidden')) forgetBackLayerIfTop(closeSavedListDetail);
+  forgetBackLayerIfTop(closeSavedPanel);
+  showSavedListsView();
+  closeSavedPanel();
+}
+
+el.savedBtn.addEventListener('click', async () => {
+  pushBackLayer(closeSavedPanel);
+  showSavedListsView();
+  el.savedPanel.classList.remove('hidden');
+  await renderSavedLists();
+});
+el.savedBackBtn.addEventListener('click', goBackInApp);
+el.savedCloseBtn.addEventListener('click', () => {
+  // Always exits the whole screen in one tap, even from inside a list's
+  // detail view — same behaviour as Google Maps' Saved screen close button.
+  if (!el.savedListDetailView.classList.contains('hidden')) {
+    forgetBackLayerIfTop(closeSavedListDetail);
+    showSavedListsView();
+  }
+  goBackInApp();
+});
+el.newListBtn.addEventListener('click', () => {
+  openListNamePrompt('New list', '', async (name) => {
+    try {
+      await addList({ name });
+      await renderSavedLists();
+    } catch (err) {
+      showStatus('Could not create that list: ' + err.message, 'error');
+    }
+  });
+});
+el.renameListBtn.addEventListener('click', async () => {
+  if (openSavedListId == null) return;
+  const lists = await getLists().catch(() => []);
+  const list = lists.find((l) => l.id === openSavedListId);
+  openListNamePrompt('Rename list', list ? list.name : '', async (name) => {
+    try {
+      await renameList(openSavedListId, name);
+      await renderSavedListDetail(openSavedListId);
+    } catch (err) {
+      showStatus('Could not rename this list: ' + err.message, 'error');
+    }
+  });
+});
+el.deleteListDetailBtn.addEventListener('click', async () => {
+  if (openSavedListId == null) return;
+  try {
+    await deleteList(openSavedListId);
+    showStatus('List deleted — its saved places moved to your other list.', 'success');
+    goBackInApp(); // back to the overview; closeSavedListDetail refreshes counts
+  } catch (err) {
+    showStatus(err.message, 'error');
+  }
+});
+el.placeCardSaveBtn.addEventListener('click', () => {
+  if (!state.to) return;
+  const { label, lat, lon } = state.to;
+  openSaveToListPrompt(splitPlaceLabel(label).primary, null, async (listId) => {
+    try {
+      await addFavorite({ label, lat, lon, listId });
+      showStatus('Saved to favorites.', 'success');
+    } catch (err) {
+      showStatus('Could not save this favorite: ' + err.message, 'error');
+    }
+  });
 });
 
 // ---- Directions view: from/to fields ----
@@ -2249,10 +2645,10 @@ function checkRoutePlausibility(trip, from, to, hasStops = false) {
   return null;
 }
 
-// Session-only cache keyed by the rounded waypoint list (Milestone-5 polish
-// pass): re-planning the exact same trip — tapping "Get directions" twice,
-// going back into directions and re-submitting unchanged — returns instantly
-// with no network call. Rounding to ~1m precision means it still hits on
+// Session-only cache keyed by the rounded waypoint list: re-planning the
+// exact same trip — tapping "Get directions" twice, or going back into
+// directions and re-submitting the same origin/destination/stops — returns
+// instantly with no network call. Rounding to ~1m precision means it still hits on
 // float-noise-identical coordinates without accidentally caching two
 // genuinely different nearby points as "the same" request. Live-position
 // reroutes are never cache hits (the coordinates are different every time by
@@ -2311,13 +2707,15 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0) {
   if (wantAlternates > 0) body.alternates = wantAlternates;
   let res;
   try {
-    res = await fetch(`${CONFIG.VALHALLA_URL}/route`, {
+    res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/route`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch (err) {
-    throw new Error('Could not reach the routing service. Check your connection or the Valhalla server address.');
+    throw new Error(err.name === 'AbortError'
+      ? 'The routing service is taking too long to respond. Try again in a moment.'
+      : 'Could not reach the routing service. Check your connection or the Valhalla server address.');
   }
   if (!res.ok) {
     let detail = '';
@@ -2365,7 +2763,7 @@ async function updateAlternateRouteLines() {
       properties: { optionIndex: i },
       geometry: { type: 'LineString', coordinates: decodeTripCoords(trip) },
     }));
-  await mapLoad;
+  await awaitMapLoad();
   map.getSource('route-alternates').setData({ type: 'FeatureCollection', features });
 }
 
@@ -2380,7 +2778,7 @@ async function renderRouteOptions() {
   el.routeOptionsRow.innerHTML = '';
   if (state.routeOptions.length < 2) {
     el.routeOptionsRow.classList.add('hidden');
-    await mapLoad;
+    await awaitMapLoad();
     map.getSource('route-alternates').setData(emptyFeatureCollection());
     return;
   }
@@ -2422,7 +2820,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.spoken = new Set();
   state.arrivedAnnounced = false;
 
-  await mapLoad;
+  await awaitMapLoad();
   map.getSource('route').setData(built.lineFeature);
 
   if (fitView) {
@@ -2438,10 +2836,10 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   el.bottomSheet.classList.remove('hidden');
   el.mapControls.classList.add('raised');
 
-  // Milestone 3B: persist the route so a killed/reloaded tab mid-drive can
-  // restore it without a network round trip. Non-fatal if it fails — the
-  // trip keeps working from in-memory state either way, this only affects
-  // whether it survives a reload.
+  // Persists the route so a killed/reloaded tab mid-drive can restore it
+  // without a network round trip. Non-fatal if it fails — the trip keeps
+  // working from in-memory state either way, this only affects whether it
+  // survives a reload.
   try {
     await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops() });
   } catch (err) {
@@ -2481,15 +2879,15 @@ function highlightManeuver(idx) {
 }
 
 // ============================================================================
-// Milestone 4C — Transit mode via OpenTripPlanner 2
+// Transit mode via OpenTripPlanner 2
 //
 // Entirely config-gated on OTP2_URL, same philosophy as Mapillary: with
 // nothing configured, the mode toggle never appears and none of this runs.
 // Scope note: this covers planning + distinct rendering + transit-specific
 // maneuver text only, not live GPS-guided transit navigation — boarding/
 // alighting detection for buses and trains is a materially different
-// problem from Milestone 2's road-snapping and was out of scope here, so
-// "Start navigation" simply isn't offered for a transit itinerary.
+// problem from turn-by-turn road-snapping, so "Start navigation" simply
+// isn't offered for a transit itinerary.
 // ============================================================================
 const TRANSIT_ENABLED = !!CONFIG.OTP2_URL;
 
@@ -2524,9 +2922,11 @@ async function requestTransitRoute(from, to) {
     + `&toPlace=${to.lat},${to.lon}&mode=TRANSIT,WALK&numItineraries=1`;
   let res;
   try {
-    res = await fetch(url);
+    res = await fetchWithTimeout(url);
   } catch (err) {
-    throw new Error('Could not reach the transit routing service. Check your connection or the OTP2 server address.');
+    throw new Error(err.name === 'AbortError'
+      ? 'The transit routing service is taking too long to respond. Try again in a moment.'
+      : 'Could not reach the transit routing service. Check your connection or the OTP2 server address.');
   }
   if (!res.ok) throw new Error(`The transit routing service returned an error (HTTP ${res.status}).`);
   const data = await res.json();
@@ -2573,7 +2973,7 @@ async function renderTransitRoute(itinerary) {
     geometry: { type: 'LineString', coordinates: decodePolyline(leg.legGeometry.points, 5) },
   }));
 
-  await mapLoad;
+  await awaitMapLoad();
   map.getSource('route').setData(emptyFeatureCollection()); // clear any driving route
   map.getSource('transit-route').setData({ type: 'FeatureCollection', features });
 
@@ -2624,9 +3024,21 @@ el.planBtn.addEventListener('click', async () => {
       const warning = checkRoutePlausibility(trip, state.from, state.to, stops.length > 0);
       if (warning) showStatus(warning, 'error'); else clearStatus();
     }
+    // Records as soon as a route is successfully found — a "recent search",
+    // not a "completed trip" — so it shows up in the from/to fields' quick
+    // picks (see showQuickPicksFor) whether or not you ever tap "Start
+    // navigation". Covers both drive and transit, and re-planning the same
+    // origin/destination just bumps it to the top instead of duplicating
+    // (see addRecentTrip). Non-fatal if it fails.
+    addRecentTrip({
+      originLabel: state.from.label, originLat: state.from.lat, originLon: state.from.lon,
+      destLabel: state.to.label, destLat: state.to.lat, destLon: state.to.lon,
+    }).catch((err) => {
+      showStatus('Could not save this trip to Recent: ' + err.message, 'error');
+    });
     // Replaces whatever was on top (the bare directions form, or an earlier
     // planned route being re-submitted) — one back press from a planned
-    // route now discards the whole route, matching the Cancel button below.
+    // route discards the whole route, matching the Cancel button below.
     replaceTopBackLayer(cancelPlannedRoute);
   } catch (err) {
     showStatus(err.message, 'error');
@@ -2710,7 +3122,7 @@ function cancelPlannedRoute() {
   el.toInput.value = '';
   el.placeInput.value = '';
   hidePlaceCard();
-  clearStops(); // also redraws (now-empty) planning markers
+  clearStops(); // also redraws the (empty) planning markers
   setPlanningUiMode('simple');
 
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
@@ -2718,7 +3130,7 @@ function cancelPlannedRoute() {
 el.cancelRouteBtn.addEventListener('click', cancelPlannedRoute); // explicit "discard everything", not a single back-step — see clearBackLayers
 
 // ============================================================================
-// Milestone 2 — live tracking, voice guidance, deviation/reroute
+// Live tracking, voice guidance, deviation/reroute
 // ============================================================================
 
 function speak(text) {
@@ -2815,8 +3227,8 @@ function checkDeviation(offsetM, currentLngLat) {
   }
 }
 
-/** Milestone 3B: reroute requests are the one part of live navigation that
- * needs the network (everything else — position snapping, maneuver-advance,
+/** Reroute requests are the one part of live navigation that needs the
+ * network (everything else — position snapping, maneuver-advance,
  * voice guidance — runs off GPS + the already-fetched route with Turf.js,
  * entirely client-side, and keeps working with no signal at all). If we're
  * offline or the request fails, we don't error out or strand the driver:
@@ -2944,15 +3356,6 @@ async function startNavigation() {
   state.arrivedAnnounced = false;
   state.lastFix = null;
 
-  // Milestone 3C: auto-record this as a recent trip. Non-fatal if it fails —
-  // navigation itself doesn't depend on this succeeding.
-  addRecentTrip({
-    originLabel: state.from.label, originLat: state.from.lat, originLon: state.from.lon,
-    destLabel: state.to.label, destLat: state.to.lat, destLon: state.to.lon,
-  }).catch((err) => {
-    showStatus('Could not save this trip to Recent: ' + err.message, 'error');
-  });
-
   forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
   resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
   // Once driving, back should warn rather than silently discard the route —
@@ -2979,11 +3382,11 @@ async function startNavigation() {
   showStatus('Getting your location…', 'info');
   try {
     // On a plain web deployment this is navigator.geolocation.watchPosition
-    // under the hood, unchanged from Milestones 1-3. Inside the optional
-    // Capacitor Android shell (Milestone 4B), it instead starts a real
-    // Android foreground service via a background-geolocation plugin, whose
-    // native callback feeds the exact same onPositionUpdate() below — see
-    // native-location.js for why that matters with the screen off.
+    // under the hood. Inside the optional Capacitor Android shell, it
+    // instead starts a real Android foreground service via a
+    // background-geolocation plugin, whose native callback feeds the exact
+    // same onPositionUpdate() below — see native-location.js for why that
+    // matters with the screen off.
     state.watchId = await startLocationWatch(onPositionUpdate, onPositionError, CONFIG.GEOLOCATION_OPTIONS, {
       title: 'Navigating to ' + state.to.label,
       message: 'Tracking your location for turn-by-turn guidance.',
@@ -3035,8 +3438,8 @@ if ('serviceWorker' in navigator) {
 }
 
 // ============================================================================
-// Startup: offer to resume an in-progress trip (Milestone 3B) if the tab was
-// reloaded or restarted mid-drive. Favorites/recents need no startup work of
+// Startup: offer to resume an in-progress trip if the tab was reloaded or
+// restarted mid-drive. Favorites/recents need no startup work of
 // their own — they're loaded on demand when a search field is focused.
 // ============================================================================
 (async () => {
@@ -3048,7 +3451,7 @@ if ('serviceWorker' in navigator) {
       state.from = saved.from;
       state.to = saved.to;
 
-      await mapLoad;
+      await awaitMapLoad();
       map.getSource('route').setData(state.route.lineFeature);
       const bounds = state.route.coords.reduce(
         (b, c) => b.extend(c),

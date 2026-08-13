@@ -1,15 +1,15 @@
 // ============================================================================
-// Milestone 4B — native background-location bridge (Capacitor / Android)
+// Native background-location bridge (Capacitor / Android)
 //
 // This file is the ONLY place in the app that knows Capacitor exists. In a
 // plain browser (the normal GitHub-Pages/Cloudflare-Pages deployment),
 // `window.Capacitor` simply doesn't exist — Capacitor's native WebView is
 // what injects it — so every function here transparently falls back to
-// navigator.geolocation.watchPosition, exactly matching Milestones 1-3's
-// original behaviour with zero change. app.js's startNavigation()/
-// endNavigation() call startLocationWatch()/stopLocationWatch() from here
-// instead of the raw geolocation API directly; nothing else in the app's
-// map/routing/voice logic needs to know or care which path is active.
+// navigator.geolocation.watchPosition, the same plain-browser codepath used
+// everywhere else. app.js's startNavigation()/endNavigation() call
+// startLocationWatch()/stopLocationWatch() from here instead of the raw
+// geolocation API directly; nothing else in the app's map/routing/voice
+// logic needs to know or care which path is active.
 //
 // WHY THIS EXISTS: the base Capacitor Geolocation plugin (and plain
 // watchPosition) is not reliable once Android puts the app in the

@@ -2,7 +2,7 @@
   "name": "osm-navigator",
   "version": "1.0.0",
   "private": true,
-  "description": "Personal turn-by-turn navigation PWA — this file exists only to support the optional Capacitor native Android shell (Milestone 4B). The web app itself has no build step; open index.html directly or serve the folder statically.",
+  "description": "Personal turn-by-turn navigation PWA — this file exists only to support the optional Capacitor native Android shell. The web app itself has no build step; open index.html directly or serve the folder statically.",
   "scripts": {
     "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js style.css manifest.json sw.js www/ && cp -r icons www/icons",
     "cap:sync": "npm run cap:copy && cap sync android"

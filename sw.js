@@ -4,9 +4,9 @@
 //     time this file's version changes.
 //   - TILE_CACHE_NAME: map style/tiles/sprites/glyphs. This one is never
 //     purged by this file's own upgrade logic below — it holds tiles the
-//     user explicitly downloaded via "Offline maps" (Milestone 3A), and
-//     wiping it on every SW update would silently throw that away.
-const SHELL_CACHE_NAME = 'navigator-shell-v9';
+//     user explicitly downloaded via "Offline maps", and wiping it on every
+//     SW update would silently throw that away.
+const SHELL_CACHE_NAME = 'navigator-shell-v12';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG.TILE_CACHE_NAME in config.js
 
 // Keep this in sync with CONFIG.MAP_STYLE_URL's hostname in config.js. The
