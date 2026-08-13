@@ -6,7 +6,7 @@
 //     purged by this file's own upgrade logic below — it holds tiles the
 //     user explicitly downloaded via "Offline maps", and wiping it on every
 //     SW update would silently throw that away.
-const SHELL_CACHE_NAME = 'navigator-shell-v15';
+const SHELL_CACHE_NAME = 'navigator-shell-v16';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG.TILE_CACHE_NAME in config.js
 
 // Keep this in sync with CONFIG.MAP_STYLE_URL's hostname in config.js. The
@@ -16,8 +16,7 @@ const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG
 const TILE_HOSTS = ['tiles.openfreemap.org'];
 
 const SHELL_FILES = [
-  './',
-  './index.html',
+  './', // covers index.html too — some static hosts (Cloudflare included) redirect a literal /index.html request to /, so precaching that exact URL separately would just depend on redirect-following behaviour instead of serving directly from cache
   './style.css',
   './app.js',
   './config.js',
