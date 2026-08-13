@@ -595,6 +595,18 @@ button {
 
 /* ---------------------------------------------------------------- bottom sheet */
 
+/* A flex column, not plain block flow: #sheet-handle/#sheet-actions/
+   #route-options/#poi-results-header are flex-shrink:0 (always their full
+   natural height, never compressed or clipped), and whichever list is
+   currently visible (#maneuver-list or #poi-results-list) is the one
+   flex:1 item that fills whatever space is left and scrolls internally.
+   This used to be done with a hardcoded max-height: calc(72dvh - 118px) on
+   the list — fragile, since it silently assumed the header above it was
+   always exactly 118px tall, and any mismatch (a longer destination name
+   wrapping to two lines, a notch's safe-area inset, etc.) clipped
+   #sheet-actions (Cancel/Start/End) with no way to scroll to the rest of
+   it, since it wasn't part of the scrollable region to begin with. Flexbox
+   makes that whole class of bug impossible instead of computing around it. */
 #bottom-sheet {
   position: fixed;
   left: 0;
@@ -607,6 +619,8 @@ button {
   max-height: 136px;
   overflow: hidden;
   transition: max-height 0.25s ease;
+  display: flex;
+  flex-direction: column;
 }
 /* vh alone can be taller than what's actually visible while the mobile
    browser's own address bar is showing (it doesn't shrink when the chrome
@@ -627,6 +641,7 @@ button {
 
 #sheet-handle {
   width: 100%;
+  flex-shrink: 0;
   background: none;
   color: inherit;
   text-align: left;
@@ -644,6 +659,7 @@ button {
 
 #sheet-actions {
   display: flex;
+  flex-shrink: 0;
   gap: 8px;
   padding: 4px 16px 10px;
 }
@@ -662,6 +678,7 @@ button {
    (or its matching gray line on the map) switches the active route. */
 #route-options {
   display: flex;
+  flex-shrink: 0;
   gap: 8px;
   overflow-x: auto;
   padding: 4px 12px 10px;
@@ -732,6 +749,7 @@ button {
 
 #poi-results-header {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 10px;
   padding: 4px 16px 8px;
@@ -744,8 +762,8 @@ button {
   margin: 0;
   padding: 0 12px calc(12px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
-  max-height: calc(72vh - 170px);
-  max-height: calc(72dvh - 170px);
+  flex: 1 1 auto;
+  min-height: 0; /* flex items default to a content-based min-height that can prevent shrinking to fit — without this, "fill remaining space and scroll internally" silently doesn't work */
 }
 #poi-results-list.hidden { display: none; }
 #poi-results-list li.empty { padding: 12px 4px; color: var(--text-dim); font-size: 13px; }
@@ -755,8 +773,8 @@ button {
   margin: 0;
   padding: 0 0 calc(12px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
-  max-height: calc(72vh - 118px);
-  max-height: calc(72dvh - 118px);
+  flex: 1 1 auto;
+  min-height: 0; /* see #poi-results-list above — same flexbox gotcha */
 }
 
 #maneuver-list li {
