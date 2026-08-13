@@ -117,10 +117,33 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
           Add stop
         </button>
-        <!-- Only ever revealed by app.js if OTP2_URL is set -->
+        <!-- Shown once more than one mode is available — Drive+Walk always
+             (walking needs no external service), Transit only if OTP2_URL is
+             set (see app.js). Icons mirror transitLegIcon's WALK/BUS glyphs. -->
         <div id="travel-mode-toggle" class="hidden">
-          <button type="button" class="mode-btn active" data-mode="drive">Drive</button>
-          <button type="button" class="mode-btn" data-mode="transit">Transit</button>
+          <button type="button" class="mode-btn active" data-mode="drive">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 16 L6.5 10.5 a2 2 0 0 1 1.9-1.5 h7.2 a2 2 0 0 1 1.9 1.5 L18.5 16"/>
+              <rect x="3.5" y="16" width="17" height="4" rx="1.5"/>
+              <circle cx="7.5" cy="20" r="1.6" fill="currentColor" stroke="none"/>
+              <circle cx="16.5" cy="20" r="1.6" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>Drive</span>
+          </button>
+          <button type="button" class="mode-btn" data-mode="walk">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="4.5" r="1.8" fill="currentColor" stroke="none"/>
+              <path d="M11 8 L9 15 M13 8 L15 21 M9 15 L6 19 M9 15 L12 17 L13 8"/>
+            </svg>
+            <span>Walk</span>
+          </button>
+          <button type="button" class="mode-btn hidden" data-mode="transit">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="5" width="16" height="12" rx="2.5"/><path d="M4 11 h16"/>
+              <circle cx="8" cy="19" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="19" r="1.4" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>Transit</span>
+          </button>
         </div>
         <button id="plan-route-btn" type="button">Get directions</button>
 
@@ -308,6 +331,12 @@
       <div id="sheet-summary">—</div>
     </button>
     <div id="sheet-actions">
+      <button id="share-route-btn" class="icon-btn hidden" type="button" aria-label="Share this route">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3 v12 M8 7 L12 3 L16 7"/>
+          <path d="M5 12 v7 a1 1 0 0 0 1 1 h12 a1 1 0 0 0 1-1 v-7"/>
+        </svg>
+      </button>
       <button id="cancel-route-btn" class="secondary hidden" type="button">Cancel</button>
       <button id="start-nav-btn" class="hidden" type="button">Start navigation</button>
       <button id="end-nav-btn" class="hidden danger" type="button">End</button>
@@ -319,6 +348,13 @@
          has room for the handle+summary+buttons, so Start/Cancel always stay
          reachable without expanding, same as before this feature existed. -->
     <div id="route-options" class="hidden"></div>
+
+    <!-- Walk-mode only: ascent/descent summary + a hand-drawn elevation
+         chart, computed once (static, no live position tracking) after the
+         route itself has already rendered. Content is fully JS-generated
+         (see renderElevationProfile in app.js) — this is just the mount
+         point, placed like #route-options right after sheet-actions. -->
+    <div id="elevation-profile" class="hidden"></div>
 
     <div id="poi-results-header" class="hidden">
       <button id="poi-back-btn" class="icon-btn" type="button" aria-label="Back to route">

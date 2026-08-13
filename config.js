@@ -57,6 +57,11 @@ export const CONFIG = {
   VALHALLA_URL: 'https://valhalla1.openstreetmap.de',
   VALHALLA_MIN_INTERVAL_MS: 1100,
 
+  // Caps how many shape points get sent to Valhalla's /height action when
+  // building a walking route's elevation profile — keeps that request body
+  // small on long routes. Only used for walk-mode routes.
+  ELEVATION_MAX_POINTS: 150,
+
   // --- Map tiles: OpenFreeMap (no API key needed) -----------------------------
   MAP_STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
 

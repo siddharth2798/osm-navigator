@@ -36,6 +36,7 @@ const el = {
   savedBtn: document.getElementById('saved-btn'),
   categoryChips: document.getElementById('category-chips'),
   routeOptionsRow: document.getElementById('route-options'),
+  elevationProfile: document.getElementById('elevation-profile'),
   routeChips: document.getElementById('route-chips'),
   routeChipsInline: document.getElementById('route-chips-inline'),
   poiResultsHeader: document.getElementById('poi-results-header'),
@@ -67,6 +68,7 @@ const el = {
   bottomSheet: document.getElementById('bottom-sheet'),
   sheetHandle: document.getElementById('sheet-handle'),
   sheetSummary: document.getElementById('sheet-summary'),
+  shareRouteBtn: document.getElementById('share-route-btn'),
   cancelRouteBtn: document.getElementById('cancel-route-btn'),
   startNavBtn: document.getElementById('start-nav-btn'),
   endNavBtn: document.getElementById('end-nav-btn'),
@@ -126,7 +128,7 @@ const state = {
   route: null,         // {coords, maneuvers, totalDistM, totalTimeS, lineFeature}
   routeOptions: [],    // raw Valhalla trip objects: [primary, ...meaningfully-different alternates]
   selectedRouteIndex: 0, // which entry of routeOptions is currently drawn/active
-  travelMode: 'drive', // 'drive' | 'transit' — transit has no live-navigation counterpart
+  travelMode: 'drive', // 'drive' | 'walk' | 'transit' — transit has no live-navigation counterpart
   transitItinerary: null, // last-planned OTP2 itinerary, kept separate from `route` since it's a different shape
   originMarker: null,
   destMarker: null,
@@ -598,12 +600,20 @@ function createPinElement(colorHex, label) {
 /** Small round dot used to highlight every candidate from a category/
  * along-route search on the map at once (distinct from the single numbered
  * pin used for a confirmed stop, or the pin used for a single picked
- * destination — this one specifically means "one of several options"). */
-function createPoiMarkerElement() {
-  const div = document.createElement('div');
-  div.className = 'poi-marker';
-  div.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="10"/></svg>';
-  return div;
+ * destination — this one specifically means "one of several options").
+ * Carries a small name-tag bubble above the dot so it's clear which result
+ * is which without having to tap each one — the label is absolutely
+ * positioned (out of normal flow), so it doesn't affect the wrapper's own
+ * size and the dot's center still lands exactly on the marker's lngLat. */
+function createPoiMarkerElement(labelText) {
+  const wrap = document.createElement('div');
+  wrap.className = 'poi-marker-wrap';
+  const primary = splitPlaceLabel(labelText).primary;
+  wrap.innerHTML = `
+    <div class="poi-marker-label">${escapeHtml(primary)}</div>
+    <div class="poi-marker"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="10"/></svg></div>
+  `;
+  return wrap;
 }
 
 /** Clears whatever candidate markers are currently shown — called before a
@@ -620,7 +630,7 @@ function clearPoiMarkers() {
 function showPoiMarkers(results, onSelect) {
   clearPoiMarkers();
   results.forEach((r) => {
-    const el2 = createPoiMarkerElement();
+    const el2 = createPoiMarkerElement(r.label);
     el2.addEventListener('click', (e) => {
       e.stopPropagation();
       onSelect(r);
@@ -1996,7 +2006,7 @@ async function addStopFromPoi(picked) {
     const fromPoint = isMidDrive ? { lat: state.lastFix.lat, lon: state.lastFix.lng } : state.from;
     const stops = isMidDrive ? getStops().slice(state.currentLegIndex) : getStops();
     if (!isMidDrive) state.currentLegIndex = 0; // mid-drive: left alone, the next GPS fix recomputes it against the new route
-    const { trip } = await requestRoute(fromPoint, state.to, stops); // no alternates — adding a stop already commits you to a specific trip
+    const { trip } = await requestRoute(fromPoint, state.to, stops, 0, COSTING_BY_MODE[state.travelMode]); // no alternates — adding a stop already commits you to a specific trip
     state.routeOptions = [trip];
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
@@ -2969,8 +2979,20 @@ function checkRoutePlausibility(trip, from, to, hasStops = false) {
 // reroutes are never cache hits (the coordinates are different every time by
 // design), so this only ever saves the redundant-resubmit case, not real trips.
 const valhallaCache = new Map();
-function routeCacheKey(from, to, stops, wantAlternates) {
-  return JSON.stringify([wantAlternates, ...[from, ...stops, to].map((p) => [p.lat.toFixed(5), p.lon.toFixed(5)])]);
+function routeCacheKey(from, to, stops, wantAlternates, costing) {
+  return JSON.stringify([costing, wantAlternates, ...[from, ...stops, to].map((p) => [p.lat.toFixed(5), p.lon.toFixed(5)])]);
+}
+
+// Maps state.travelMode to Valhalla's costing model name. Adding a Bicycle
+// mode later would just mean one more entry here plus a mode-btn in HTML —
+// verified 'bicycle' costing also works against the configured Valhalla server.
+const COSTING_BY_MODE = { drive: 'auto', walk: 'pedestrian' };
+
+/** Only 'auto' has a use_ferry knob to tune; pedestrian costing doesn't
+ * accept costing_options.pedestrian.use_ferry the same way (verified against
+ * the live server), so costing_options is omitted entirely for it. */
+function costingOptionsFor(costing) {
+  return costing === 'auto' ? { auto: { use_ferry: 0 } } : undefined;
 }
 
 /** Valhalla will happily return an "alternate" that's barely different from
@@ -3003,22 +3025,23 @@ function filterMeaningfulAlternates(primaryTrip, alternateTrips) {
  * `{ trip, alternates }` (alternates is `[]` when none were requested or
  * none passed the meaningful-difference filter above), so every caller has
  * one consistent shape regardless of whether it asked for alternates. */
-async function requestRoute(from, to, stops = [], wantAlternates = 0) {
-  const cacheKey = routeCacheKey(from, to, stops, wantAlternates);
+async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 'auto') {
+  const cacheKey = routeCacheKey(from, to, stops, wantAlternates, costing);
   if (valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
 
   await valhallaLimiter();
   const body = {
     locations: [from, ...stops, to].map((p) => ({ lat: p.lat, lon: p.lon })),
-    costing: 'auto',
+    costing,
     units: 'kilometers',
-    // Ferries are essentially never wanted for ordinary driving in India.
-    // This is a soft penalty, not a hard exclusion, so it won't fix every
-    // bad case (a destination with literally no drivable road access in the
-    // map data can still resolve to a — possibly longer — ferry route; see
-    // checkRoutePlausibility below for catching that instead).
-    costing_options: { auto: { use_ferry: 0 } },
   };
+  // Ferries are essentially never wanted for ordinary driving in India. This
+  // is a soft penalty, not a hard exclusion, so it won't fix every bad case
+  // (a destination with literally no drivable road access in the map data
+  // can still resolve to a — possibly longer — ferry route; see
+  // checkRoutePlausibility below for catching that instead).
+  const costingOptions = costingOptionsFor(costing);
+  if (costingOptions) body.costing_options = costingOptions;
   if (wantAlternates > 0) body.alternates = wantAlternates;
   let res;
   try {
@@ -3048,6 +3071,104 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0) {
   return result;
 }
 
+// ============================================================================
+// Elevation profile (walk mode only) — Valhalla's /route doesn't return
+// elevation, so this is a second, separate call to its /height action after
+// a walking route is already planned and drawn. Never blocks route
+// planning: the route is fully usable the moment renderRoute finishes, and
+// this quietly populates the chart if/when it resolves, or just leaves it
+// hidden on any failure — a missing chart is never worth interrupting a
+// walking trip over.
+// ============================================================================
+
+/** Evenly downsamples a route's [lng,lat] coords to at most maxPoints, so a
+ * long walking route doesn't send an oversized /height request body. */
+function sampleCoordsForHeight(coords, maxPoints) {
+  if (coords.length <= maxPoints) return coords;
+  const step = (coords.length - 1) / (maxPoints - 1);
+  const sampled = [];
+  for (let i = 0; i < maxPoints; i++) sampled.push(coords[Math.round(i * step)]);
+  return sampled;
+}
+
+/** Returns Valhalla's range_height pairs: [[cumulativeDistM, heightM], ...].
+ * Goes through the same rate limiter as /route since it hits the same
+ * server. Throws on any failure — callers must treat that as "no chart",
+ * never a user-facing error. */
+async function fetchElevationProfile(coords) {
+  const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
+  await valhallaLimiter();
+  const res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/height`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ range: true, shape }),
+  });
+  if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
+  const data = await res.json();
+  if (!data.range_height || !data.range_height.length) throw new Error('No elevation data returned.');
+  return data.range_height;
+}
+
+/** Hand-drawn inline SVG line+area chart — no charting library in this
+ * codebase, matching its existing convention of hand-rolled inline SVGs
+ * (see maneuverIcon/transitLegIcon). Fixed viewBox + preserveAspectRatio so
+ * CSS can stretch it to the sheet's width with no JS resize logic. */
+function elevationChartSvg(rangeHeight) {
+  const dists = rangeHeight.map((p) => p[0]);
+  const heights = rangeHeight.map((p) => p[1]);
+  const totalDist = dists[dists.length - 1] || 1;
+  const minH = Math.min(...heights);
+  const maxH = Math.max(...heights);
+  const span = Math.max(maxH - minH, 10); // floor avoids a divide-by-zero on flat terrain
+  const points = rangeHeight
+    .map(([d, h]) => `${((d / totalDist) * 300).toFixed(1)},${(60 - ((h - minH) / span) * 54).toFixed(1)}`)
+    .join(' ');
+  const areaPath = `M0,60 L${points} L300,60 Z`;
+  return `<svg viewBox="0 0 300 64" preserveAspectRatio="none">
+    <path d="${areaPath}" fill="var(--accent)" fill-opacity="0.18" stroke="none"/>
+    <polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+  </svg>`;
+}
+
+function renderElevationProfile(rangeHeight) {
+  const heights = rangeHeight.map((p) => p[1]);
+  let ascent = 0;
+  let descent = 0;
+  for (let i = 1; i < heights.length; i++) {
+    const diff = heights[i] - heights[i - 1];
+    if (diff > 0) ascent += diff; else descent += -diff;
+  }
+  el.elevationProfile.innerHTML = `<div class="elevation-summary">
+      <span>↑ ${formatDistance(ascent)}</span><span>↓ ${formatDistance(descent)}</span>
+    </div>
+    <div class="elevation-chart">${elevationChartSvg(rangeHeight)}</div>`;
+  el.elevationProfile.classList.remove('hidden');
+}
+
+function hideElevationProfile() {
+  el.elevationProfile.classList.add('hidden');
+  el.elevationProfile.innerHTML = '';
+}
+
+/** Fire-and-forget: kicks off /height for the currently-rendered route and
+ * populates the chart if/when it resolves. Captures state.route by
+ * reference so a stale response (route replaced/canceled while this was in
+ * flight) is silently discarded rather than overwriting a newer route's
+ * chart or reviving a canceled one's — buildRouteState always returns a
+ * fresh object, never mutates in place, so this reference check is reliable. */
+function updateElevationProfileForRoute() {
+  if (state.travelMode !== 'walk' || !state.route) { hideElevationProfile(); return; }
+  const myRoute = state.route;
+  fetchElevationProfile(myRoute.coords)
+    .then((rangeHeight) => {
+      if (state.route !== myRoute || state.travelMode !== 'walk') return; // stale — route changed/canceled meanwhile
+      renderElevationProfile(rangeHeight);
+    })
+    .catch(() => {
+      if (state.route === myRoute) hideElevationProfile(); // degrade gracefully — the walking route itself is already fully usable
+    });
+}
+
 /** One label per option in state.routeOptions: "Fastest"/"Shortest" (won't
  * both appear on the same card unless they're the same option), or a
  * toll callout when the options actually differ on that — no point saying
@@ -3061,7 +3182,7 @@ function buildRouteOptionTags(trips) {
   return trips.map((t) => {
     if (t.summary.time === minTime) return 'Fastest';
     if (t.summary.length === minDist) return 'Shortest';
-    if (notAllSameToll) return t.summary.has_toll ? 'Has tolls' : 'No tolls';
+    if (state.travelMode !== 'walk' && notAllSameToll) return t.summary.has_toll ? 'Has tolls' : 'No tolls'; // toll callouts don't apply to a pedestrian trip
     return '';
   });
 }
@@ -3151,12 +3272,15 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   el.bottomSheet.classList.remove('hidden');
   el.mapControls.classList.add('raised');
 
+  if (state.travelMode === 'walk') updateElevationProfileForRoute();
+  else hideElevationProfile();
+
   // Persists the route so a killed/reloaded tab mid-drive can restore it
   // without a network round trip. Non-fatal if it fails — the trip keeps
   // working from in-memory state either way, this only affects whether it
   // survives a reload.
   try {
-    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops() });
+    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode });
   } catch (err) {
     showStatus('Could not save trip progress locally: ' + err.message, 'error');
   }
@@ -3206,15 +3330,20 @@ function highlightManeuver(idx) {
 // ============================================================================
 const TRANSIT_ENABLED = !!CONFIG.OTP2_URL;
 
-if (TRANSIT_ENABLED) {
+const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
+const transitModeBtn = modeButtons.find((b) => b.dataset.mode === 'transit');
+if (transitModeBtn) transitModeBtn.classList.toggle('hidden', !TRANSIT_ENABLED);
+// Drive+Walk need no external service, so the toggle is always at least a
+// two-way choice; Transit joins in only once OTP2_URL is configured.
+if (modeButtons.filter((b) => !b.classList.contains('hidden')).length > 1) {
   el.travelModeToggle.classList.remove('hidden');
-  el.travelModeToggle.querySelectorAll('.mode-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.travelMode = btn.dataset.mode;
-      el.travelModeToggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b === btn));
-    });
-  });
 }
+modeButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.travelMode = btn.dataset.mode;
+    modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
+  });
+});
 
 function transitLegIcon(mode) {
   const paths = {
@@ -3309,7 +3438,7 @@ el.planBtn.addEventListener('click', async () => {
     return;
   }
   el.planBtn.disabled = true;
-  showStatus(state.travelMode === 'transit' ? 'Finding transit route…' : 'Finding route…', 'info', { sticky: true });
+  showStatus(state.travelMode === 'transit' ? 'Finding transit route…' : state.travelMode === 'walk' ? 'Finding walking route…' : 'Finding route…', 'info', { sticky: true });
   try {
     forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of re-submitting the form
     resetToRouteView();
@@ -3322,13 +3451,15 @@ el.planBtn.addEventListener('click', async () => {
       el.bottomSheet.classList.remove('expanded');
       el.startNavBtn.classList.add('hidden'); // no live transit navigation — see scope note above
       el.cancelRouteBtn.classList.remove('hidden');
+      el.shareRouteBtn.classList.remove('hidden');
       hideRouteSearchFeature(); // along-route search is drive-only (see scope note above addStopFromPoi)
       hideRouteChipsInline();
       clearStatus();
-    } else {
+    } else { // 'drive' or 'walk' — identical pipeline, parameterized by costing
       state.currentLegIndex = 0;
       const stops = getStops();
-      const { trip, alternates } = await requestRoute(state.from, state.to, stops, 2);
+      const costing = COSTING_BY_MODE[state.travelMode];
+      const { trip, alternates } = await requestRoute(state.from, state.to, stops, 2, costing);
       state.routeOptions = [trip, ...alternates];
       state.selectedRouteIndex = 0;
       await renderRouteOptions();
@@ -3336,6 +3467,7 @@ el.planBtn.addEventListener('click', async () => {
       el.bottomSheet.classList.remove('expanded');
       el.startNavBtn.classList.remove('hidden');
       el.cancelRouteBtn.classList.remove('hidden');
+      el.shareRouteBtn.classList.remove('hidden');
       showRouteChipsInline(); // not navigating yet — see #route-chips-inline vs the FAB in startNavigation
       const warning = checkRoutePlausibility(trip, state.from, state.to, stops.length > 0);
       if (warning) showStatus(warning, 'error'); else clearStatus();
@@ -3431,8 +3563,10 @@ function cancelPlannedRoute() {
   el.maneuverList.innerHTML = '';
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
+  el.shareRouteBtn.classList.add('hidden');
   hideRouteSearchFeature();
   hideRouteChipsInline();
+  hideElevationProfile();
   el.mapControls.classList.remove('raised');
 
   el.fromInput.value = '';
@@ -3445,6 +3579,92 @@ function cancelPlannedRoute() {
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
 }
 el.cancelRouteBtn.addEventListener('click', cancelPlannedRoute); // explicit "discard everything", not a single back-step — see clearBackLayers
+
+// ============================================================================
+// Shareable route links — this app is 100% static hosting (no server of its
+// own beyond the geocoding/routing services it points to), so a shared link
+// encodes the whole route intent directly in the URL rather than relying on
+// any server-side storage. Opening one lands on a pre-filled directions
+// form (see applyShareLink) rather than auto-planning, so the recipient
+// still gets to see/edit before requesting a route themselves.
+// ============================================================================
+
+function buildShareUrl() {
+  if (!state.from || !state.to) return null;
+  const payload = { v: 1, mode: state.travelMode, from: state.from, to: state.to, stops: getStops() };
+  return `${location.origin}${location.pathname}?share=${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+el.shareRouteBtn.addEventListener('click', async () => {
+  const url = buildShareUrl();
+  if (!url) return;
+  const shareData = {
+    title: 'Navigator route',
+    text: `Directions: ${shortLabel(state.from)} → ${shortLabel(state.to)}`,
+    url,
+  };
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+    } catch (err) {
+      if (err.name !== 'AbortError') showStatus('Could not share: ' + err.message, 'error'); // AbortError: user dismissed the share sheet, not a failure
+    }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    showStatus('Route link copied to clipboard.', 'success');
+  } catch (err) {
+    showStatus('Could not copy the link: ' + err.message, 'error');
+  }
+});
+
+/** Reads and validates the `?share=` query param, if any. Returns null (not
+ * a throw) on anything malformed — a bad/corrupted link should fall through
+ * to the normal startup flow, never a stuck blank screen. Note: the value is
+ * decoded exactly once — URLSearchParams already reverses the single
+ * encodeURIComponent applied when the link was built, so JSON.parse runs
+ * directly on it; a second decodeURIComponent would corrupt any label that
+ * happens to contain a literal '%'. */
+function parseShareParam() {
+  const raw = new URLSearchParams(location.search).get('share');
+  if (!raw) return null;
+  try {
+    const payload = JSON.parse(raw);
+    const validPlace = (p) => p && typeof p.lat === 'number' && typeof p.lon === 'number' && typeof p.label === 'string';
+    if (!validPlace(payload.from) || !validPlace(payload.to)) return null;
+    return payload;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** Lands on a pre-filled directions form from a shared link — from/to/stops
+ * and travel mode are all populated, but "Get directions" is never clicked
+ * automatically, so the recipient can review before requesting a route. */
+function applyShareLink(payload) {
+  const rawStops = Array.isArray(payload.stops) ? payload.stops : [];
+  const trimmed = rawStops.length > CONFIG.MAX_STOPS;
+  const stops = rawStops.slice(0, CONFIG.MAX_STOPS);
+
+  let mode = ['drive', 'walk', 'transit'].includes(payload.mode) ? payload.mode : 'drive';
+  let modeFellBack = false;
+  if (mode === 'transit' && !TRANSIT_ENABLED) { mode = 'drive'; modeFellBack = true; }
+  state.travelMode = mode;
+  modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+
+  goToDirections({ from: payload.from, to: payload.to }); // also clears/redraws stops+markers, opens directions UI, pushes its own back layer
+  stops.forEach((s) => addStopRow(s));
+  updatePlanningMarkers();
+
+  if (trimmed) {
+    showStatus(`This link had more stops than the ${CONFIG.MAX_STOPS}-stop limit — showing the first ${CONFIG.MAX_STOPS}.`, 'error');
+  } else if (modeFellBack) {
+    showStatus("Transit isn't set up on this server — showing Drive instead.", 'error');
+  } else {
+    showStatus('Route loaded from a shared link — tap "Get directions" to plan it.', 'info');
+  }
+}
 
 // ============================================================================
 // Live tracking, voice guidance, deviation/reroute
@@ -3572,7 +3792,7 @@ async function triggerReroute(currentLngLat) {
     // have already been visited, so a stop you've already been to is never
     // routed back through on a reroute.
     const remainingStops = getStops().slice(state.currentLegIndex);
-    const { trip } = await requestRoute(from, state.to, remainingStops); // no alternates — mid-reroute isn't the moment for route choice
+    const { trip } = await requestRoute(from, state.to, remainingStops, 0, COSTING_BY_MODE[state.travelMode]); // no alternates — mid-reroute isn't the moment for route choice
     state.routeOptions = [trip];
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
@@ -3764,36 +3984,50 @@ if ('serviceWorker' in navigator) {
 // restarted mid-drive. Favorites/recents need no startup work of
 // their own — they're loaded on demand when a search field is focused.
 // ============================================================================
-(async () => {
-  try {
-    const saved = await loadCurrentTrip();
-    if (saved && saved.route && saved.to) {
-      state.route = saved.route;
-      state.route.lineFeature = turf.lineString(state.route.coords);
-      state.from = saved.from;
-      state.to = saved.to;
+const sharedRoutePayload = parseShareParam();
+if (sharedRoutePayload) {
+  // Strips ?share=... via replaceState (not pushState) so it doesn't add a
+  // closeable layer to the app's own back-stack, and so reloading/going back
+  // afterward doesn't keep re-triggering the same shared link. A deliberately
+  // opened share link always wins over resuming a stale local trip below.
+  history.replaceState(null, '', location.pathname);
+  applyShareLink(sharedRoutePayload);
+} else {
+  (async () => {
+    try {
+      const saved = await loadCurrentTrip();
+      if (saved && saved.route && saved.to) {
+        state.route = saved.route;
+        state.route.lineFeature = turf.lineString(state.route.coords);
+        state.from = saved.from;
+        state.to = saved.to;
+        state.travelMode = saved.travelMode || 'drive';
+        modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === state.travelMode));
 
-      await awaitMapLoad();
-      map.getSource('route').setData(state.route.lineFeature);
-      const bounds = state.route.coords.reduce(
-        (b, c) => b.extend(c),
-        new maplibregl.LngLatBounds(state.route.coords[0], state.route.coords[0]),
-      );
-      map.fitBounds(bounds, { padding: 60, duration: 0 });
-      renderManeuverList(state.route.maneuvers);
-      renderRouteSummary(state.route.totalDistM, state.route.totalTimeS);
-      el.bottomSheet.classList.remove('hidden');
-      el.mapControls.classList.add('raised');
-      el.startNavBtn.classList.remove('hidden');
-      el.cancelRouteBtn.classList.remove('hidden');
-      showRouteChipsInline(); // currentTrip only ever persists a drive route not yet navigating (transit has none, and navigating never restores)
-      goToDirections({ from: state.from, to: state.to }); // also clears stops — repopulate after
-      replaceTopBackLayer(cancelPlannedRoute); // a route is already active here, not just the bare directions form
-      (saved.stops || []).forEach((stop) => addStopRow(stop));
-      updatePlanningMarkers();
-      showStatus('Restored your in-progress route.', 'info');
+        await awaitMapLoad();
+        map.getSource('route').setData(state.route.lineFeature);
+        const bounds = state.route.coords.reduce(
+          (b, c) => b.extend(c),
+          new maplibregl.LngLatBounds(state.route.coords[0], state.route.coords[0]),
+        );
+        map.fitBounds(bounds, { padding: 60, duration: 0 });
+        renderManeuverList(state.route.maneuvers);
+        renderRouteSummary(state.route.totalDistM, state.route.totalTimeS);
+        el.bottomSheet.classList.remove('hidden');
+        el.mapControls.classList.add('raised');
+        el.startNavBtn.classList.remove('hidden');
+        el.cancelRouteBtn.classList.remove('hidden');
+        el.shareRouteBtn.classList.remove('hidden');
+        showRouteChipsInline(); // currentTrip only ever persists a drive/walk route not yet navigating (transit has none, and navigating never restores)
+        if (state.travelMode === 'walk') updateElevationProfileForRoute();
+        goToDirections({ from: state.from, to: state.to }); // also clears stops — repopulate after
+        replaceTopBackLayer(cancelPlannedRoute); // a route is already active here, not just the bare directions form
+        (saved.stops || []).forEach((stop) => addStopRow(stop));
+        updatePlanningMarkers();
+        showStatus('Restored your in-progress route.', 'info');
+      }
+    } catch (err) {
+      // Non-fatal: just start fresh at the planning screen.
     }
-  } catch (err) {
-    // Non-fatal: just start fresh at the planning screen.
-  }
-})();
+  })();
+}
