@@ -41,10 +41,6 @@ const el = {
   poiResultsLabel: document.getElementById('poi-results-label'),
   poiBackBtn: document.getElementById('poi-back-btn'),
   poiResultsList: document.getElementById('poi-results-list'),
-  favoritePrompt: document.getElementById('favorite-prompt'),
-  favoritePromptInput: document.getElementById('favorite-prompt-input'),
-  favoritePromptCancel: document.getElementById('favorite-prompt-cancel'),
-  favoritePromptSave: document.getElementById('favorite-prompt-save'),
   listNamePrompt: document.getElementById('list-name-prompt'),
   listNamePromptTitle: document.getElementById('list-name-prompt-title'),
   listNamePromptInput: document.getElementById('list-name-prompt-input'),
@@ -2146,10 +2142,11 @@ el.placeInput.addEventListener('focus', () => showQuickPicksFor(el.placeInput, e
 el.toInput.addEventListener('focus', () => showQuickPicksFor(el.toInput, el.toSuggestions));
 el.fromInput.addEventListener('focus', () => showQuickPicksFor(el.fromInput, el.fromSuggestions, { includeLocationOption: true }));
 
-// ---- Long-press on the map: drop a pin and save it as a favorite ----------
+// ---- Long-press on the map: show what's at that point ---------------------
 let longPressTimer = null;
 let longPressStartPoint = null;
-let favoritePromptMarker = null;
+let longPressMarker = null;
+let longPressMarkerTimer = null;
 
 // On touchscreens, a plain tap fires touchstart/touchend AND the browser
 // then synthesizes a compatibility mousedown/mouseup a moment later (for
@@ -2175,7 +2172,7 @@ map.on('touchend', cancelLongPress);
 map.on('dragstart', cancelLongPress);
 
 function startLongPress(e, isTouch) {
-  if (state.navigating) return; // don't let a bump while driving pop up a save prompt
+  if (state.navigating) return; // don't let a bump while driving pop up a location lookup
   if (isTouch) {
     suppressMouseUntil = Date.now() + 1000;
   } else if (Date.now() < suppressMouseUntil) {
@@ -2185,17 +2182,23 @@ function startLongPress(e, isTouch) {
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     handleLongPress(e.lngLat);
-  }, 600);
+  }, 1000);
 }
 function moveLongPress(e) {
   if (!longPressTimer || !longPressStartPoint) return;
   const dx = e.point.x - longPressStartPoint.x;
   const dy = e.point.y - longPressStartPoint.y;
-  if (Math.hypot(dx, dy) > 8) cancelLongPress(); // a real drag, not a held tap
+  if (Math.hypot(dx, dy) > 10) cancelLongPress(); // a real drag/pan, not a held tap
 }
 
+/** A long press just tells you what's at that point — a quick "what's this
+ * address" lookup, not an entry point into saving anything (favorites are
+ * saved from search results and the place card instead, via the save-star
+ * everywhere that already appears). Drops a marker and shows the label as
+ * a plain status message; both clear themselves after the same timeout
+ * rather than needing an explicit dismiss. */
 async function handleLongPress(lngLat) {
-  showStatus('Looking up this location…', 'info');
+  showStatus('Looking up this location…', 'info', { sticky: true });
   let label = `${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)}`;
   try {
     const res = await fetchWithTimeout(`${CONFIG.NOMINATIM_URL}/reverse?format=jsonv2&lat=${lngLat.lat}&lon=${lngLat.lng}`);
@@ -2206,45 +2209,17 @@ async function handleLongPress(lngLat) {
   } catch (err) {
     // Offline or unreachable: fall back to the raw coordinates label already set above.
   }
-  clearStatus();
-  showFavoritePrompt(label, lngLat);
-}
 
-function showFavoritePrompt(label, lngLat) {
-  if (favoritePromptMarker) favoritePromptMarker.remove();
-  favoritePromptMarker = new maplibregl.Marker({ element: createPinElement('#3d8bfd', 'New favorite'), anchor: 'bottom' })
+  if (longPressMarker) longPressMarker.remove();
+  longPressMarker = new maplibregl.Marker({ element: createPinElement('#9aabc2', 'Location'), anchor: 'bottom' })
     .setLngLat(lngLat).addTo(map);
-  el.favoritePromptInput.value = label;
-  el.favoritePrompt.dataset.lat = lngLat.lat;
-  el.favoritePrompt.dataset.lon = lngLat.lng;
-  if (el.favoritePrompt.classList.contains('hidden')) pushBackLayer(hideFavoritePrompt);
-  el.favoritePrompt.classList.remove('hidden');
-  el.favoritePromptInput.focus();
+  const timeoutMs = 4000;
+  showStatus(label, 'info', { timeoutMs });
+  clearTimeout(longPressMarkerTimer);
+  longPressMarkerTimer = setTimeout(() => {
+    if (longPressMarker) { longPressMarker.remove(); longPressMarker = null; }
+  }, timeoutMs);
 }
-function hideFavoritePrompt() {
-  el.favoritePrompt.classList.add('hidden');
-  if (favoritePromptMarker) { favoritePromptMarker.remove(); favoritePromptMarker = null; }
-}
-el.favoritePromptCancel.addEventListener('click', goBackInApp);
-el.favoritePromptSave.addEventListener('click', () => {
-  const name = el.favoritePromptInput.value.trim() || 'Saved place';
-  const lat = parseFloat(el.favoritePrompt.dataset.lat);
-  const lon = parseFloat(el.favoritePrompt.dataset.lon);
-  // Closes as a side effect of Save (not its own dismiss control) — pop our
-  // own stack entry directly rather than goBackInApp(), so the very next
-  // line can safely pushBackLayer() again for the list-picker without
-  // racing history's own (asynchronous) popstate delivery.
-  forgetBackLayerIfTop(hideFavoritePrompt);
-  hideFavoritePrompt();
-  openSaveToListPrompt(name, null, async (listId) => {
-    try {
-      await addFavorite({ label: name, lat, lon, listId });
-      showStatus('Saved to favorites.', 'success');
-    } catch (err) {
-      showStatus('Could not save this favorite: ' + err.message, 'error');
-    }
-  });
-});
 
 // ============================================================================
 // Saved places — a real, browsable "Saved" screen (opened via the bookmark
