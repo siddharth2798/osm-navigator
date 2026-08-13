@@ -1035,12 +1035,56 @@ button {
 }
 #offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden { display: none; }
 
-.docs-tabs { display: flex; gap: 4px; background: var(--panel-2); border-radius: 12px; padding: 4px; margin-bottom: 16px; }
-.docs-tab { flex: 1; padding: 9px; font-size: 13px; font-weight: 600; background: none; color: var(--text-dim); border-radius: 9px; }
-.docs-tab.active { background: var(--accent); color: #fff; }
-.docs-content.hidden { display: none; }
+/* ---- docs home: one card per category ---- */
+.docs-categories { display: flex; flex-direction: column; gap: 10px; }
+.docs-category-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  text-align: left;
+}
+.docs-category-icon {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.docs-category-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.docs-category-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.docs-category-blurb { font-size: 13px; color: var(--text-dim); line-height: 1.35; }
+.docs-chevron { flex-shrink: 0; color: var(--text-dim); }
 
+/* ---- docs category: blurb + a list of article rows ---- */
+.docs-blurb { margin: 0 0 14px; font-size: 13px; color: var(--text-dim); line-height: 1.4; }
+.docs-articles { display: flex; flex-direction: column; gap: 8px; }
+.docs-article-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--panel);
+  border-radius: 12px;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---- article body (also reused directly by the Credits category) ---- */
+.docs-article-body .panel-section:first-child { margin-top: 0; }
 .panel-section p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
+.panel-section p + p { margin-top: 10px; }
 .credits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
 .credits-list a { color: var(--accent); font-weight: 600; text-decoration: none; }
 
