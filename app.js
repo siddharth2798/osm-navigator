@@ -134,6 +134,7 @@ const state = {
   destMarker: null,
   stopMarkers: [],     // numbered pins for intermediate stops, in visit order
   poiMarkers: [],      // one per candidate in the current category/along-route search, cleared on next search or selection
+  elevationHighlightMarker: null, // shows where a tapped elevation-chart point sits on the actual route, cleared with the chart itself
   currentLegIndex: 0,  // which leg of a multi-stop trip we're currently on — see updateActiveManeuver
   traveledM: null,     // distance travelled along state.route so far — see onPositionUpdate, used to scope "search along route" to what's still ahead once navigating
   puckMarker: null,
@@ -3109,25 +3110,166 @@ async function fetchElevationProfile(coords) {
   return data.range_height;
 }
 
-/** Hand-drawn inline SVG line+area chart — no charting library in this
- * codebase, matching its existing convention of hand-rolled inline SVGs
- * (see maneuverIcon/transitLegIcon). Fixed viewBox + preserveAspectRatio so
- * CSS can stretch it to the sheet's width with no JS resize logic. */
-function elevationChartSvg(rangeHeight) {
-  const dists = rangeHeight.map((p) => p[0]);
-  const heights = rangeHeight.map((p) => p[1]);
-  const totalDist = dists[dists.length - 1] || 1;
-  const minH = Math.min(...heights);
-  const maxH = Math.max(...heights);
+/** Classic Ramer–Douglas–Peucker polyline simplification: recursively keeps
+ * only the point that deviates most from the straight line between the two
+ * ends, as long as that deviation exceeds `tolerance`, discarding the rest.
+ * Used to reduce ~150 raw elevation samples down to the handful of points
+ * where the profile's shape actually changes, for the tappable
+ * "significant point" markers — an ordinary local-min/max scan would catch
+ * every tiny GPS/DEM wiggle instead of just the real hills. */
+function perpendicularDistance(pt, lineStart, lineEnd) {
+  const dx = lineEnd.x - lineStart.x;
+  const dy = lineEnd.y - lineStart.y;
+  if (dx === 0 && dy === 0) return Math.hypot(pt.x - lineStart.x, pt.y - lineStart.y);
+  const t = ((pt.x - lineStart.x) * dx + (pt.y - lineStart.y) * dy) / (dx * dx + dy * dy);
+  const projX = lineStart.x + t * dx;
+  const projY = lineStart.y + t * dy;
+  return Math.hypot(pt.x - projX, pt.y - projY);
+}
+function douglasPeucker(points, tolerance) {
+  if (points.length < 3) return points;
+  let maxDist = 0;
+  let splitIndex = 0;
+  const first = points[0];
+  const last = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = perpendicularDistance(points[i], first, last);
+    if (d > maxDist) { maxDist = d; splitIndex = i; }
+  }
+  if (maxDist > tolerance) {
+    const left = douglasPeucker(points.slice(0, splitIndex + 1), tolerance);
+    const right = douglasPeucker(points.slice(splitIndex), tolerance);
+    return left.slice(0, -1).concat(right);
+  }
+  return [first, last];
+}
+
+/** Picks the interior points (excludes the very start/end — those aren't
+ * interesting as map-highlight targets) where the chart's shape actually
+ * changes, capped to a small count so it doesn't get cluttered with dots.
+ * Widens the tolerance a few times if the first pass still returns too
+ * many — a noisy near-flat route can otherwise produce a dot at every
+ * little wiggle. `pixelPoints` are {x, y, i} in the chart's own 300×64
+ * coordinate space (see buildElevationChart) — simplifying in that space
+ * (rather than raw distance/height, which have wildly different scales)
+ * means "significant" matches what a viewer would actually see as a bend
+ * in the line. */
+const ELEVATION_MAX_SIGNIFICANT_POINTS = 6;
+function findSignificantPointIndices(pixelPoints, maxCount) {
+  let tolerance = 2;
+  let simplified = pixelPoints;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    simplified = douglasPeucker(pixelPoints, tolerance);
+    if (simplified.length - 2 <= maxCount) break;
+    tolerance *= 1.8;
+  }
+  return simplified.slice(1, -1).map((p) => p.i);
+}
+
+/** Quadratic-bezier "midpoint smoothing": using the midpoint of each pair of
+ * consecutive points as the curve's anchor, and the shared point between
+ * them as the control point, gives a continuously-smooth curve that still
+ * tracks the original polyline closely — without pulling in a spline
+ * library for one chart. */
+function smoothPathD(points) {
+  if (points.length < 3) return `M${points.map((p) => p.join(',')).join(' L')}`;
+  let d = `M${points[0][0]},${points[0][1]}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const [cx, cy] = points[i];
+    const [nx, ny] = points[i + 1];
+    d += ` Q${cx},${cy} ${(cx + nx) / 2},${(cy + ny) / 2}`;
+  }
+  const last = points[points.length - 1];
+  d += ` L${last[0]},${last[1]}`;
+  return d;
+}
+
+/** Builds the chart's SVG (smoothed line + fill) plus the list of tappable
+ * "significant point" positions, all in one pass so both share the exact
+ * same coordinate mapping. Coordinates are returned as percentages (of the
+ * chart's own box) rather than raw viewBox units, since the dot buttons and
+ * the guideline are plain positioned HTML, not part of the SVG itself —
+ * the SVG's non-uniform preserveAspectRatio="none" scaling (needed so the
+ * chart fills the sheet's width at a fixed height) distorts anything drawn
+ * inside its viewBox, confirmed earlier with an attempt at SVG <text>
+ * labels that came out badly stretched on a wide phone screen. */
+function buildElevationChart(rangeHeight, minH, maxH) {
+  const totalDist = rangeHeight[rangeHeight.length - 1][0] || 1;
   const span = Math.max(maxH - minH, 10); // floor avoids a divide-by-zero on flat terrain
-  const points = rangeHeight
-    .map(([d, h]) => `${((d / totalDist) * 300).toFixed(1)},${(60 - ((h - minH) / span) * 54).toFixed(1)}`)
-    .join(' ');
-  const areaPath = `M0,60 L${points} L300,60 Z`;
-  return `<svg viewBox="0 0 300 64" preserveAspectRatio="none">
+  const toXY = ([d, h]) => [(d / totalDist) * 300, 60 - ((h - minH) / span) * 54];
+  const pixelPoints = rangeHeight.map(([d, h], i) => {
+    const [x, y] = toXY([d, h]);
+    return { x, y, i };
+  });
+  const pathPoints = pixelPoints.map((p) => [p.x, p.y]);
+  const linePath = smoothPathD(pathPoints);
+  const lastX = pathPoints[pathPoints.length - 1][0];
+  const areaPath = `${linePath} L${lastX},60 L0,60 Z`;
+  const svgHtml = `<svg viewBox="0 0 300 64" preserveAspectRatio="none">
     <path d="${areaPath}" fill="var(--accent)" fill-opacity="0.18" stroke="none"/>
-    <polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    <path d="${linePath}" fill="none" stroke="var(--accent)" stroke-width="2"/>
   </svg>`;
+
+  const points = findSignificantPointIndices(pixelPoints, ELEVATION_MAX_SIGNIFICANT_POINTS).map((i) => ({
+    xPct: (pixelPoints[i].x / 300) * 100,
+    yPct: (pixelPoints[i].y / 64) * 100,
+    distM: rangeHeight[i][0],
+    heightM: rangeHeight[i][1],
+  }));
+  // Pre-select the highest point by default — usually the most interesting
+  // one, and matches how this looks the moment the chart first appears.
+  const defaultActive = points.length ? points.reduce((best, p) => (p.heightM > best.heightM ? p : best), points[0]) : null;
+
+  return { svgHtml, points, defaultActive, totalDist };
+}
+
+/** A plain-language read on how hilly the route is, so the chart's shape
+ * isn't the only way to tell — meant for someone who's never seen an
+ * elevation profile before and just wants to know "will this be a hard
+ * walk?" without interpreting a line graph. Thresholds are rough per-km
+ * ascent bands, not a rigorous grade calculation. */
+function elevationDifficultyLabel(ascentM, totalDistM) {
+  if (!totalDistM) return 'Flat';
+  const ascentPerKm = ascentM / (totalDistM / 1000);
+  if (ascentPerKm < 8) return 'Mostly flat';
+  if (ascentPerKm < 20) return 'Some hills';
+  return 'Steep in parts';
+}
+
+/** Marker dropped on the route showing where a tapped elevation-chart point
+ * actually is — a small ring+dot, distinct from stop pins/POI dots. */
+function createElevationHighlightElement() {
+  const div = document.createElement('div');
+  div.className = 'elevation-highlight-marker';
+  div.setAttribute('aria-hidden', 'true');
+  div.innerHTML = '<span class="elevation-highlight-ring"></span><span class="elevation-highlight-dot"></span>';
+  return div;
+}
+
+/** Walks state.route's actual line geometry by distance to find where a
+ * tapped chart point really is, and drops/moves a marker there — turf.along
+ * on the full-resolution route line means this lands correctly regardless
+ * of how heavily the elevation samples themselves were downsampled for the
+ * /height request. */
+function highlightElevationPointOnMap(distM) {
+  if (!state.route || !state.route.lineFeature) return;
+  const clamped = Math.min(Math.max(distM, 0), state.route.totalDistM);
+  const point = turf.along(state.route.lineFeature, clamped / 1000, { units: 'kilometers' });
+  const [lng, lat] = point.geometry.coordinates;
+  if (state.elevationHighlightMarker) {
+    state.elevationHighlightMarker.setLngLat([lng, lat]);
+  } else {
+    // setLngLat before addTo, matching every other marker in this file —
+    // confirmed live that addTo-then-setLngLat leaves the marker stuck at
+    // its (0,0) default position instead of moving to the real coordinate.
+    state.elevationHighlightMarker = new maplibregl.Marker({ element: createElevationHighlightElement(), anchor: 'center' })
+      .setLngLat([lng, lat])
+      .addTo(map);
+  }
+}
+
+function clearElevationHighlightMarker() {
+  if (state.elevationHighlightMarker) { state.elevationHighlightMarker.remove(); state.elevationHighlightMarker = null; }
 }
 
 function renderElevationProfile(rangeHeight) {
@@ -3138,16 +3280,66 @@ function renderElevationProfile(rangeHeight) {
     const diff = heights[i] - heights[i - 1];
     if (diff > 0) ascent += diff; else descent += -diff;
   }
-  el.elevationProfile.innerHTML = `<div class="elevation-summary">
-      <span>↑ ${formatDistance(ascent)}</span><span>↓ ${formatDistance(descent)}</span>
+  const minH = Math.min(...heights);
+  const maxH = Math.max(...heights);
+  const totalDistM = rangeHeight[rangeHeight.length - 1][0];
+  const tag = elevationDifficultyLabel(ascent, totalDistM);
+  const chart = buildElevationChart(rangeHeight, minH, maxH);
+
+  const dotsHtml = chart.points
+    .map((p, idx) => `<button type="button" class="elevation-point" data-idx="${idx}"
+      style="left:${p.xPct.toFixed(1)}%; top:${p.yPct.toFixed(1)}%" aria-label="Show this point on the map"></button>`)
+    .join('');
+
+  // Evenly spaced distance ticks, skipping 0 itself (that's just "Start",
+  // not informative) — formatDistance already picks m vs km appropriately.
+  const TICK_COUNT = 5;
+  const axisHtml = Array.from({ length: TICK_COUNT }, (_, i) => {
+    const dist = (chart.totalDist * (i + 1)) / (TICK_COUNT + 1);
+    return `<span>${formatDistance(dist)}</span>`;
+  }).join('');
+
+  el.elevationProfile.innerHTML = `<div class="elevation-title">Elevation</div>
+    <div class="elevation-summary">
+      <span class="elevation-tag">${tag}</span>
+      <span>↑ ${formatDistance(ascent)} &nbsp; ↓ ${formatDistance(descent)}</span>
     </div>
-    <div class="elevation-chart">${elevationChartSvg(rangeHeight)}</div>`;
+    <div class="elevation-chart-frame">
+      <div class="elevation-chart">${chart.svgHtml}${dotsHtml}</div>
+      <div class="elevation-axis">${axisHtml}</div>
+      <div class="elevation-guideline hidden"></div>
+      <div class="elevation-point-label hidden"></div>
+    </div>`;
   el.elevationProfile.classList.remove('hidden');
+
+  const frame = el.elevationProfile.querySelector('.elevation-chart-frame');
+  const guideline = frame.querySelector('.elevation-guideline');
+  const label = frame.querySelector('.elevation-point-label');
+
+  function selectPoint(idx) {
+    const p = chart.points[idx];
+    frame.querySelectorAll('.elevation-point.active').forEach((b) => b.classList.remove('active'));
+    frame.querySelector(`.elevation-point[data-idx="${idx}"]`).classList.add('active');
+    guideline.style.left = `${p.xPct}%`;
+    guideline.classList.remove('hidden');
+    label.style.left = `${p.xPct}%`;
+    label.style.top = `${p.yPct}%`;
+    label.textContent = `${Math.round(p.heightM)} m`;
+    label.classList.remove('hidden');
+    highlightElevationPointOnMap(p.distM);
+  }
+
+  frame.querySelectorAll('.elevation-point').forEach((btn) => {
+    btn.addEventListener('click', () => selectPoint(Number(btn.dataset.idx)));
+  });
+
+  if (chart.defaultActive) selectPoint(chart.points.indexOf(chart.defaultActive));
 }
 
 function hideElevationProfile() {
   el.elevationProfile.classList.add('hidden');
   el.elevationProfile.innerHTML = '';
+  clearElevationHighlightMarker();
 }
 
 /** Fire-and-forget: kicks off /height for the currently-rendered route and
@@ -3589,10 +3781,41 @@ el.cancelRouteBtn.addEventListener('click', cancelPlannedRoute); // explicit "di
 // still gets to see/edit before requesting a route themselves.
 // ============================================================================
 
+/** Base64url (RFC 4648 §5) encode/decode of a unicode string — used instead
+ * of encodeURIComponent for the share payload because JSON's own structural
+ * characters ({ } " : , [ ]) each cost 3 characters once percent-encoded,
+ * which dominates the URL length far more than the actual place data does.
+ * Base64url's alphabet needs no percent-encoding at all in a query string,
+ * so this alone cuts a typical share link by more than half. TextEncoder/
+ * TextDecoder round-trip handles place names outside the Latin-1 range
+ * (btoa/atob alone only handle single-byte characters). */
+function base64UrlEncode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  bytes.forEach((b) => { binary += String.fromCharCode(b); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function base64UrlDecode(b64url) {
+  const base64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/** Shrinks a {label, lat, lon} place down to just what's needed to rebuild
+ * it: the short primary name (not the full multi-part address Nominatim
+ * returns) and coordinates rounded to 5 decimal places (~1.1m — already far
+ * finer than routing needs, so this loses nothing that matters). */
+function compactPlace(p) {
+  return { lb: splitPlaceLabel(p.label).primary, la: Math.round(p.lat * 1e5) / 1e5, lo: Math.round(p.lon * 1e5) / 1e5 };
+}
+
 function buildShareUrl() {
   if (!state.from || !state.to) return null;
-  const payload = { v: 1, mode: state.travelMode, from: state.from, to: state.to, stops: getStops() };
-  return `${location.origin}${location.pathname}?share=${encodeURIComponent(JSON.stringify(payload))}`;
+  const payload = { v: 1, m: state.travelMode, f: compactPlace(state.from), t: compactPlace(state.to), s: getStops().map(compactPlace) };
+  return `${location.origin}${location.pathname}?share=${base64UrlEncode(JSON.stringify(payload))}`;
 }
 
 el.shareRouteBtn.addEventListener('click', async () => {
@@ -3626,14 +3849,25 @@ el.shareRouteBtn.addEventListener('click', async () => {
  * encodeURIComponent applied when the link was built, so JSON.parse runs
  * directly on it; a second decodeURIComponent would corrupt any label that
  * happens to contain a literal '%'. */
+/** Reverses compactPlace back into the {label, lat, lon} shape the rest of
+ * the app already works with (goToDirections, addStopRow, state.from/to) —
+ * returns null on anything malformed so a bad link degrades to "ignore it"
+ * rather than a half-populated crash. */
+function expandPlace(p) {
+  if (!p || typeof p.la !== 'number' || typeof p.lo !== 'number' || typeof p.lb !== 'string') return null;
+  return { label: p.lb, lat: p.la, lon: p.lo };
+}
+
 function parseShareParam() {
   const raw = new URLSearchParams(location.search).get('share');
   if (!raw) return null;
   try {
-    const payload = JSON.parse(raw);
-    const validPlace = (p) => p && typeof p.lat === 'number' && typeof p.lon === 'number' && typeof p.label === 'string';
-    if (!validPlace(payload.from) || !validPlace(payload.to)) return null;
-    return payload;
+    const payload = JSON.parse(base64UrlDecode(raw));
+    const from = expandPlace(payload.f);
+    const to = expandPlace(payload.t);
+    if (!from || !to) return null;
+    const stops = Array.isArray(payload.s) ? payload.s.map(expandPlace).filter(Boolean) : [];
+    return { mode: payload.m, from, to, stops };
   } catch (err) {
     return null;
   }

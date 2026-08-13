@@ -89,26 +89,38 @@ button {
   background: var(--panel);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
 }
 #search-card.hidden { display: none; }
 
 .search-top { display: flex; align-items: center; gap: 6px; }
 .search-fields { flex: 1; min-width: 0; }
 
-.search-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 9px 4px; }
+.search-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
 .search-row.plain { padding: 6px 4px; }
 .search-icon { flex-shrink: 0; color: var(--text-dim); }
+
+/* Once several stops are added, the list scrolls internally instead of
+   pushing the rest of the card (Get Directions, the map below it) further
+   down the screen — the dvh cap scales with the device's own viewport, so
+   it shrinks proportionally on shorter phones too. Declared vh first as a
+   fallback, dvh second so it wins where supported (same progressive-
+   enhancement pattern used for .suggestions etc. elsewhere in this file). */
+#stops-container {
+  max-height: 18vh;
+  max-height: 18dvh;
+  overflow-y: auto;
+}
 
 /* One-tap POI category chips (Google-Maps style) — a single horizontally
    scrollable row, never more, so it can't turn into the kind of permanent
    multi-section clutter a favorites/recent card would. */
 .category-chips {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
   padding: 2px 4px 4px;
-  margin-top: 4px;
+  margin-top: 2px;
   scrollbar-width: none;
 }
 .category-chips::-webkit-scrollbar { display: none; }
@@ -117,7 +129,7 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
+  padding: 6px 12px;
   border-radius: 999px;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -133,12 +145,12 @@ button {
 .dot-dest { border-radius: 3px; background: var(--danger); }
 .dot-stop { border-radius: 50%; background: #f59e0b; }
 
-.remove-stop-btn { flex-shrink: 0; width: 26px; height: 26px; color: var(--text-dim); background: none; border: none; display: flex; align-items: center; justify-content: center; }
+.remove-stop-btn { flex-shrink: 0; width: 24px; height: 24px; color: var(--text-dim); background: none; border: none; display: flex; align-items: center; justify-content: center; }
 
 .stop-drag-handle {
   flex-shrink: 0;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   color: var(--text-dim);
   background: none;
   border: none;
@@ -160,8 +172,8 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
-  padding: 8px 4px;
+  margin-top: 2px;
+  padding: 5px 4px;
   background: none;
   color: var(--accent);
   font-size: 13px;
@@ -176,7 +188,7 @@ button {
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 4px 0;
+  padding: 3px 0;
 }
 .search-row input::placeholder { color: var(--text-dim); }
 .search-row input:focus { outline: none; }
@@ -259,8 +271,8 @@ button {
   gap: 4px;
   background: var(--panel-2);
   border-radius: 12px;
-  padding: 4px;
-  margin-top: 8px;
+  padding: 3px;
+  margin-top: 6px;
 }
 #travel-mode-toggle.hidden { display: none; }
 .mode-btn {
@@ -269,7 +281,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 9px;
+  padding: 7px;
   font-size: 13px;
   font-weight: 600;
   background: none;
@@ -281,9 +293,9 @@ button {
 
 #plan-route-btn {
   width: 100%;
-  margin-top: 8px;
-  padding: 13px;
-  font-size: 16px;
+  margin-top: 6px;
+  padding: 11px;
+  font-size: 15px;
   font-weight: 600;
   background: var(--accent);
   color: #fff;
@@ -581,12 +593,17 @@ button {
 }
 .poi-marker.selected { background: var(--accent); color: #fff; }
 
-/* Name-tag bubble above each POI dot — position:relative on the wrapper plus
-   position:absolute on the label keeps the label out of normal layout flow,
-   so it never changes the wrapper's own size (which MapLibre uses to place
-   the anchor point) — the dot's center still lands exactly on the marker's
-   lngLat regardless of how long the label is. */
-.poi-marker-wrap { position: relative; }
+/* Name-tag bubble above each POI dot. MapLibre appends this marker element
+   directly into its (statically-positioned) canvas container rather than
+   absolutely positioning it, so a plain block-level div here would stretch
+   to the full width of the map instead of shrinking to fit the 22px dot —
+   confirmed live: the label's `left: 50%` was then landing ~900px away from
+   the actual dot. display:inline-block makes the wrapper shrink-to-fit its
+   one in-flow child (the dot; the label is position:absolute and doesn't
+   count toward this sizing), so `left: 50%` on the label resolves against
+   the dot's own width and actually centers over it. position:relative
+   still gives the (absolutely positioned) label something to anchor to. */
+.poi-marker-wrap { position: relative; display: inline-block; }
 .poi-marker-label {
   position: absolute;
   bottom: 100%;
@@ -721,8 +738,83 @@ button {
 /* Walk-mode elevation profile — static chart, computed once per route. */
 #elevation-profile { flex-shrink: 0; padding: 4px 16px 8px; }
 #elevation-profile.hidden { display: none; }
-.elevation-summary { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.elevation-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.elevation-summary { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+.elevation-tag { font-weight: 700; color: var(--text); }
+
+/* The chart, its dot buttons, the dashed "selected point" guideline, and
+   the axis labels below all share one coordinate system: every horizontal
+   position is a percentage of THIS frame's own width (see
+   buildElevationChart in app.js). That only lines up correctly because
+   neither .elevation-chart nor .elevation-axis carries its own horizontal
+   padding — any inset belongs on the frame itself, once, via padding-top
+   (which just needs to leave room for a label above the highest dot). */
+.elevation-chart-frame { position: relative; padding-top: 14px; }
+.elevation-chart { position: relative; }
 .elevation-chart svg { display: block; width: 100%; height: 64px; }
+
+/* Each significant-change point is a real <button> (not an SVG shape) so it
+   gets proper click/tap semantics and isn't subject to the chart SVG's own
+   non-uniform preserveAspectRatio="none" scaling — confirmed earlier that
+   scaling distorts anything drawn inside the viewBox on a wide phone
+   screen. The button's own box is a generous 22px tap target; the visible
+   dot inside it is much smaller. */
+.elevation-point {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.elevation-point::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  border: 1.5px solid var(--panel);
+}
+.elevation-point.active::before { width: 11px; height: 11px; background: var(--accent); }
+
+.elevation-point-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin-top: -6px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.elevation-point-label.hidden { display: none; }
+
+.elevation-guideline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--text-dim);
+  pointer-events: none;
+}
+.elevation-guideline.hidden { display: none; }
+
+.elevation-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+/* Marker dropped on the actual route to show where a tapped elevation point
+   is — explicit width/height (not display:block auto-width) so it can't
+   repeat the earlier .poi-marker-wrap bug of stretching to the map's full
+   width inside MapLibre's statically-positioned canvas container. */
+.elevation-highlight-marker { display: inline-block; position: relative; width: 18px; height: 18px; }
+.elevation-highlight-ring { position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0.5; }
+.elevation-highlight-dot { position: absolute; inset: 0; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
 
 /* "Search along the route" popover — reuses .category-chips/.chip for
    content and click handling, laid out as a vertical list of full-width
