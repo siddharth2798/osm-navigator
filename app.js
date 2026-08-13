@@ -1430,7 +1430,10 @@ async function geocodeNear(subject, anchorQuery) {
  * accidental doubled letter, e.g. "Koramaangala"). Deliberately does NOT
  * attempt substitutions or insertions — those would require trying up to 26
  * candidate letters at every position, which turns one extra lookup into
- * dozens against a rate-limited public server for comparatively rare cases. */
+ * dozens against a rate-limited public server for comparatively rare cases.
+ * (A missing letter, e.g. "milky" typed as "milk"/"miky", needs an
+ * insertion to fix and isn't covered here — see wordDropCandidates below
+ * for why that's handled differently instead of extending this list.) */
 function typoVariants(query) {
   const variants = [];
   for (let i = 0; i < query.length - 1; i++) {
@@ -1445,23 +1448,110 @@ function typoVariants(query) {
   return variants;
 }
 
+/** A second, unrelated failure mode from a misspelling: the query is
+ * *truncated*, not misspelled — "Milky Way Apart" for "Milky Way
+ * Apartments" — because the user stopped typing early or dropped a word
+ * expecting autocomplete to fill the rest in. No character-level edit
+ * fixes this (it's not a fixed-size edit away from the real name), and it
+ * needs a different query, not a variant of the same one. Progressively
+ * drops whole trailing words — "milky way apart" -> "milky way" -> "milky"
+ * — since dropping down to a complete, correctly-spelled PREFIX of the
+ * real name is exactly what turns a dead-end query into one Nominatim can
+ * match. Stops at single words, and skips anything left too short to
+ * search meaningfully. */
+function wordDropCandidates(query) {
+  const words = query.trim().split(/\s+/);
+  const candidates = [];
+  for (let dropCount = 1; dropCount < words.length; dropCount++) {
+    const candidate = words.slice(0, words.length - dropCount).join(' ');
+    if (candidate.length >= 3) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+/** Classic edit-distance DP — used only to rank already-fetched results by
+ * how close they are to what was actually typed (see rankBySimilarity),
+ * never to generate new candidates itself (that's what typoVariants/
+ * wordDropCandidates are for), so its O(n*m) cost only ever runs against a
+ * handful of short place names, not in a hot loop. */
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/** How well a candidate result matches what was actually typed, from 0 (no
+ * resemblance) to 1 (identical). Deliberately compares the query against a
+ * same-length PREFIX of the result's own primary name, not the whole
+ * thing — a truncated query ("milky way apart" for "Milky Way Apartments")
+ * or a short typo'd word ("milk" for "milky") is naturally "close to" the
+ * START of the real name, and comparing against the FULL name (much longer
+ * than the query) would rack up edit-distance for all the trailing text
+ * the query never had a chance to match in the first place, scoring a
+ * perfectly good match as if it were a poor one. */
+function similarityScore(query, label) {
+  const q = query.trim().toLowerCase();
+  const primary = splitPlaceLabel(label).primary.toLowerCase();
+  const prefix = primary.slice(0, q.length);
+  const distance = levenshteinDistance(q, prefix);
+  return 1 - distance / Math.max(q.length, prefix.length, 1);
+}
+
+/** A broadened/truncated fallback query answers a *different* question than
+ * the one the user actually asked — "what matches 'milky way'" instead of
+ * "milky way apart" — so Nominatim's own ranking of the results it returns
+ * reflects the shorter query, not what was really typed. Re-sorting by
+ * similarity to the ORIGINAL text (see similarityScore) fixes that. */
+function rankBySimilarity(results, originalQuery) {
+  return [...results].sort((a, b) => similarityScore(originalQuery, b.label) - similarityScore(originalQuery, a.label));
+}
+
 // Bounds how many extra Nominatim calls a single zero-result search can
-// trigger while trying typo variants — each one still goes through
+// trigger while trying fallback candidates — each one still goes through
 // nominatimLimiter like any other request, so this only adds latency to the
 // already-rare "genuinely found nothing" case, never extra request bursts.
 // Sized to cover the full run of adjacent-transpositions for a typical place
 // name (most are well under 13 letters, i.e. up to 12 transpositions) plus a
-// few deletions on top — confirmed via testing that a lower cap (5) cut the
-// search off before reaching the transposition that actually fixed a real
-// typo ("Whitefeild" needs the swap at position 6, the 7th variant tried).
+// few deletions and word-drops on top — confirmed via testing that a lower
+// cap (5) cut the search off before reaching the transposition that
+// actually fixed a real typo ("Whitefeild" needs the swap at position 6,
+// the 7th variant tried).
 const TYPO_FALLBACK_MAX_ATTEMPTS = 12;
 
+// A candidate scoring at or above this is treated as confident enough to
+// stop searching immediately (saves requests/time in the common case of a
+// single obvious fix). Below it, every candidate within the attempt budget
+// is still tried and the single best-scoring one across all of them wins —
+// otherwise a broadened word-drop candidate that happens to match *some*
+// unrelated place (e.g. "milk" alone, for the query "milk way") would
+// wrongly win by just being the first candidate to return anything, before
+// a much better character-edit candidate ("milky way") ever got a chance.
+const GOOD_ENOUGH_SIMILARITY = 0.75;
+
 /** Only called when the user's actual (debounced, non-stale) query drew a
- * blank. Tries typoVariants() in order and returns the first variant's
- * results as soon as one hits, tagging the returned array with
- * `.correctedQuery` so the UI can tell the user what it actually searched
- * for instead of silently substituting it. Too-short queries are skipped —
- * edits on 1-2 leftover letters are more likely to misfire than help.
+ * blank. Tries wordDropCandidates() (cheap — at most a few attempts, one
+ * per word, and the most likely real-world case: a query that stopped
+ * short of the full name) and typoVariants() of the full query (character-
+ * level edits — the transposed/doubled-letter/missing-trailing-letter
+ * case) together, scoring every candidate that returns anything and
+ * keeping the single best match across all of them (see
+ * GOOD_ENOUGH_SIMILARITY for why this can't just take the first hit).
+ * The winning candidate's results are re-ranked by similarity to the
+ * original query before being tagged with `.correctedQuery` — a broadened
+ * candidate can return several plausible results, and Nominatim's own
+ * ranking reflects the candidate it was actually asked for, not the fuller
+ * text the user actually typed. Too-short queries are skipped entirely —
+ * edits/drops on 1-2 leftover letters are more likely to misfire than help.
  *
  * `shouldAbort`, if given, is checked before every attempt and stops the
  * loop immediately once it returns true. Without this, a fallback chain
@@ -1471,23 +1561,28 @@ const TYPO_FALLBACK_MAX_ATTEMPTS = 12;
  * search irrelevant — queuing up behind it and delaying the search the user
  * actually cares about. Returns `aborted: true` in that case so the caller
  * knows NOT to cache the (incomplete, therefore meaningless) empty result. */
-async function geocodeTypoFallback(query, shouldAbort) {
+async function geocodeFuzzyFallback(query, shouldAbort) {
   if (query.length < 4) return { results: [], aborted: false };
   const tried = new Set([query.toLowerCase()]);
   let attempts = 0;
-  for (const variant of typoVariants(query)) {
+  let best = null; // { results, candidate, score } — the best-scoring candidate seen so far
+  const candidates = [...wordDropCandidates(query), ...typoVariants(query)];
+  for (const candidate of candidates) {
     if (shouldAbort && shouldAbort()) return { results: [], aborted: true };
-    const key = variant.toLowerCase();
+    const key = candidate.toLowerCase();
     if (tried.has(key)) continue;
     tried.add(key);
     if (++attempts > TYPO_FALLBACK_MAX_ATTEMPTS) break;
-    const results = await nominatimSearch(variant);
-    if (results.length) {
-      results.correctedQuery = variant;
-      return { results, aborted: false };
-    }
+    const results = await nominatimSearch(candidate);
+    if (!results.length) continue;
+    const ranked = rankBySimilarity(results, query);
+    const score = similarityScore(query, ranked[0].label);
+    if (!best || score > best.score) best = { results: ranked, candidate, score };
+    if (score >= GOOD_ENOUGH_SIMILARITY) break;
   }
-  return { results: [], aborted: false };
+  if (!best) return { results: [], aborted: false };
+  best.results.correctedQuery = best.candidate;
+  return { results: best.results, aborted: false };
 }
 
 /** `opts.shouldAbort` and `opts.onFallbackStart` are optional and only
@@ -1511,14 +1606,14 @@ async function geocodeSearch(query, opts = {}) {
     ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
     : await nominatimSearch(trimmed);
 
-  // Typo tolerance only applies to a plain place-name search — a "near X"
+  // Fuzzy fallback only applies to a plain place-name search — a "near X"
   // query already does its own two-step anchor lookup with its own error
   // message, and layering fuzzy retries onto both halves of that would be a
   // lot of extra requests for a much rarer case.
   let aborted = false;
   if (!results.length && !nearMatch) {
     if (opts.onFallbackStart) opts.onFallbackStart();
-    ({ results, aborted } = await geocodeTypoFallback(trimmed, opts.shouldAbort));
+    ({ results, aborted } = await geocodeFuzzyFallback(trimmed, opts.shouldAbort));
   }
 
   // Don't cache an aborted attempt — it stopped early because it became
@@ -1649,16 +1744,17 @@ function setupAutocomplete(inputEl, listEl, onSelect) {
         const results = await geocodeSearch(query, {
           shouldAbort: isStale,
           // Only the live-typed field needs this — it's what makes the
-          // several-second typo-retry chain legible instead of looking like
+          // several-second fallback chain legible instead of looking like
           // the search has silently hung.
           onFallbackStart: () => {
-            if (!isStale()) showSuggestionLoading(listEl, `No direct match for "${query}" — trying similar spellings…`);
+            if (!isStale()) showSuggestionLoading(listEl, `No direct match for "${query}" — refining the search…`);
           },
         });
         if (isStale()) return;
-        // Set by geocodeTypoFallback() when the query itself drew a blank
-        // and a nearby-spelling variant found something instead — tell the
-        // user what was actually searched rather than silently swapping it.
+        // Set by geocodeFuzzyFallback() when the query itself drew a blank
+        // and a broadened or corrected variant found something instead —
+        // tell the user what was actually searched rather than silently
+        // swapping it.
         if (results.correctedQuery) {
           showStatus(`No exact match for "${query}" — showing results for "${results.correctedQuery}".`, 'info');
         }
