@@ -1,0 +1,19 @@
+# Cloudflare Pages/Workers asset upload — excludes files from the deployed
+# static site, same syntax and purpose as .gitignore but read by Cloudflare's
+# deploy step specifically. Needed because Cloudflare's build environment
+# auto-runs `npm install` when it sees package.json (this repo only has one
+# for the optional Capacitor Android tooling — the deployed site itself has
+# no build step, see README), and if the "build output directory" is left as
+# the repo root, the resulting node_modules/ gets swept up as a deployable
+# asset. That's what causes the "asset too large" error on
+# node_modules/workerd/bin/workerd (Cloudflare's own deploy tooling, not a
+# dependency of this project) — excluding node_modules/ here is the fix.
+#
+# The Android project and its own node_modules-equivalents are also
+# irrelevant to the deployed web app and excluded for the same reason.
+node_modules/
+www/
+android/
+package.json
+package-lock.json
+.git/
