@@ -1537,13 +1537,26 @@ function setupAutocomplete(inputEl, listEl, onSelect) {
     if (query.length < 3) return;
     debounceTimer = setTimeout(async () => {
       const mySeq = ++seq;
+      // A response only answers what the user is currently asking if BOTH
+      // still hold once it arrives: no newer keystroke has fired its own
+      // search (mySeq === seq), AND the field's live value hasn't moved on
+      // from the exact string this request searched for. The seq check
+      // alone misses a real case: a mid-word pause (type "Whitefi", pause,
+      // then continue to "Whitefield") fires a genuine search for the
+      // incomplete "Whitefi", which can legitimately return zero results
+      // even though the word the user is still typing exists. If they then
+      // keep typing without a further 400ms pause, no NEW debounce fires
+      // (so mySeq stays current) while that stale "no results" response is
+      // still in flight — the seq guard alone lets it render. Re-checking
+      // the live input value at render time catches this.
+      const isStale = () => mySeq !== seq || inputEl.value.trim() !== query;
       showSuggestionLoading(listEl);
       try {
         const results = await geocodeSearch(query);
-        if (mySeq !== seq) return; // a newer keystroke has already superseded this
+        if (isStale()) return;
         renderSuggestionResults(listEl, inputEl, results, onSelect, 'No matching places found for that search.');
       } catch (err) {
-        if (mySeq !== seq) return;
+        if (isStale()) return;
         hideSuggestionList(listEl);
         showStatus(err.message, 'error');
       }
