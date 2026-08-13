@@ -1425,17 +1425,111 @@ async function geocodeNear(subject, anchorQuery) {
   return nominatimSearch(subject, viewboxParam(anchor.lat, anchor.lon, CONFIG.GEOCODE_NEAR_RADIUS_DEG_WIDE));
 }
 
-async function geocodeSearch(query) {
+/** Nominatim matches words/prefixes, not spelling — a single mistyped letter
+ * (e.g. "Koramangla" for "Koramangala") reliably comes back with zero
+ * results even though the place exists. Generates a small, prioritized set
+ * of single-edit variants to retry when the real query draws a blank:
+ * adjacent-letter transpositions first (the single most common real-world
+ * typo, e.g. "Koramnagala"), then single-character deletions (catches an
+ * accidental doubled letter, e.g. "Koramaangala"). Deliberately does NOT
+ * attempt substitutions or insertions — those would require trying up to 26
+ * candidate letters at every position, which turns one extra lookup into
+ * dozens against a rate-limited public server for comparatively rare cases. */
+function typoVariants(query) {
+  const variants = [];
+  for (let i = 0; i < query.length - 1; i++) {
+    if (query[i] === query[i + 1]) continue; // swapping identical letters is a no-op
+    const chars = query.split('');
+    [chars[i], chars[i + 1]] = [chars[i + 1], chars[i]];
+    variants.push(chars.join(''));
+  }
+  for (let i = 0; i < query.length; i++) {
+    variants.push(query.slice(0, i) + query.slice(i + 1));
+  }
+  return variants;
+}
+
+// Bounds how many extra Nominatim calls a single zero-result search can
+// trigger while trying typo variants — each one still goes through
+// nominatimLimiter like any other request, so this only adds latency to the
+// already-rare "genuinely found nothing" case, never extra request bursts.
+// Sized to cover the full run of adjacent-transpositions for a typical place
+// name (most are well under 13 letters, i.e. up to 12 transpositions) plus a
+// few deletions on top — confirmed via testing that a lower cap (5) cut the
+// search off before reaching the transposition that actually fixed a real
+// typo ("Whitefeild" needs the swap at position 6, the 7th variant tried).
+const TYPO_FALLBACK_MAX_ATTEMPTS = 12;
+
+/** Only called when the user's actual (debounced, non-stale) query drew a
+ * blank. Tries typoVariants() in order and returns the first variant's
+ * results as soon as one hits, tagging the returned array with
+ * `.correctedQuery` so the UI can tell the user what it actually searched
+ * for instead of silently substituting it. Too-short queries are skipped —
+ * edits on 1-2 leftover letters are more likely to misfire than help.
+ *
+ * `shouldAbort`, if given, is checked before every attempt and stops the
+ * loop immediately once it returns true. Without this, a fallback chain
+ * kicked off by an intermediate substring during a mid-word typing pause
+ * (see setupAutocomplete) would run its full up-to-12-request course through
+ * the shared rate limiter even after the user has kept typing and made that
+ * search irrelevant — queuing up behind it and delaying the search the user
+ * actually cares about. Returns `aborted: true` in that case so the caller
+ * knows NOT to cache the (incomplete, therefore meaningless) empty result. */
+async function geocodeTypoFallback(query, shouldAbort) {
+  if (query.length < 4) return { results: [], aborted: false };
+  const tried = new Set([query.toLowerCase()]);
+  let attempts = 0;
+  for (const variant of typoVariants(query)) {
+    if (shouldAbort && shouldAbort()) return { results: [], aborted: true };
+    const key = variant.toLowerCase();
+    if (tried.has(key)) continue;
+    tried.add(key);
+    if (++attempts > TYPO_FALLBACK_MAX_ATTEMPTS) break;
+    const results = await nominatimSearch(variant);
+    if (results.length) {
+      results.correctedQuery = variant;
+      return { results, aborted: false };
+    }
+  }
+  return { results: [], aborted: false };
+}
+
+/** `opts.shouldAbort` and `opts.onFallbackStart` are optional and only
+ * meaningful for the live-typed autocomplete path (setupAutocomplete passes
+ * both). `shouldAbort` lets an in-progress typo-fallback chain for a
+ * since-superseded query give up early instead of running to completion
+ * behind the user's back. `onFallbackStart` fires once, right before the
+ * first fallback request goes out, so the UI can swap its "Searching…"
+ * indicator for something that explains the extra wait (trying similar
+ * spellings can take several seconds, since it's a chain of individually
+ * rate-limited requests, not one fast lookup). Other callers (there are
+ * none currently, but keep this in mind before adding one) simply never
+ * abort and never get a fallback-start notification. */
+async function geocodeSearch(query, opts = {}) {
   const trimmed = query.trim();
   const cacheKey = trimmed.toLowerCase();
   if (nominatimCache.has(cacheKey)) return nominatimCache.get(cacheKey);
 
   const nearMatch = trimmed.match(NEAR_QUERY_PATTERN);
-  const results = nearMatch
+  let results = nearMatch
     ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
     : await nominatimSearch(trimmed);
 
-  nominatimCache.set(cacheKey, results);
+  // Typo tolerance only applies to a plain place-name search — a "near X"
+  // query already does its own two-step anchor lookup with its own error
+  // message, and layering fuzzy retries onto both halves of that would be a
+  // lot of extra requests for a much rarer case.
+  let aborted = false;
+  if (!results.length && !nearMatch) {
+    if (opts.onFallbackStart) opts.onFallbackStart();
+    ({ results, aborted } = await geocodeTypoFallback(trimmed, opts.shouldAbort));
+  }
+
+  // Don't cache an aborted attempt — it stopped early because it became
+  // irrelevant, not because Nominatim was actually asked and came up empty.
+  // Caching it as [] here would let a later, real search for this exact
+  // string be wrongly answered from cache instead of actually trying.
+  if (!aborted) nominatimCache.set(cacheKey, results);
   return results;
 }
 
@@ -1451,12 +1545,16 @@ function hideSuggestionList(listEl) {
 /** Shown the moment a search actually fires, so there's visible feedback
  * while Nominatim's match is in flight (typically a couple hundred ms,
  * longer on a self-hosted instance under load, or for a "near X" search
- * which needs two sequential requests — see geocodeNear()). */
-function showSuggestionLoading(listEl) {
+ * which needs two sequential requests — see geocodeNear() — or for the
+ * typo-fallback retries below, which can take several seconds since each
+ * retry is its own rate-limited request). `text` lets a caller update what
+ * this says mid-search instead of leaving a generic "Searching…" up the
+ * whole time — see setupAutocomplete's onFallbackStart. */
+function showSuggestionLoading(listEl, text = 'Searching…') {
   listEl.innerHTML = '';
   const li = document.createElement('li');
   li.className = 'loading';
-  li.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Searching…</span>';
+  li.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(text)}</span>`;
   listEl.appendChild(li);
   listEl.classList.remove('hidden');
 }
@@ -1552,8 +1650,22 @@ function setupAutocomplete(inputEl, listEl, onSelect) {
       const isStale = () => mySeq !== seq || inputEl.value.trim() !== query;
       showSuggestionLoading(listEl);
       try {
-        const results = await geocodeSearch(query);
+        const results = await geocodeSearch(query, {
+          shouldAbort: isStale,
+          // Only the live-typed field needs this — it's what makes the
+          // several-second typo-retry chain legible instead of looking like
+          // the search has silently hung.
+          onFallbackStart: () => {
+            if (!isStale()) showSuggestionLoading(listEl, `No direct match for "${query}" — trying similar spellings…`);
+          },
+        });
         if (isStale()) return;
+        // Set by geocodeTypoFallback() when the query itself drew a blank
+        // and a nearby-spelling variant found something instead — tell the
+        // user what was actually searched rather than silently swapping it.
+        if (results.correctedQuery) {
+          showStatus(`No exact match for "${query}" — showing results for "${results.correctedQuery}".`, 'info');
+        }
         renderSuggestionResults(listEl, inputEl, results, onSelect, 'No matching places found for that search.');
       } catch (err) {
         if (isStale()) return;
