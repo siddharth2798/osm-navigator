@@ -42,6 +42,43 @@
             </svg>
           </button>
         </div>
+
+        <!-- One-tap POI category search, Google-Maps-style chip row. Always
+             a single horizontally-scrollable row — never grows the card. -->
+        <div id="category-chips" class="category-chips">
+          <button class="chip" type="button" data-category="fuel" data-label="Petrol pumps">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21 V6 a2 2 0 0 1 2-2 h6 a2 2 0 0 1 2 2 v15"/><path d="M4 21 h10 M8 10 h2 M14 8 h2 a2 2 0 0 1 2 2 v6 a1.5 1.5 0 0 0 3 0 V9 l-2-2"/></svg>
+            <span>Petrol</span>
+          </button>
+          <button class="chip" type="button" data-category="ev" data-label="EV charging">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h6 l-1 8 9-12 h-6 Z"/></svg>
+            <span>EV charging</span>
+          </button>
+          <button class="chip" type="button" data-category="pharmacy" data-label="Pharmacies">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8 v8 M8 12 h8"/></svg>
+            <span>Pharmacy</span>
+          </button>
+          <button class="chip" type="button" data-category="atm" data-label="ATMs">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10 h20"/><path d="M6 15 h4"/></svg>
+            <span>ATM</span>
+          </button>
+          <button class="chip" type="button" data-category="hospital" data-label="Hospitals">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 8 v6 M9 11 h6"/></svg>
+            <span>Hospital</span>
+          </button>
+          <button class="chip" type="button" data-category="restaurant" data-label="Restaurants">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3 v6 M9 3 v6 M12 3 v6 M9 9 v12"/><ellipse cx="17" cy="6" rx="2.5" ry="3.5"/><path d="M17 9.5 v11.5"/></svg>
+            <span>Food</span>
+          </button>
+          <button class="chip" type="button" data-category="parking" data-label="Parking">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 16 V8 h3 a3 3 0 0 1 0 6 H9"/></svg>
+            <span>Parking</span>
+          </button>
+          <button class="chip" type="button" data-category="hotel" data-label="Hotels">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19 V8 M3 13 h18 v6 M7 13 v-2 a2 2 0 0 1 2-2 h1 a2 2 0 0 1 2 2 v2 M21 19 v-4"/></svg>
+            <span>Hotels</span>
+          </button>
+        </div>
       </div>
 
       <!-- ============ Directions mode: from/to fields, shown after tapping "Directions" ============ -->
@@ -57,6 +94,7 @@
               <ul id="from-suggestions" class="suggestions hidden"></ul>
             </div>
             <div class="search-divider"></div>
+            <div id="stops-container"></div>
             <div class="search-row">
               <span class="dot dot-dest" aria-hidden="true"></span>
               <input id="to-input" type="text" placeholder="Choose destination" autocomplete="off" inputmode="search">
@@ -70,6 +108,10 @@
             </svg>
           </button>
         </div>
+        <button id="add-stop-btn" class="add-stop-btn" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
+          Add stop
+        </button>
         <!-- Milestone 4C: only ever revealed by app.js if OTP2_URL is set -->
         <div id="travel-mode-toggle" class="hidden">
           <button type="button" class="mode-btn active" data-mode="drive">Drive</button>
@@ -81,7 +123,11 @@
 
     <!-- ============ Picked-place card: name + Directions / clear ============ -->
     <div id="place-card" class="hidden">
-      <div id="place-card-label">—</div>
+      <span class="dot dot-dest" aria-hidden="true"></span>
+      <div class="place-card-text">
+        <div id="place-card-primary">—</div>
+        <div id="place-card-secondary"></div>
+      </div>
       <div id="place-card-actions" class="place-card-actions">
         <button id="place-directions-btn" type="button">Directions</button>
         <button id="place-clear-btn" class="icon-btn" type="button" aria-label="Clear selection">
@@ -113,6 +159,15 @@
 
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
   <div id="map-controls">
+    <!-- "Search along the route" — shown while planning/viewing a drive route,
+         hidden once navigating. Opens the floating #route-chips popover below
+         rather than a chip row buried in the (often-collapsed) bottom sheet,
+         so it's reachable with one thumb while the phone is mounted driving. -->
+    <button id="route-search-btn" class="fab hidden" type="button" aria-label="Search along your route" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20 L15.2 15.2"/>
+      </svg>
+    </button>
     <button id="zoom-in-btn" class="fab small" type="button" aria-label="Zoom in">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
     </button>
@@ -132,6 +187,47 @@
     </button>
   </div>
 
+  <!-- "Search along the route" popover — toggled by #route-search-btn above.
+       Positioned dynamically (see app.js) just above whichever button
+       triggered it, so it never depends on knowing the map-controls stack's
+       exact height (which varies: Mapillary's button is conditional). A
+       single scrollable chip row, same as the other category-chip rows in
+       this app, so it stays compact instead of covering the map. -->
+  <div id="route-chips" class="category-chips route-chips-popover hidden">
+    <button class="chip" type="button" data-category="fuel" data-label="Petrol pumps">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21 V6 a2 2 0 0 1 2-2 h6 a2 2 0 0 1 2 2 v15"/><path d="M4 21 h10 M8 10 h2 M14 8 h2 a2 2 0 0 1 2 2 v6 a1.5 1.5 0 0 0 3 0 V9 l-2-2"/></svg>
+      <span>Petrol</span>
+    </button>
+    <button class="chip" type="button" data-category="ev" data-label="EV charging">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L4 14 h6 l-1 8 9-12 h-6 Z"/></svg>
+      <span>EV charging</span>
+    </button>
+    <button class="chip" type="button" data-category="pharmacy" data-label="Pharmacies">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8 v8 M8 12 h8"/></svg>
+      <span>Pharmacy</span>
+    </button>
+    <button class="chip" type="button" data-category="atm" data-label="ATMs">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10 h20"/><path d="M6 15 h4"/></svg>
+      <span>ATM</span>
+    </button>
+    <button class="chip" type="button" data-category="hospital" data-label="Hospitals">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 8 v6 M9 11 h6"/></svg>
+      <span>Hospital</span>
+    </button>
+    <button class="chip" type="button" data-category="restaurant" data-label="Restaurants">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3 v6 M9 3 v6 M12 3 v6 M9 9 v12"/><ellipse cx="17" cy="6" rx="2.5" ry="3.5"/><path d="M17 9.5 v11.5"/></svg>
+      <span>Food</span>
+    </button>
+    <button class="chip" type="button" data-category="parking" data-label="Parking">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 16 V8 h3 a3 3 0 0 1 0 6 H9"/></svg>
+      <span>Parking</span>
+    </button>
+    <button class="chip" type="button" data-category="hotel" data-label="Hotels">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19 V8 M3 13 h18 v6 M7 13 v-2 a2 2 0 0 1 2-2 h1 a2 2 0 0 1 2 2 v2 M21 19 v-4"/></svg>
+      <span>Hotels</span>
+    </button>
+  </div>
+
   <!-- ============ Bottom sheet: summary / itinerary / nav controls ============ -->
   <div id="bottom-sheet" class="hidden">
     <button id="sheet-handle" type="button" aria-label="Expand or collapse route details">
@@ -139,9 +235,26 @@
       <div id="sheet-summary">—</div>
     </button>
     <div id="sheet-actions">
+      <button id="cancel-route-btn" class="secondary hidden" type="button">Cancel</button>
       <button id="start-nav-btn" class="hidden" type="button">Start navigation</button>
       <button id="end-nav-btn" class="hidden danger" type="button">End</button>
     </div>
+
+    <!-- Alternate route cards — only populated (and only takes any space) when
+         Get Directions found 2+ meaningfully different options. Deliberately
+         placed after sheet-actions, not before: the peek/collapsed height only
+         has room for the handle+summary+buttons, so Start/Cancel always stay
+         reachable without expanding, same as before this feature existed. -->
+    <div id="route-options" class="hidden"></div>
+
+    <div id="poi-results-header" class="hidden">
+      <button id="poi-back-btn" class="icon-btn" type="button" aria-label="Back to route">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 L8 12 L15 19"/></svg>
+      </button>
+      <span id="poi-results-label">—</span>
+    </div>
+    <ul id="poi-results-list" class="hidden"></ul>
+
     <ol id="maneuver-list"></ol>
   </div>
 

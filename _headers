@@ -1,0 +1,37 @@
+# Cloudflare Pages cache-control (also respected by most other static hosts
+# that support a similar convention). None of this app's files use
+# content-hashed filenames, so anything cached with a long max-age would go
+# stale the moment you redeploy a change — the browser just keeps serving
+# the old copy until the cache expires. `no-cache` here doesn't mean
+# "don't cache" — it means "always revalidate with the server first" (a
+# cheap 304 Not Modified when nothing changed), which is what actually
+# prevents the app-shell/service-worker version-mismatch bugs that come
+# from over-caching un-hashed files. Only truly static, rarely-changed
+# assets (icons) get a real cache lifetime.
+
+/sw.js
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+/app.js
+  Cache-Control: no-cache
+
+/config.js
+  Cache-Control: no-cache
+
+/idb.js
+  Cache-Control: no-cache
+
+/native-location.js
+  Cache-Control: no-cache
+
+/style.css
+  Cache-Control: no-cache
+
+/manifest.json
+  Cache-Control: public, max-age=3600
+
+/icons/*
+  Cache-Control: public, max-age=86400

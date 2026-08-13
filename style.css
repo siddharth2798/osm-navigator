@@ -100,9 +100,74 @@ button {
 .search-row.plain { padding: 6px 4px; }
 .search-icon { flex-shrink: 0; color: var(--text-dim); }
 
+/* One-tap POI category chips (Google-Maps style) — a single horizontally
+   scrollable row, never more, so it can't turn into the kind of permanent
+   multi-section clutter the favorites/recent card used to be. */
+.category-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 4px 4px;
+  margin-top: 4px;
+  scrollbar-width: none;
+}
+.category-chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip:active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 .dot { flex-shrink: 0; width: 10px; height: 10px; }
 .dot-origin { border-radius: 50%; background: var(--accent-2); }
 .dot-dest { border-radius: 3px; background: var(--danger); }
+.dot-stop { border-radius: 50%; background: #f59e0b; }
+
+.remove-stop-btn { flex-shrink: 0; width: 26px; height: 26px; color: var(--text-dim); background: none; border: none; display: flex; align-items: center; justify-content: center; }
+
+.stop-drag-handle {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none; /* dragging is vertical-only and shouldn't also scroll the page on touch */
+}
+.stop-unit-dragging {
+  z-index: 30;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.45);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.stop-unit-dragging .search-divider { opacity: 0; } /* the dragged unit's own divider would otherwise float mid-air */
+
+.add-stop-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 4px;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+}
 
 .search-row input {
   flex: 1;
@@ -221,16 +286,46 @@ button {
 
 /* ---------------------------------------------------------------- search results: save-to-favorites star */
 
-.suggestions li.result-item {
+/* Standalone (not scoped to .suggestions) so the same result-row look works
+   both in a search dropdown and in the bottom sheet's "search along route"
+   results list. */
+.result-item {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0;
+  border-radius: 8px;
 }
+.result-item:active { background: var(--panel-2); }
 .result-text {
   flex: 1;
   min-width: 0;
-  padding: 10px 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.result-primary {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-secondary {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-meta {
+  font-size: 12px;
+  color: var(--accent);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .save-btn {
   flex-shrink: 0;
@@ -253,18 +348,25 @@ button {
 #place-card {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   background: var(--panel);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 10px 10px 10px 16px;
+  padding: 12px 10px 12px 16px;
 }
 #place-card.hidden { display: none; }
-#place-card-label {
-  flex: 1;
-  min-width: 0;
+.place-card-text { flex: 1; min-width: 0; }
+#place-card-primary {
   font-size: 15px;
-  font-weight: 500;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#place-card-secondary {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -392,6 +494,19 @@ button {
 /* markers built from plain DOM/SVG, no image assets */
 .pin-marker { width: 30px; height: 40px; display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
 .puck-marker { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; }
+.poi-marker {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+.poi-marker.selected { background: var(--accent); color: #fff; }
 
 /* ---------------------------------------------------------------- bottom sheet */
 
@@ -410,19 +525,26 @@ button {
 }
 #bottom-sheet.expanded { max-height: 72vh; }
 #bottom-sheet.hidden { display: none; }
+/* While actively being dragged, app.js sets max-height inline on every
+   pointermove for 1:1 tracking — the eased transition would otherwise lag
+   a frame behind the finger the whole way, which reads as "unresponsive". */
+#bottom-sheet.dragging { transition: none; }
 
 #sheet-handle {
   width: 100%;
   background: none;
   color: inherit;
   text-align: left;
-  padding: 8px 16px 6px;
+  padding: 10px 16px 8px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  cursor: grab;
+  touch-action: none; /* we own the vertical drag entirely — don't let the page also try to scroll/refresh */
 }
-.handle-bar { width: 36px; height: 4px; border-radius: 2px; background: var(--border); }
+#sheet-handle:active { cursor: grabbing; }
+.handle-bar { width: 40px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.22); }
 #sheet-summary { align-self: stretch; text-align: center; font-size: 14px; font-weight: 500; color: var(--text-dim); }
 
 #sheet-actions {
@@ -439,6 +561,74 @@ button {
 #start-nav-btn { background: var(--accent-2); color: #06240f; }
 #end-nav-btn.danger { background: var(--danger); color: #fff; }
 #sheet-actions button.hidden { display: none; }
+
+/* Alternate route cards — horizontally scrollable, one per meaningfully
+   different route option. The active one is highlighted; tapping any card
+   (or its matching gray line on the map) switches the active route. */
+#route-options {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 12px 10px;
+  scrollbar-width: none;
+}
+#route-options::-webkit-scrollbar { display: none; }
+#route-options.hidden { display: none; }
+
+.route-option-card {
+  flex-shrink: 0;
+  min-width: 92px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  text-align: left;
+}
+.route-option-card.active { border-color: var(--accent); background: rgba(61,139,253,0.14); }
+.route-option-time { font-size: 15px; font-weight: 700; }
+.route-option-dist { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+.route-option-tag { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 3px; }
+
+/* "Search along the route" popover — the chip row itself is unchanged
+   (.category-chips above), but as a floating popover (opened from the
+   search icon in #map-controls, see app.js) rather than embedded content it
+   needs its own card chrome and fixed positioning. `bottom` is set inline
+   by app.js at open time — computed from the button's own position so it
+   always lands just above it regardless of how tall the FAB stack is
+   (Mapillary's button is conditional). `max-width` keeps it well short of
+   covering the screen even with all 8 categories on a narrow phone. */
+.route-chips-popover {
+  position: fixed;
+  right: 14px;
+  z-index: 22;
+  max-width: calc(100vw - 28px);
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px 8px;
+  margin-top: 0;
+}
+.route-chips-popover.hidden { display: none; }
+
+#poi-results-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 16px 8px;
+}
+#poi-results-header.hidden { display: none; }
+#poi-results-label { font-size: 14px; font-weight: 600; }
+
+#poi-results-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  max-height: calc(72vh - 170px);
+}
+#poi-results-list.hidden { display: none; }
+#poi-results-list li.empty { padding: 12px 4px; color: var(--text-dim); font-size: 13px; }
 
 #maneuver-list {
   list-style: none;

@@ -6,7 +6,7 @@
 //     purged by this file's own upgrade logic below — it holds tiles the
 //     user explicitly downloaded via "Offline maps" (Milestone 3A), and
 //     wiping it on every SW update would silently throw that away.
-const SHELL_CACHE_NAME = 'navigator-shell-v2';
+const SHELL_CACHE_NAME = 'navigator-shell-v9';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG.TILE_CACHE_NAME in config.js
 
 // Keep this in sync with CONFIG.MAP_STYLE_URL's hostname in config.js. The
@@ -22,6 +22,7 @@ const SHELL_FILES = [
   './app.js',
   './config.js',
   './idb.js',
+  './native-location.js',
   './manifest.json',
   './icons/icon.svg',
 ];

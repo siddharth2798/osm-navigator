@@ -19,6 +19,25 @@ export const CONFIG = {
   // How long to wait after the user stops typing before firing a search.
   NOMINATIM_DEBOUNCE_MS: 400,
 
+  // Restricts search/reverse-geocode results to these ISO 3166-1 alpha-2
+  // country codes (comma-separated, e.g. 'in,np' for India + Nepal). This is
+  // a hard filter, not a soft ranking bias — Nominatim doesn't offer a soft
+  // version. Set to '' to search worldwide. Confirmed via direct testing
+  // that this meaningfully improves disambiguation for short/generic
+  // queries: searching "Gateway" with no bias returns unrelated suburbs in
+  // Arkansas/Florida/Wisconsin; with countrycodes=in it correctly surfaces
+  // "Gateway of India" among other Indian "Gateway ..." places.
+  GEOCODE_COUNTRY_CODES: 'in',
+
+  // Location-biased search ("EV charging near Gateway of India") and one-tap
+  // POI category chips both search within a bounding box around an anchor
+  // point, in degrees (~0.03° is roughly 3km at Indian latitudes). Confirmed
+  // via testing this default finds most categories fine in a dense city;
+  // the wider radius is the automatic retry when a category (EV charging
+  // especially, which has sparse OSM coverage in India) comes back empty.
+  GEOCODE_NEAR_RADIUS_DEG_DEFAULT: 0.03,
+  GEOCODE_NEAR_RADIUS_DEG_WIDE: 0.12,
+
   // --- Routing: self-hosted Valhalla ------------------------------------------
   // Point this at your own instance, e.g. 'https://valhalla.mydomain.com'.
   // Default is the public OpenStreetMap Valhalla demo server — fair-use policy
@@ -68,6 +87,9 @@ export const CONFIG = {
 
   // --- Saved places (Milestone 3C) --------------------------------------------
   MAX_RECENT_TRIPS: 20,
+
+  // --- Multi-stop routing -------------------------------------------------------
+  MAX_STOPS: 8, // soft cap so the directions card doesn't grow unreasonably tall
 
   // --- Street-level imagery: Mapillary (Milestone 4A) -------------------------
   // Get a free client token at https://www.mapillary.com/dashboard/developers
