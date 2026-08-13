@@ -64,7 +64,13 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: max(12px, env(safe-area-inset-top)) 12px 0;
+  /* Wider side padding than a bare safe-area inset — cards float clear of
+     the screen edges instead of stretching edge to edge, and max-width +
+     auto margins keep them from ballooning absurdly wide on a tablet or a
+     desktop browser window. */
+  padding: max(12px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 0 max(20px, env(safe-area-inset-left));
+  max-width: 480px;
+  margin: 0 auto;
   pointer-events: none;
 }
 #top-overlay > * { pointer-events: auto; }
@@ -92,6 +98,28 @@ button {
   padding: 8px 10px 10px;
 }
 #search-card.hidden { display: none; }
+
+/* Collapses the whole directions editor down to one tappable summary line
+   once a route is planned and the bottom sheet is expanded — see
+   syncDirectionsCollapse in app.js, which drives this off #bottom-sheet's
+   own .expanded class so the two panels never fight over the same screen
+   space. Hidden by default; #search-directions.directions-collapsed flips
+   which of the two is shown. */
+#directions-summary-row {
+  display: none;
+  width: 100%;
+  text-align: left;
+  background: none;
+  padding: 6px 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#search-directions.directions-collapsed #directions-summary-row { display: block; }
+#search-directions.directions-collapsed .directions-detail { display: none; }
 
 .search-top { display: flex; align-items: center; gap: 6px; }
 .search-fields { flex: 1; min-width: 0; }
@@ -561,6 +589,19 @@ button {
 }
 #map-controls.raised { bottom: 148px; }
 
+/* Mirror of #map-controls on the left, currently just the help/docs
+   button — kept as its own stack (not merged into #map-controls) in case
+   anything else lands here later. Raises in sync via a MutationObserver in
+   app.js rather than duplicating #map-controls' own raise/lower calls. */
+#map-controls-left {
+  position: fixed;
+  left: 14px;
+  bottom: 24px;
+  z-index: 20;
+  transition: bottom 0.25s ease;
+}
+#map-controls-left.raised { bottom: 148px; }
+
 .fab {
   width: 46px;
   height: 46px;
@@ -641,9 +682,14 @@ button {
    makes that whole class of bug impossible instead of computing around it. */
 #bottom-sheet {
   position: fixed;
-  left: 0;
-  right: 0;
+  /* Floats clear of the screen edges like the top search card, instead of
+     stretching corner to corner — max-width + auto margins cap it on a
+     tablet/desktop window the same way. */
+  left: max(20px, env(safe-area-inset-left));
+  right: max(20px, env(safe-area-inset-right));
   bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
   z-index: 20;
   background: var(--panel);
   border-radius: 18px 18px 0 0;
@@ -979,7 +1025,7 @@ button {
 
 /* ---------------------------------------------------------------- offline maps panel */
 
-#offline-panel, #saved-panel {
+#offline-panel, #saved-panel, #docs-panel {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -987,7 +1033,16 @@ button {
   overflow-y: auto;
   padding: max(16px, env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
-#offline-panel.hidden, #saved-panel.hidden { display: none; }
+#offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden { display: none; }
+
+.docs-tabs { display: flex; gap: 4px; background: var(--panel-2); border-radius: 12px; padding: 4px; margin-bottom: 16px; }
+.docs-tab { flex: 1; padding: 9px; font-size: 13px; font-weight: 600; background: none; color: var(--text-dim); border-radius: 9px; }
+.docs-tab.active { background: var(--accent); color: #fff; }
+.docs-content.hidden { display: none; }
+
+.panel-section p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
+.credits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
+.credits-list a { color: var(--accent); font-weight: 600; text-decoration: none; }
 
 .panel-header {
   display: flex;

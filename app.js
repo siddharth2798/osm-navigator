@@ -56,6 +56,7 @@ const el = {
   saveToListCancel: document.getElementById('save-to-list-cancel'),
   saveToListSave: document.getElementById('save-to-list-save'),
   searchDirections: document.getElementById('search-directions'),
+  directionsSummaryRow: document.getElementById('directions-summary-row'),
   directionsBackBtn: document.getElementById('directions-back-btn'),
   fromInput: document.getElementById('from-input'),
   toInput: document.getElementById('to-input'),
@@ -117,6 +118,10 @@ const el = {
   mapillaryPrevBtn: document.getElementById('mapillary-prev-btn'),
   mapillaryNextBtn: document.getElementById('mapillary-next-btn'),
   travelModeToggle: document.getElementById('travel-mode-toggle'),
+  mapControlsLeft: document.getElementById('map-controls-left'),
+  docsBtn: document.getElementById('docs-btn'),
+  docsPanel: document.getElementById('docs-panel'),
+  docsCloseBtn: document.getElementById('docs-close-btn'),
 };
 
 // ============================================================================
@@ -2194,6 +2199,43 @@ function shortLabel(place) {
   return place ? splitPlaceLabel(place.label).primary : '';
 }
 
+/** One-line summary shown instead of the full from/to/stops editor once a
+ * route is planned and the bottom sheet is expanded (see
+ * syncDirectionsCollapse below) — "Walking from X to Y" / "Driving from X
+ * to Y via Z, W". Empty string if there's nothing to summarize yet. */
+function buildRouteSummarySentence() {
+  if (!state.from || !state.to) return '';
+  const verb = { drive: 'Driving', walk: 'Walking', transit: 'Taking transit' }[state.travelMode] || 'Route';
+  let sentence = `${verb} from ${shortLabel(state.from)} to ${shortLabel(state.to)}`;
+  const stops = getStops();
+  if (stops.length) sentence += ` via ${stops.map((s) => shortLabel(s)).join(', ')}`;
+  return sentence;
+}
+
+/** Keeps the search card and the bottom sheet from both fighting over the
+ * same screen space: once a route exists and the bottom sheet is expanded
+ * (full maneuver list, elevation chart, along-route POI results, etc.), the
+ * search card collapses to one tappable summary line instead — tapping it
+ * collapses the bottom sheet back down, which (via the observer below)
+ * brings the full editor back in response. Driven by a MutationObserver on
+ * #bottom-sheet's own class list rather than threading a call through every
+ * place that toggles .expanded (there are a dozen, and more may show up
+ * later) — whatever changes it, this reacts. */
+function syncDirectionsCollapse() {
+  const hasRoute = !!(state.route || state.transitItinerary);
+  const shouldCollapse = hasRoute
+    && el.bottomSheet.classList.contains('expanded')
+    && !el.searchDirections.classList.contains('hidden');
+  if (shouldCollapse) el.directionsSummaryRow.textContent = buildRouteSummarySentence();
+  el.searchDirections.classList.toggle('directions-collapsed', shouldCollapse);
+}
+
+new MutationObserver(syncDirectionsCollapse).observe(el.bottomSheet, { attributes: true, attributeFilter: ['class'] });
+
+el.directionsSummaryRow.addEventListener('click', () => {
+  el.bottomSheet.classList.remove('expanded');
+});
+
 /** The directions editor's own back arrow AND the hardware/gesture back
  * button both end up here (see goBackInApp) — leaving directions mode always
  * means "return to simple search", restoring the destination place card if
@@ -2736,6 +2778,35 @@ el.deleteListDetailBtn.addEventListener('click', async () => {
     showStatus(err.message, 'error');
   }
 });
+
+// ============================================================================
+// Help & documentation — a static, always-available "what does this app do
+// and who built the pieces it's made of" screen. Same full-screen-panel
+// pattern as Saved/Offline (see closeSavedPanel etc. above): pushBackLayer
+// on open, goBackInApp closes it, hardware back works for free.
+// ============================================================================
+function closeDocsPanel() {
+  el.docsPanel.classList.add('hidden');
+}
+el.docsBtn.addEventListener('click', () => {
+  pushBackLayer(closeDocsPanel);
+  el.docsPanel.classList.remove('hidden');
+});
+el.docsCloseBtn.addEventListener('click', goBackInApp);
+
+el.docsPanel.querySelectorAll('.docs-tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    el.docsPanel.querySelectorAll('.docs-tab').forEach((t) => t.classList.toggle('active', t === tab));
+    el.docsPanel.querySelectorAll('.docs-content').forEach((c) => c.classList.toggle('hidden', c.dataset.tab !== tab.dataset.tab));
+  });
+});
+
+// #map-controls-left mirrors #map-controls' own "raised clear of the bottom
+// sheet" state via observer rather than threading a call through that
+// button's own four raise/lower call sites.
+new MutationObserver(() => {
+  el.mapControlsLeft.classList.toggle('raised', el.mapControls.classList.contains('raised'));
+}).observe(el.mapControls, { attributes: true, attributeFilter: ['class'] });
 el.placeCardSaveBtn.addEventListener('click', () => {
   if (!state.to) return;
   const { label, lat, lon } = state.to;

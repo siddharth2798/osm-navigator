@@ -1,8 +1,21 @@
 # Navigator
 
-A personal, self-hosted turn-by-turn navigation web app for driving in India, built on OpenStreetMap data. Single-user, no accounts, no sync, no server of your own beyond the geocoding/routing services you point it at.
+A personal, self-hosted turn-by-turn navigation web app for driving and walking, built on OpenStreetMap data. Single-user, no accounts, no sync, no server of your own beyond the geocoding/routing services you point it at.
 
 Map rendering is [MapLibre GL JS](https://maplibre.org/) with tiles from [OpenFreeMap](https://openfreemap.org/). Geocoding is [Nominatim](https://nominatim.org/). Routing is [Valhalla](https://valhalla.github.io/valhalla/). Everything else — favorites, recent trips, offline map tiles, the in-progress-trip resume, the Nominatim search cache — lives entirely in the browser (IndexedDB / Cache API), nothing is sent to a server of mine.
+
+The app itself has a **Help & documentation** screen (the circled "?" button, bottom-left of the map) covering all of this from a user's perspective, plus a Credits tab listing every open-source project it's built on — the feature list below is the short version for anyone reading the code.
+
+## Features
+
+- **Search** — place search with typo-tolerant fallback, plus one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels).
+- **Directions** — multi-stop routing (up to 8 stops, drag to reorder), a plain-text "X to Y" shortcut typed straight into the search box, and Drive/Walk (/Transit, if configured) modes that re-plan the same trip instantly.
+- **Elevation profile** — walking routes show a hill profile with the biggest elevation changes marked; tapping one highlights that exact spot on the map.
+- **Turn-by-turn navigation** — spoken directions, auto-reroute on deviation, works with the screen off via the optional Android shell (see below).
+- **Search along the route** — find things ahead of you (or along the whole route, before you start) without leaving your trip; picking one adds it as a stop.
+- **Favorites & recent trips**, **offline map tiles** for a whole area, and a **resume-in-progress-trip** if the tab reloads mid-drive.
+- **Shareable route links** — encode a whole trip (stops and mode included) into a URL with no backend involved; opening one pre-fills the trip for whoever you send it to.
+- **Street-level imagery** coverage via Mapillary, when configured.
 
 ## Running it
 
@@ -62,6 +75,7 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **Ferry-only-access landmarks**: some pedestrianized OSM landmarks (Gateway of India in Mumbai is the confirmed example) have no drivable road access in Valhalla's graph at all except tourist ferry piers, so *any* route ending there resolves to a ferry regardless of query phrasing or costing options. The app detects this (`checkRoutePlausibility`) and warns rather than silently showing an absurd route, but can't route around a gap that doesn't exist in the underlying map data — try a nearby street address instead.
 - **EV charging search is genuinely sparse** in India's current OSM coverage — a "no EV charging found nearby" result often reflects real data gaps, not a search bug.
 - **Transit mode** covers planning and rendering only, not live GPS-guided transit navigation — boarding/alighting detection for buses and trains is a different problem from road-snapping and was out of scope. It also can't be tested end-to-end here since there's no public OpenTripPlanner demo server to default to.
+- **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server `VALHALLA_URL` points at (confirmed working on the public demo server) — if a self-hosted instance has it disabled, the walking route itself still works fine, just without the chart.
 - **Android shell** — see above; unverified on a real device.
 
 ## Troubleshooting: PWA installed on Android renders blank
