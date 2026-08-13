@@ -1399,6 +1399,15 @@ function matchCategoryTag(subject) {
 // contain "in" (e.g. "parking", "within").
 const NEAR_QUERY_PATTERN = /^(.+?)\s+(?:near|close to|around|in)\s+(.+)$/i;
 
+// Matches "<origin> to <destination>" typed into the plain search box —
+// e.g. "Milky Way Apartments to Trinity World" — as a directions shortcut.
+// Checked separately from, and only after, NEAR_QUERY_PATTERN above:
+// "close to" contains the literal substring " to ", so a query like
+// "petrol pump close to Marine Drive" would otherwise wrongly split as a
+// (nonsensical) "petrol pump close" -> "Marine Drive" trip instead of the
+// intended near-search — see setupAutocomplete's onDirectionsShortcut.
+const TO_QUERY_PATTERN = /^(.+?)\s+to\s+(.+)$/i;
+
 /** "EV charging near Gateway of India" (or "EV charging in Kochi") → geocode
  * the place first as the anchor, then search "EV charging" around that
  * anchor rather than near the device's own location — the whole point of a
@@ -1714,7 +1723,15 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
   listEl.classList.remove('hidden');
 }
 
-function setupAutocomplete(inputEl, listEl, onSelect) {
+/** `opts.onDirectionsShortcut(fromText, toText, isStale)`, if given, is
+ * checked first on every debounce firing — only setupAutocomplete(el.
+ * placeInput, ...) passes this, since "X to Y" as a directions shortcut
+ * only makes sense typed into the plain single search box, not into a
+ * from/to/stop field that's already dedicated to one side of a trip. When
+ * it matches and the hook is provided, the normal geocode search for the
+ * whole string is skipped entirely — the hook owns showing its own
+ * loading/error state either way. */
+function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
   let debounceTimer = null;
   let seq = 0; // guards against out-of-order network responses
 
@@ -1739,6 +1756,15 @@ function setupAutocomplete(inputEl, listEl, onSelect) {
       // still in flight — the seq guard alone lets it render. Re-checking
       // the live input value at render time catches this.
       const isStale = () => mySeq !== seq || inputEl.value.trim() !== query;
+
+      if (opts.onDirectionsShortcut && !NEAR_QUERY_PATTERN.test(query)) {
+        const toMatch = query.match(TO_QUERY_PATTERN);
+        if (toMatch) {
+          await opts.onDirectionsShortcut(toMatch[1].trim(), toMatch[2].trim(), isStale);
+          return;
+        }
+      }
+
       showSuggestionLoading(listEl);
       try {
         const results = await geocodeSearch(query, {
@@ -1820,7 +1846,77 @@ function selectPlace(picked) {
   }
 }
 
-setupAutocomplete(el.placeInput, el.placeSuggestions, selectPlace);
+/** "Milky Way Apartments to Trinity World" typed into the plain search box
+ * (see TO_QUERY_PATTERN) — geocodes both sides (each through the same
+ * geocodeSearch() any other search uses, so "near X"/typo-tolerance/etc.
+ * apply to both halves too) and jumps straight into a planned route,
+ * rather than making you fill in two separate directions fields for
+ * something you already typed as one sentence. Only ever the top result
+ * on each side is used, matching how geocodeNear's own anchor lookup
+ * already works — no disambiguation UI for either half.
+ *
+ * If either side can't be found (or the lookup fails outright), that field
+ * is just left blank in the directions form instead of aborting the whole
+ * thing — the side that WAS found still gets filled in, so there's less
+ * left to redo by hand, and a status message says which part needs fixing.
+ * The route is only auto-planned when both sides resolved.
+ *
+ * `isStale` (from setupAutocomplete) is threaded through both lookups and
+ * re-checked after each: if the user edits the query mid-lookup, an
+ * in-flight fallback chain for the old text aborts instead of wasting
+ * requests, and a response that arrives after the fact is simply
+ * discarded. */
+async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
+  const searchOpts = (text) => ({
+    shouldAbort: isStale,
+    onFallbackStart: () => {
+      if (!isStale()) showSuggestionLoading(el.placeSuggestions, `No direct match for "${text}" — refining the search…`);
+    },
+  });
+
+  showSuggestionLoading(el.placeSuggestions, `Finding "${fromText}"…`);
+  let fromResults = [];
+  try {
+    fromResults = await geocodeSearch(fromText, searchOpts(fromText));
+  } catch (err) {
+    if (isStale()) return;
+    // Not found and "couldn't even check" are treated the same here —
+    // either way this side is left blank rather than aborting the whole
+    // shortcut over what the OTHER side might still resolve fine.
+  }
+  if (isStale()) return;
+
+  showSuggestionLoading(el.placeSuggestions, `Finding "${toText}"…`);
+  let toResults = [];
+  try {
+    toResults = await geocodeSearch(toText, searchOpts(toText));
+  } catch (err) {
+    if (isStale()) return;
+  }
+  if (isStale()) return;
+
+  hideSuggestionList(el.placeSuggestions);
+  el.placeInput.value = '';
+  // Start from a clean slate rather than relying on goToDirections' own
+  // "only touch state.from/to if given a truthy value" behaviour, which
+  // would otherwise leave a stale value from an unrelated earlier search
+  // sitting in whichever side didn't resolve this time.
+  state.from = null;
+  state.to = null;
+  goToDirections({ from: fromResults[0], to: toResults[0] });
+
+  if (!fromResults.length && !toResults.length) {
+    showStatus(`Could not find "${fromText}" or "${toText}" — fill in both to continue.`, 'error');
+  } else if (!fromResults.length) {
+    showStatus(`Could not find "${fromText}" — fill in the starting point.`, 'error');
+  } else if (!toResults.length) {
+    showStatus(`Could not find "${toText}" — fill in the destination.`, 'error');
+  } else {
+    el.planBtn.click();
+  }
+}
+
+setupAutocomplete(el.placeInput, el.placeSuggestions, selectPlace, { onDirectionsShortcut: handlePlaceToPlaceDirections });
 
 el.placeClearBtn.addEventListener('click', () => {
   el.placeInput.value = '';
