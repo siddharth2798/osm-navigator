@@ -121,16 +121,7 @@ const el = {
   mapControlsLeft: document.getElementById('map-controls-left'),
   docsBtn: document.getElementById('docs-btn'),
   docsPanel: document.getElementById('docs-panel'),
-  docsPanelTitle: document.getElementById('docs-panel-title'),
-  docsBackBtn: document.getElementById('docs-back-btn'),
   docsCloseBtn: document.getElementById('docs-close-btn'),
-  docsHome: document.getElementById('docs-home'),
-  docsCategories: document.getElementById('docs-categories'),
-  docsCategory: document.getElementById('docs-category'),
-  docsCategoryBlurb: document.getElementById('docs-category-blurb'),
-  docsArticles: document.getElementById('docs-articles'),
-  docsArticle: document.getElementById('docs-article'),
-  docsArticleBody: document.getElementById('docs-article-body'),
 };
 
 // ============================================================================
@@ -2790,231 +2781,17 @@ el.deleteListDetailBtn.addEventListener('click', async () => {
 
 // ============================================================================
 // Help & documentation — a static, always-available "what does this app do
-// and who built the pieces it's made of" screen, structured like a real
-// docs site: a home screen of categories, each opening a list of short
-// articles (Credits instead opens straight to its content — there's only
-// one thing to show, so a list of one would just be an extra tap). Same
-// full-screen-panel pattern as Saved/Offline (see closeSavedPanel etc.
-// above): pushBackLayer on open, goBackInApp closes it, hardware back works
-// for free at every level.
+// and who built the pieces it's made of" screen. Content lives directly in
+// index.html as native <details>/<summary> accordion rows (expand in place,
+// no intra-panel screens), so there's nothing to render here. Same
+// single-level panel pattern as Offline (see el.offlineBtn above):
+// pushBackLayer on open, goBackInApp closes it.
 // ============================================================================
-const DOCS_CATEGORY_ICONS = {
-  start: '<circle cx="11" cy="11" r="7"/><path d="M21 21 L16.5 16.5"/>',
-  navigate: '<path d="M13 3 L4 14 h6 l-1 7 9-12 h-6 Z"/>',
-  save: '<path d="M6 3 h12 a1 1 0 0 1 1 1 v17 l-7-4 -7 4 V4 a1 1 0 0 1 1-1 Z"/>',
-  credits: '<path d="M12 3 L14.6 9 L21 9.8 L16.3 14.1 L17.6 20.5 L12 17.3 L6.4 20.5 L7.7 14.1 L3 9.8 L9.4 9 Z"/>',
-};
-function docsIcon(name) {
-  return `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${DOCS_CATEGORY_ICONS[name]}</svg>`;
-}
-function docsChevron() {
-  return '<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg>';
-}
-
-const DOCS_CONTENT = [
-  {
-    id: 'start',
-    title: 'Getting started',
-    blurb: 'Search for a place, plan a trip, and pick how you’re getting there.',
-    articles: [
-      {
-        title: 'Searching for places',
-        body: '<p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly.</p>',
-      },
-      {
-        title: 'Getting directions',
-        body: '<p>Tap the search box to switch to directions, or use the shortcut and type it straight into the search box: <em>“Connaught Place to India Gate”</em>.</p><p>Add up to 8 stops with “Add stop”, and drag a stop by its handle on the left to reorder it.</p>',
-      },
-      {
-        title: 'Drive, walk, or transit',
-        body: '<p>Once both ends of a trip are set, choose how you’re getting there with the Drive / Walk toggle (Transit appears too if it’s been set up). Switching modes re-plans the same trip instantly.</p>',
-      },
-    ],
-  },
-  {
-    id: 'navigate',
-    title: 'Navigating',
-    blurb: 'Turn-by-turn guidance, elevation, and finding things along the way.',
-    articles: [
-      {
-        title: 'Turn-by-turn navigation',
-        body: '<p>Tap “Start navigation” once a route looks right. Spoken directions play as you go, and the route recalculates automatically if you go off course.</p>',
-      },
-      {
-        title: 'Elevation profile',
-        body: '<p>Walking routes show a hill profile in the bottom sheet, with the biggest changes in elevation marked along the line. Tap any of those points to see exactly where it is on the map.</p>',
-      },
-      {
-        title: 'Search along your route',
-        body: '<p>While a route is planned or you’re actively on it, tap the search icon near the map’s zoom controls to look for petrol, food, and more without leaving your route — picking a result adds it as a stop.</p>',
-      },
-    ],
-  },
-  {
-    id: 'save',
-    title: 'Saving & sharing',
-    blurb: 'Favorites, offline maps, sending a trip to someone else, and resuming one.',
-    articles: [
-      {
-        title: 'Saving places',
-        body: '<p>Tap the star on any place to save it to a list. Open your saved lists any time from the bookmark icon next to the search box.</p>',
-      },
-      {
-        title: 'Offline maps',
-        body: '<p>Tap the cloud icon next to the search box to download the map tiles for whatever area is currently on screen, so it’s still usable with no signal.</p>',
-      },
-      {
-        title: 'Sharing a route',
-        body: '<p>Once a route is planned, tap the share icon in the bottom sheet to send a link — opening it pre-fills the same trip for whoever you send it to, without planning anything on their behalf automatically.</p>',
-      },
-      {
-        title: 'Picking up where you left off',
-        body: '<p>If the app closes or reloads mid-trip, reopening it restores your in-progress route automatically.</p>',
-      },
-    ],
-  },
-  {
-    id: 'credits',
-    title: 'Credits',
-    blurb: 'The open-source maps, tools, and libraries this app is built on.',
-    content: `<div class="panel-section">
-      <div class="panel-section-title">Map data &amp; services</div>
-      <ul class="credits-list">
-        <li><a href="https://www.openstreetmap.org" target="_blank" rel="noopener">OpenStreetMap</a> — all the underlying map data, built and maintained by volunteer contributors worldwide.</li>
-        <li><a href="https://maplibre.org" target="_blank" rel="noopener">MapLibre GL JS</a> — the open-source map rendering engine this app is built on.</li>
-        <li><a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> — free vector map tiles, no API key required.</li>
-        <li><a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a> — place search and geocoding.</li>
-        <li><a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a> — the routing engine behind driving and walking directions.</li>
-        <li><a href="https://www.opentripplanner.org" target="_blank" rel="noopener">OpenTripPlanner</a> — transit trip planning, when configured.</li>
-        <li><a href="https://www.mapillary.com" target="_blank" rel="noopener">Mapillary</a> — street-level imagery coverage, when configured.</li>
-      </ul>
-    </div>
-    <div class="panel-section">
-      <div class="panel-section-title">Libraries</div>
-      <ul class="credits-list">
-        <li><a href="https://turfjs.org" target="_blank" rel="noopener">Turf.js</a> — geospatial calculations: distances, route slicing, along-route search.</li>
-        <li><a href="https://capacitorjs.com" target="_blank" rel="noopener">Capacitor</a> — the optional native Android app shell.</li>
-        <li><a href="https://github.com/capacitor-community/background-geolocation" target="_blank" rel="noopener">Capacitor Background Geolocation</a> — reliable location tracking with the screen off, in the Android shell.</li>
-      </ul>
-    </div>
-    <div class="panel-section">
-      <div class="panel-section-title">A personal project</div>
-      <p>Built as a self-hosted, single-user navigation app — no accounts, no tracking, no server beyond the open services listed above.</p>
-    </div>`,
-  },
-];
-
-let docsCurrentCategoryId = null;
-
-function showDocsHomeView() {
-  docsCurrentCategoryId = null;
-  el.docsPanelTitle.textContent = 'Help & documentation';
-  el.docsBackBtn.classList.add('hidden');
-  el.docsHome.classList.remove('hidden');
-  el.docsCategory.classList.add('hidden');
-  el.docsArticle.classList.add('hidden');
-}
-
-function renderDocsHome() {
-  el.docsCategories.innerHTML = DOCS_CONTENT.map((cat) => `
-    <button type="button" class="docs-category-card" data-id="${cat.id}">
-      <span class="docs-category-icon">${docsIcon(cat.id)}</span>
-      <span class="docs-category-text">
-        <span class="docs-category-title">${cat.title}</span>
-        <span class="docs-category-blurb">${cat.blurb}</span>
-      </span>
-      ${docsChevron()}
-    </button>`).join('');
-  el.docsCategories.querySelectorAll('.docs-category-card').forEach((card) => {
-    card.addEventListener('click', () => openDocsCategory(card.dataset.id));
-  });
-}
-
-/** Stepping back from a category (or from a direct-content category like
- * Credits) always lands on the home screen. */
-function closeDocsCategory() {
-  showDocsHomeView();
-}
-
-function renderDocsCategoryView(category) {
-  el.docsPanelTitle.textContent = category.title;
-  el.docsBackBtn.classList.remove('hidden');
-  el.docsCategoryBlurb.textContent = category.blurb;
-  el.docsArticles.innerHTML = category.articles
-    .map((a, i) => `<button type="button" class="docs-article-row" data-idx="${i}"><span>${a.title}</span>${docsChevron()}</button>`)
-    .join('');
-  el.docsArticles.querySelectorAll('.docs-article-row').forEach((row) => {
-    row.addEventListener('click', () => openDocsArticle(Number(row.dataset.idx)));
-  });
-  el.docsHome.classList.add('hidden');
-  el.docsCategory.classList.remove('hidden');
-  el.docsArticle.classList.add('hidden');
-}
-
-function showDocsArticleView(title, bodyHtml) {
-  el.docsPanelTitle.textContent = title;
-  el.docsBackBtn.classList.remove('hidden');
-  el.docsArticleBody.innerHTML = bodyHtml;
-  el.docsHome.classList.add('hidden');
-  el.docsCategory.classList.add('hidden');
-  el.docsArticle.classList.remove('hidden');
-}
-
-function openDocsCategory(id) {
-  const category = DOCS_CONTENT.find((c) => c.id === id);
-  if (!category) return;
-  docsCurrentCategoryId = id;
-  pushBackLayer(closeDocsCategory);
-  if (category.articles) {
-    renderDocsCategoryView(category);
-  } else {
-    showDocsArticleView(category.title, category.content); // e.g. Credits — no article list, just the one page
-  }
-}
-
-/** Stepping back from an article returns to its category's article list —
- * re-derived from docsCurrentCategoryId rather than captured per-article,
- * since it's always the same category until the panel closes or a new one
- * is opened. */
-function closeDocsArticle() {
-  const category = DOCS_CONTENT.find((c) => c.id === docsCurrentCategoryId);
-  if (category && category.articles) renderDocsCategoryView(category);
-  else showDocsHomeView();
-}
-
-function openDocsArticle(idx) {
-  const category = DOCS_CONTENT.find((c) => c.id === docsCurrentCategoryId);
-  if (!category) return;
-  const article = category.articles[idx];
-  if (!article) return;
-  pushBackLayer(closeDocsArticle);
-  // Wrapped in the same .panel-section card Credits' own (already
-  // self-wrapped) content uses, so every article body reads consistently
-  // regardless of which path got it here.
-  showDocsArticleView(article.title, `<div class="panel-section">${article.body}</div>`);
-}
-
-function closeDocsPanel() {
-  el.docsPanel.classList.add('hidden');
-}
 el.docsBtn.addEventListener('click', () => {
-  pushBackLayer(closeDocsPanel);
-  renderDocsHome();
-  showDocsHomeView();
+  pushBackLayer(() => el.docsPanel.classList.add('hidden'));
   el.docsPanel.classList.remove('hidden');
 });
-el.docsBackBtn.addEventListener('click', goBackInApp);
-el.docsCloseBtn.addEventListener('click', () => {
-  // Unwinds however many docs-specific layers are nested on top (0, 1, or 2
-  // — home has none, a category has one, an article has two) before the
-  // final goBackInApp() closes the panel itself, so the "X" always exits
-  // the whole screen in one tap regardless of how deep the user drilled in.
-  while (backStack.length && (backStack[backStack.length - 1] === closeDocsArticle || backStack[backStack.length - 1] === closeDocsCategory)) {
-    backStack.pop();
-  }
-  showDocsHomeView();
-  goBackInApp();
-});
+el.docsCloseBtn.addEventListener('click', goBackInApp);
 
 // #map-controls-left mirrors #map-controls' own "raised clear of the bottom
 // sheet" state via observer rather than threading a call through that

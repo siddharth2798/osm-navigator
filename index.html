@@ -492,37 +492,112 @@
   </div>
 
   <!-- ============ Help & documentation ============
-       Structure (categories → articles → article body) is built entirely
-       from DOCS_CONTENT in app.js — these three divs are just the mount
-       points for whichever level is currently showing. See
-       showDocsHomeView/openDocsCategory/openDocsArticle in app.js. -->
+       A single scrollable page, no intra-panel navigation: each category is
+       a plain-text section header + a flat grouped list of native
+       <details>/<summary> rows that expand in place. Content is static
+       (never generated from JS) since it never changes at runtime. -->
   <div id="docs-panel" class="hidden">
     <div class="panel-header">
-      <button id="docs-back-btn" class="icon-btn hidden" type="button" aria-label="Back">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 L8 12 L15 19"/></svg>
-      </button>
-      <div id="docs-panel-title" class="panel-title">Help &amp; documentation</div>
+      <div class="panel-title">Help &amp; documentation</div>
       <button id="docs-close-btn" class="icon-btn" type="button" aria-label="Close">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
       </button>
     </div>
 
-    <!-- Home: one card per category -->
-    <div id="docs-home">
-      <div id="docs-categories" class="docs-categories"></div>
-    </div>
+    <section class="docs-section docs-section-first">
+      <h3 class="docs-section-title">Getting started</h3>
+      <p class="docs-blurb">Search for a place, plan a trip, and pick how you're getting there.</p>
+      <div class="docs-group">
+        <details class="docs-item">
+          <summary>Searching for places<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Getting directions<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body">
+            <p>Tap the search box to switch to directions, or use the shortcut and type it straight into the search box: <em>&#8220;Connaught Place to India Gate&#8221;</em>.</p>
+            <p>Add up to 8 stops with &#8220;Add stop&#8221;, and drag a stop by its handle on the left to reorder it.</p>
+          </div>
+        </details>
+        <details class="docs-item">
+          <summary>Drive, walk, or transit<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Once both ends of a trip are set, choose how you're getting there with the Drive / Walk toggle (Transit appears too if it's been set up). Switching modes re-plans the same trip instantly.</p></div>
+        </details>
+      </div>
+    </section>
 
-    <!-- Category: its own short blurb + a list of article rows -->
-    <div id="docs-category" class="hidden">
-      <p id="docs-category-blurb" class="docs-blurb"></p>
-      <div id="docs-articles" class="docs-articles"></div>
-    </div>
+    <section class="docs-section">
+      <h3 class="docs-section-title">Navigating</h3>
+      <p class="docs-blurb">Turn-by-turn guidance, elevation, and finding things along the way.</p>
+      <div class="docs-group">
+        <details class="docs-item">
+          <summary>Turn-by-turn navigation<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Tap &#8220;Start navigation&#8221; once a route looks right. Spoken directions play as you go, and the route recalculates automatically if you go off course.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Elevation profile<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Walking routes show a hill profile in the bottom sheet, with the biggest changes in elevation marked along the line. Tap any of those points to see exactly where it is on the map.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Search along your route<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>While a route is planned or you're actively on it, tap the search icon near the map's zoom controls to look for petrol, food, and more without leaving your route — picking a result adds it as a stop.</p></div>
+        </details>
+      </div>
+    </section>
 
-    <!-- Article body — also reused directly for a category with no
-         sub-articles (Credits), see openDocsCategory in app.js. -->
-    <div id="docs-article" class="hidden">
-      <div id="docs-article-body" class="docs-article-body"></div>
-    </div>
+    <section class="docs-section">
+      <h3 class="docs-section-title">Saving &amp; sharing</h3>
+      <p class="docs-blurb">Favorites, offline maps, sending a trip to someone else, and resuming one.</p>
+      <div class="docs-group">
+        <details class="docs-item">
+          <summary>Saving places<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Tap the star on any place to save it to a list. Open your saved lists any time from the bookmark icon next to the search box.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Offline maps<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Tap the cloud icon next to the search box to download the map tiles for whatever area is currently on screen, so it's still usable with no signal.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Sharing a route<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>Once a route is planned, tap the share icon in the bottom sheet to send a link — opening it pre-fills the same trip for whoever you send it to, without planning anything on their behalf automatically.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Picking up where you left off<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>If the app closes or reloads mid-trip, reopening it restores your in-progress route automatically.</p></div>
+        </details>
+      </div>
+    </section>
+
+    <section class="docs-section">
+      <h3 class="docs-section-title">Credits</h3>
+      <p class="docs-blurb">The open-source maps, tools, and libraries this app is built on.</p>
+      <div class="docs-group docs-credits">
+        <div class="docs-credits-block">
+          <div class="panel-section-title">Map data &amp; services</div>
+          <ul class="credits-list">
+            <li><a href="https://www.openstreetmap.org" target="_blank" rel="noopener">OpenStreetMap</a> — all the underlying map data, built and maintained by volunteer contributors worldwide.</li>
+            <li><a href="https://maplibre.org" target="_blank" rel="noopener">MapLibre GL JS</a> — the open-source map rendering engine this app is built on.</li>
+            <li><a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> — free vector map tiles, no API key required.</li>
+            <li><a href="https://nominatim.org" target="_blank" rel="noopener">Nominatim</a> — place search and geocoding.</li>
+            <li><a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a> — the routing engine behind driving and walking directions.</li>
+            <li><a href="https://www.opentripplanner.org" target="_blank" rel="noopener">OpenTripPlanner</a> — transit trip planning, when configured.</li>
+            <li><a href="https://www.mapillary.com" target="_blank" rel="noopener">Mapillary</a> — street-level imagery coverage, when configured.</li>
+          </ul>
+        </div>
+        <div class="docs-credits-block">
+          <div class="panel-section-title">Libraries</div>
+          <ul class="credits-list">
+            <li><a href="https://turfjs.org" target="_blank" rel="noopener">Turf.js</a> — geospatial calculations: distances, route slicing, along-route search.</li>
+            <li><a href="https://capacitorjs.com" target="_blank" rel="noopener">Capacitor</a> — the optional native Android app shell.</li>
+            <li><a href="https://github.com/capacitor-community/background-geolocation" target="_blank" rel="noopener">Capacitor Background Geolocation</a> — reliable location tracking with the screen off, in the Android shell.</li>
+          </ul>
+        </div>
+        <div class="docs-credits-block">
+          <div class="panel-section-title">A personal project</div>
+          <p>Built as a self-hosted, single-user navigation app — no accounts, no tracking, no server beyond the open services listed above. Source on <a href="https://github.com/siddharth2798/osm-navigator" target="_blank" rel="noopener">GitHub</a>.</p>
+        </div>
+      </div>
+    </section>
   </div>
 
 </div>

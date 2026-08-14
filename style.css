@@ -19,6 +19,8 @@
   --border: #2a3547;
   --radius: 16px;
   --shadow: 0 8px 28px rgba(0,0,0,0.5);
+  --docs-body: #c3cede;
+  --docs-link: #e0ac52;
 }
 
 * { box-sizing: border-box; }
@@ -1035,58 +1037,53 @@ button {
 }
 #offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden { display: none; }
 
-/* ---- docs home: one card per category ---- */
-.docs-categories { display: flex; flex-direction: column; gap: 10px; }
-.docs-category-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  width: 100%;
-  padding: 14px;
-  background: var(--panel);
-  border-radius: var(--radius);
-  text-align: left;
+/* ---- docs: single scrollable page, one flat grouped list per section ----
+   Uses its own --docs-body/--docs-link tokens rather than the app-wide
+   --text-dim/--accent: those are reused in ~30 other places (buttons, active
+   states, chips), so retuning them here for reading comfort would ripple
+   into unrelated UI. --docs-link intentionally avoids the app's blue accent
+   so a hyperlink in a paragraph of prose doesn't read as a tappable button. */
+.docs-section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin: 20px 2px 6px;
 }
-.docs-category-icon {
-  flex-shrink: 0;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: var(--panel-2);
-  color: var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.docs-category-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.docs-category-title { font-size: 15px; font-weight: 700; color: var(--text); }
-.docs-category-blurb { font-size: 13px; color: var(--text-dim); line-height: 1.35; }
-.docs-chevron { flex-shrink: 0; color: var(--text-dim); }
+.docs-section-first .docs-section-title { margin-top: 0; }
+.docs-blurb { margin: 0 2px 10px; font-size: 13px; color: var(--docs-body); line-height: 1.45; }
 
-/* ---- docs category: blurb + a list of article rows ---- */
-.docs-blurb { margin: 0 0 14px; font-size: 13px; color: var(--text-dim); line-height: 1.4; }
-.docs-articles { display: flex; flex-direction: column; gap: 8px; }
-.docs-article-row {
+.docs-group { background: var(--panel); border-radius: var(--radius); overflow: hidden; }
+
+.docs-item { border-bottom: 1px solid var(--border); }
+.docs-item:last-child { border-bottom: none; }
+.docs-item summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  width: 100%;
   padding: 14px 16px;
-  background: var(--panel);
-  border-radius: 12px;
-  text-align: left;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
+  cursor: pointer;
+  list-style: none;
 }
+.docs-item summary::-webkit-details-marker { display: none; }
+.docs-item .docs-chevron { flex-shrink: 0; color: var(--text-dim); transition: transform 0.15s ease; }
+.docs-item[open] .docs-chevron { transform: rotate(90deg); }
+.docs-item-body { padding: 0 16px 16px; font-size: 14px; line-height: 1.6; color: var(--docs-body); }
+.docs-item-body p { margin: 0; }
+.docs-item-body p + p { margin-top: 10px; }
 
-/* ---- article body (also reused directly by the Credits category) ---- */
-.docs-article-body .panel-section:first-child { margin-top: 0; }
-.panel-section p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
-.panel-section p + p { margin-top: 10px; }
-.credits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--text-dim); }
-.credits-list a { color: var(--accent); font-weight: 600; text-decoration: none; }
+/* ---- credits: static reference list, not an accordion ---- */
+.docs-credits { padding: 16px; display: flex; flex-direction: column; gap: 18px; }
+.docs-credits-block .panel-section-title { margin-bottom: 10px; }
+.docs-credits-block p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--docs-body); }
+.credits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.6; color: var(--docs-body); }
+.credits-list a, .docs-credits-block a { color: var(--docs-link); font-weight: 600; text-decoration: none; }
+.credits-list a:hover, .credits-list a:focus-visible, .docs-credits-block a:hover, .docs-credits-block a:focus-visible { text-decoration: underline; }
 
 .panel-header {
   display: flex;
