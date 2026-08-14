@@ -5,6 +5,7 @@ import {
   addRecentTrip, getRecentTrips, deleteRecentTrip,
   addDownloadedArea, getDownloadedAreas, deleteDownloadedArea,
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
+  setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch } from './native-location.js';
 
@@ -82,6 +83,7 @@ const el = {
   navBannerIcon: document.getElementById('nav-banner-icon'),
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
+  navSpeed: document.getElementById('nav-speed'),
   maneuverList: document.getElementById('maneuver-list'),
   offlinePanel: document.getElementById('offline-panel'),
   offlineCloseBtn: document.getElementById('offline-close-btn'),
@@ -101,6 +103,7 @@ const el = {
   savedPanelTitle: document.getElementById('saved-panel-title'),
   savedCloseBtn: document.getElementById('saved-close-btn'),
   savedListsView: document.getElementById('saved-lists-view'),
+  quickPlacesList: document.getElementById('quick-places-list'),
   savedListsList: document.getElementById('saved-lists-list'),
   newListBtn: document.getElementById('new-list-btn'),
   savedListDetailView: document.getElementById('saved-list-detail-view'),
@@ -118,6 +121,7 @@ const el = {
   mapillaryPrevBtn: document.getElementById('mapillary-prev-btn'),
   mapillaryNextBtn: document.getElementById('mapillary-next-btn'),
   travelModeToggle: document.getElementById('travel-mode-toggle'),
+  routeAvoidToggle: document.getElementById('route-avoid-toggle'),
   mapControlsLeft: document.getElementById('map-controls-left'),
   docsBtn: document.getElementById('docs-btn'),
   docsPanel: document.getElementById('docs-panel'),
@@ -134,7 +138,10 @@ const state = {
   routeOptions: [],    // raw Valhalla trip objects: [primary, ...meaningfully-different alternates]
   selectedRouteIndex: 0, // which entry of routeOptions is currently drawn/active
   travelMode: 'drive', // 'drive' | 'walk' | 'transit' — transit has no live-navigation counterpart
+  avoidTolls: false,   // drive-only; see costingOptionsFor()
+  avoidHighways: false, // drive-only; see costingOptionsFor()
   transitItinerary: null, // last-planned OTP2 itinerary, kept separate from `route` since it's a different shape
+  pendingQuickPlaceKind: null, // 'home' | 'work' while the next place picked from search should be saved as a quick place, not routed to
   originMarker: null,
   destMarker: null,
   stopMarkers: [],     // numbered pins for intermediate stops, in visit order
@@ -1650,6 +1657,24 @@ async function geocodeSearch(query, opts = {}) {
   return results;
 }
 
+/** "Home" or "Work" typed as a query resolves straight from the saved quick
+ * place (see armQuickPlacePick/setQuickPlace above) instead of being sent to
+ * Nominatim, which obviously has no place literally named "Home" or "Work".
+ * This is the one place every text-entry path funnels through — the plain
+ * search box, the split from/to fields, and each half of an "X to Y"
+ * shortcut all call this instead of geocodeSearch directly, so the keyword
+ * works consistently everywhere rather than needing to be wired in per
+ * call site. Falls through to a normal geocodeSearch for anything else,
+ * including when the keyword is typed but nothing's been saved for it yet. */
+async function resolveTextOrQuickPlace(text, opts) {
+  const keyword = text.trim().toLowerCase();
+  if (keyword === 'home' || keyword === 'work') {
+    const saved = await getQuickPlace(keyword).catch(() => null);
+    if (saved) return [{ label: saved.label, lat: saved.lat, lon: saved.lon }];
+  }
+  return geocodeSearch(text, opts);
+}
+
 /** Wires a text input + its suggestion <ul> to Nominatim. `onSelect` is
  * called with a {label,lat,lon} result when the user picks one, or with
  * `null` as soon as they start typing again (so a stale pick can never be
@@ -1784,7 +1809,7 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
 
       showSuggestionLoading(listEl);
       try {
-        const results = await geocodeSearch(query, {
+        const results = await resolveTextOrQuickPlace(query, {
           shouldAbort: isStale,
           // Only the live-typed field needs this — it's what makes the
           // several-second fallback chain legible instead of looking like
@@ -1851,6 +1876,20 @@ function closePlaceCard() {
  * dismiss button — forgetBackLayerIfTop keeps the back-stack honest either
  * way without routing every keystroke through history.back(). */
 function selectPlace(picked) {
+  // A quick-place (Home/Work) is being set — divert this pick away from the
+  // normal "route to it" flow entirely, since the intent here was only to
+  // save a location, not plan a trip right now. See armQuickPlacePick.
+  if (picked && state.pendingQuickPlaceKind) {
+    const kind = state.pendingQuickPlaceKind;
+    state.pendingQuickPlaceKind = null;
+    setQuickPlace(kind, picked)
+      .then(() => {
+        showStatus(`${kind === 'home' ? 'Home' : 'Work'} set to ${shortLabel(picked)}.`, 'success');
+        renderQuickPlaces();
+      })
+      .catch((err) => showStatus(`Could not save that: ${err.message}`, 'error'));
+    return;
+  }
   state.to = picked;
   updatePlanningMarkers();
   if (picked) {
@@ -1894,7 +1933,7 @@ async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
   showSuggestionLoading(el.placeSuggestions, `Finding "${fromText}"…`);
   let fromResults = [];
   try {
-    fromResults = await geocodeSearch(fromText, searchOpts(fromText));
+    fromResults = await resolveTextOrQuickPlace(fromText, searchOpts(fromText));
   } catch (err) {
     if (isStale()) return;
     // Not found and "couldn't even check" are treated the same here —
@@ -1906,7 +1945,7 @@ async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
   showSuggestionLoading(el.placeSuggestions, `Finding "${toText}"…`);
   let toResults = [];
   try {
-    toResults = await geocodeSearch(toText, searchOpts(toText));
+    toResults = await resolveTextOrQuickPlace(toText, searchOpts(toText));
   } catch (err) {
     if (isStale()) return;
   }
@@ -2012,7 +2051,7 @@ async function addStopFromPoi(picked) {
     const fromPoint = isMidDrive ? { lat: state.lastFix.lat, lon: state.lastFix.lng } : state.from;
     const stops = isMidDrive ? getStops().slice(state.currentLegIndex) : getStops();
     if (!isMidDrive) state.currentLegIndex = 0; // mid-drive: left alone, the next GPS fix recomputes it against the new route
-    const { trip } = await requestRoute(fromPoint, state.to, stops, 0, COSTING_BY_MODE[state.travelMode]); // no alternates — adding a stop already commits you to a specific trip
+    const { trip } = await requestRoute(fromPoint, state.to, stops, 0, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways }); // no alternates — adding a stop already commits you to a specific trip
     state.routeOptions = [trip];
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
@@ -2251,6 +2290,11 @@ function leaveDirectionsMode() {
 }
 
 function goToDirections({ from, to } = {}) {
+  // Entering directions mode by any path (a favorite, a recent trip, the
+  // "X to Y" shortcut) means a Home/Work pick-in-progress is no longer what
+  // the user is doing — cancel it rather than leaving it armed to silently
+  // hijack whatever place gets selected next.
+  state.pendingQuickPlaceKind = null;
   if (from) state.from = from;
   if (to) state.to = to;
   clearStops(); // a favorite/recent pick starts a fresh trip — don't carry over a previous one's stops; also redraws markers
@@ -2503,6 +2547,18 @@ function folderIcon() {
     + 'stroke-linecap="round" stroke-linejoin="round"><path d="M3 6 a1 1 0 0 1 1-1 h5 l2 2 h9 a1 1 0 0 1 1 1 v10 '
     + 'a1 1 0 0 1-1 1 H4 a1 1 0 0 1-1-1 Z"/></svg>';
 }
+function pencilIcon() {
+  return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M4 20 l0.8-4 L16 4.8 a1.5 1.5 0 0 1 2 0 l1.2 1.2 a1.5 1.5 0 0 1 0 2 L8 19.2 Z M14 6.8 L17.2 10"/></svg>';
+}
+function homeIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M4 11 L12 4 L20 11 V20 a1 1 0 0 1-1 1 H5 a1 1 0 0 1-1-1 Z M9 21 V13 h6 v8"/></svg>';
+}
+function workIcon() {
+  return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7 V5 a2 2 0 0 1 2-2 h4 a2 2 0 0 1 2 2 v2 M3 12 h18"/></svg>';
+}
 
 // ---- "Which list?" prompt: shared by every save action and by moving an
 // existing favorite to a different list from the Saved screen. ------------
@@ -2599,6 +2655,57 @@ el.listNamePromptSave.addEventListener('click', () => {
 // detail view with rename/delete for the list and move/delete per place. --
 
 let openSavedListId = null; // which list the detail view is currently showing, if any
+
+/** Sets the app up to save the *next* place picked from search as Home or
+ * Work, instead of routing to it — see the interception at the top of
+ * selectPlace(). Closes the Saved screen and hands focus to the plain
+ * search box, same "go do the search now" flow as any other search entry
+ * point. */
+function armQuickPlacePick(kind) {
+  state.pendingQuickPlaceKind = kind;
+  closeSavedPanelEntirely();
+  showStatus(`Search for ${kind === 'home' ? 'home' : 'your workplace'}, then pick a result to set it.`, 'info', { timeoutMs: 6000 });
+  el.placeInput.focus();
+}
+
+async function renderQuickPlaces() {
+  const [home, work] = await Promise.all([
+    getQuickPlace('home').catch(() => null),
+    getQuickPlace('work').catch(() => null),
+  ]);
+  el.quickPlacesList.innerHTML = '';
+  [
+    { kind: 'home', label: 'Home', icon: homeIcon(), place: home },
+    { kind: 'work', label: 'Work', icon: workIcon(), place: work },
+  ].forEach(({ kind, label, icon, place }) => {
+    const li = document.createElement('li');
+    const body = document.createElement('div');
+    body.className = 'saved-item-body quick-place-body';
+    if (place) {
+      body.innerHTML = `<span class="quick-place-icon">${icon}</span>`
+        + `<span><div class="saved-item-title">${label}</div>`
+        + `<div class="saved-item-meta">${escapeHtml(splitPlaceLabel(place.label).primary)}</div></span>`;
+      body.addEventListener('click', () => {
+        closeSavedPanelEntirely();
+        goToDirections({ to: { label: place.label, lat: place.lat, lon: place.lon } });
+      });
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'icon-btn small';
+      editBtn.setAttribute('aria-label', `Change ${label}`);
+      editBtn.innerHTML = pencilIcon();
+      editBtn.addEventListener('click', (e) => { e.stopPropagation(); armQuickPlacePick(kind); });
+      li.appendChild(body);
+      li.appendChild(editBtn);
+    } else {
+      body.innerHTML = `<span class="quick-place-icon">${icon}</span>`
+        + `<span class="saved-item-title quick-place-unset">Add ${label}</span>`;
+      body.addEventListener('click', () => armQuickPlacePick(kind));
+      li.appendChild(body);
+    }
+    el.quickPlacesList.appendChild(li);
+  });
+}
 
 async function renderSavedLists() {
   let lists = [];
@@ -2733,7 +2840,7 @@ el.savedBtn.addEventListener('click', async () => {
   pushBackLayer(closeSavedPanel);
   showSavedListsView();
   el.savedPanel.classList.remove('hidden');
-  await renderSavedLists();
+  await Promise.all([renderQuickPlaces(), renderSavedLists()]);
 });
 el.savedBackBtn.addEventListener('click', goBackInApp);
 el.savedCloseBtn.addEventListener('click', () => {
@@ -3043,8 +3150,8 @@ function checkRoutePlausibility(trip, from, to, hasStops = false) {
 // reroutes are never cache hits (the coordinates are different every time by
 // design), so this only ever saves the redundant-resubmit case, not real trips.
 const valhallaCache = new Map();
-function routeCacheKey(from, to, stops, wantAlternates, costing) {
-  return JSON.stringify([costing, wantAlternates, ...[from, ...stops, to].map((p) => [p.lat.toFixed(5), p.lon.toFixed(5)])]);
+function routeCacheKey(from, to, stops, wantAlternates, costing, avoidTolls, avoidHighways) {
+  return JSON.stringify([costing, wantAlternates, !!avoidTolls, !!avoidHighways, ...[from, ...stops, to].map((p) => [p.lat.toFixed(5), p.lon.toFixed(5)])]);
 }
 
 // Maps state.travelMode to Valhalla's costing model name. Adding a Bicycle
@@ -3052,11 +3159,23 @@ function routeCacheKey(from, to, stops, wantAlternates, costing) {
 // verified 'bicycle' costing also works against the configured Valhalla server.
 const COSTING_BY_MODE = { drive: 'auto', walk: 'pedestrian' };
 
-/** Only 'auto' has a use_ferry knob to tune; pedestrian costing doesn't
- * accept costing_options.pedestrian.use_ferry the same way (verified against
- * the live server), so costing_options is omitted entirely for it. */
-function costingOptionsFor(costing) {
-  return costing === 'auto' ? { auto: { use_ferry: 0 } } : undefined;
+/** Only 'auto' has use_ferry/use_highways/toll_booth_penalty knobs to tune;
+ * pedestrian costing doesn't accept costing_options.pedestrian the same way
+ * (verified against the live server), so costing_options is omitted
+ * entirely for it — avoidTolls/avoidHighways are silently ignored there.
+ * Both avoid knobs are soft penalties, not hard exclusions (same nature as
+ * the always-on use_ferry: 0): use_highways near 0 discourages but doesn't
+ * guarantee avoiding highways, and toll_booth_penalty at its max (43200s /
+ * 12h) strongly discourages tolls without an absolute guarantee either. */
+function costingOptionsFor(costing, { avoidTolls, avoidHighways } = {}) {
+  if (costing !== 'auto') return undefined;
+  return {
+    auto: {
+      use_ferry: 0,
+      ...(avoidHighways ? { use_highways: 0 } : {}),
+      ...(avoidTolls ? { toll_booth_penalty: 43200 } : {}),
+    },
+  };
 }
 
 /** Valhalla will happily return an "alternate" that's barely different from
@@ -3089,8 +3208,8 @@ function filterMeaningfulAlternates(primaryTrip, alternateTrips) {
  * `{ trip, alternates }` (alternates is `[]` when none were requested or
  * none passed the meaningful-difference filter above), so every caller has
  * one consistent shape regardless of whether it asked for alternates. */
-async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 'auto') {
-  const cacheKey = routeCacheKey(from, to, stops, wantAlternates, costing);
+async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 'auto', avoidOpts = {}) {
+  const cacheKey = routeCacheKey(from, to, stops, wantAlternates, costing, avoidOpts.avoidTolls, avoidOpts.avoidHighways);
   if (valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
 
   await valhallaLimiter();
@@ -3104,7 +3223,7 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   // (a destination with literally no drivable road access in the map data
   // can still resolve to a — possibly longer — ferry route; see
   // checkRoutePlausibility below for catching that instead).
-  const costingOptions = costingOptionsFor(costing);
+  const costingOptions = costingOptionsFor(costing, avoidOpts);
   if (costingOptions) body.costing_options = costingOptions;
   if (wantAlternates > 0) body.alternates = wantAlternates;
   let res;
@@ -3597,6 +3716,22 @@ modeButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     state.travelMode = btn.dataset.mode;
     modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
+    el.routeAvoidToggle.classList.toggle('hidden', state.travelMode !== 'drive');
+  });
+});
+
+// Avoid tolls/highways: independent toggles (not mutually exclusive like the
+// travel-mode buttons above), drive-only — hidden whenever a non-drive mode
+// is active (toggled alongside the mode buttons themselves above). Only
+// affects auto costing (see costingOptionsFor); harmless to leave the state
+// set while walking, since it's simply never read for pedestrian costing.
+el.routeAvoidToggle.classList.toggle('hidden', state.travelMode !== 'drive');
+const avoidButtons = [...el.routeAvoidToggle.querySelectorAll('.mode-btn')];
+avoidButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.avoid;
+    state[key] = !state[key];
+    btn.classList.toggle('active', state[key]);
   });
 });
 
@@ -3714,7 +3849,7 @@ el.planBtn.addEventListener('click', async () => {
       state.currentLegIndex = 0;
       const stops = getStops();
       const costing = COSTING_BY_MODE[state.travelMode];
-      const { trip, alternates } = await requestRoute(state.from, state.to, stops, 2, costing);
+      const { trip, alternates } = await requestRoute(state.from, state.to, stops, 2, costing, { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways });
       state.routeOptions = [trip, ...alternates];
       state.selectedRouteIndex = 0;
       await renderRouteOptions();
@@ -4089,7 +4224,7 @@ async function triggerReroute(currentLngLat) {
     // have already been visited, so a stop you've already been to is never
     // routed back through on a reroute.
     const remainingStops = getStops().slice(state.currentLegIndex);
-    const { trip } = await requestRoute(from, state.to, remainingStops, 0, COSTING_BY_MODE[state.travelMode]); // no alternates — mid-reroute isn't the moment for route choice
+    const { trip } = await requestRoute(from, state.to, remainingStops, 0, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways }); // no alternates — mid-reroute isn't the moment for route choice
     state.routeOptions = [trip];
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
@@ -4116,9 +4251,22 @@ window.addEventListener('online', () => {
   }
 });
 
+/** `coords.speed` is metres/second, `null` when the device/browser doesn't
+ * report it (common with poor GPS accuracy) — shown as a dash rather than an
+ * error in that case, same "degrade quietly" treatment as everywhere else
+ * position data is used. Visibility of #nav-speed itself is controlled by
+ * startNavigation/endNavigation, not here, so it doesn't flicker in and out
+ * as individual fixes come and go without a speed value. */
+function updateSpeedText(speed) {
+  el.navSpeed.textContent = typeof speed === 'number' && !Number.isNaN(speed)
+    ? `${Math.max(0, Math.round(speed * 3.6))} km/h`
+    : '— km/h';
+}
+
 function onPositionUpdate(pos) {
-  const { latitude: lat, longitude: lng, heading } = pos.coords;
+  const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
   const lngLat = [lng, lat];
+  updateSpeedText(speed);
 
   // --- Heading: prefer the device's own compass/course-over-ground; fall
   // back to a bearing computed from the last two fixes when unavailable
@@ -4199,6 +4347,8 @@ async function startNavigation() {
   el.searchCard.classList.add('hidden');
   el.placeCard.classList.add('hidden');
   el.navBanner.classList.remove('hidden');
+  el.navSpeed.classList.remove('hidden');
+  updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
   el.bottomSheet.classList.remove('expanded');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
@@ -4248,6 +4398,7 @@ function endNavigation() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 
   el.navBanner.classList.add('hidden');
+  el.navSpeed.classList.add('hidden');
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');

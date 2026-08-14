@@ -1,20 +1,21 @@
 import { CONFIG } from './config.js';
 
 // ============================================================================
-// Tiny plain-IndexedDB helper — no external library. Five object stores:
+// Tiny plain-IndexedDB helper — no external library. Six object stores:
 //   favorites      — saved places (name, lat, lon, note, listId)
 //   lists          — renameable collections a favorite can be filed under
 //                     (Google-Maps-style "Favorites"/"Want to go"/custom)
 //   recentTrips    — auto-recorded origin/destination pairs, capped & pruned
 //   downloadedAreas — metadata for each offline tile download
 //   currentTrip    — a single "resume where I left off" record
+//   quickPlaces    — Home/Work one-tap shortcuts (fixed keys 'home'/'work')
 // Every exported function rejects with a plain Error on failure; callers are
 // expected to catch and show a plain-language status message, same as every
 // other async operation in this app.
 // ============================================================================
 
 const DB_NAME = 'navigator-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -39,6 +40,12 @@ function openDb() {
       // they're read, rather than needing a one-off migration pass here.
       if (!db.objectStoreNames.contains('lists')) {
         db.createObjectStore('lists', { keyPath: 'id', autoIncrement: true });
+      }
+      // Added in DB_VERSION 3: Home/Work quick places, a two-record store
+      // (fixed keys 'home'/'work') — same singleton-record idiom as
+      // currentTrip above.
+      if (!db.objectStoreNames.contains('quickPlaces')) {
+        db.createObjectStore('quickPlaces', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -195,4 +202,18 @@ export async function loadCurrentTrip() {
 }
 export async function clearCurrentTrip() {
   return idbDelete('currentTrip', 'active');
+}
+
+// ---- quick places (Home/Work) -----------------------------------------------
+// Two singleton records, keyed 'home'/'work' — one-tap shortcuts, distinct
+// from the favorites/lists system since there's always at most one of each.
+
+export async function setQuickPlace(kind, place) {
+  return idbPut('quickPlaces', { id: kind, label: place.label, lat: place.lat, lon: place.lon });
+}
+export async function getQuickPlace(kind) {
+  return idbGet('quickPlaces', kind);
+}
+export async function deleteQuickPlace(kind) {
+  return idbDelete('quickPlaces', kind);
 }

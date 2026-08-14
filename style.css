@@ -321,6 +321,18 @@ button {
 .mode-btn.active { background: var(--accent); color: #fff; }
 .mode-btn.hidden { display: none; }
 
+/* Same chip look as #travel-mode-toggle, but two independent toggles rather
+   than a mutually-exclusive mode choice. */
+#route-avoid-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 3px;
+  margin-top: 6px;
+}
+#route-avoid-toggle.hidden { display: none; }
+
 #plan-route-btn {
   width: 100%;
   margin-top: 6px;
@@ -443,6 +455,10 @@ button {
 .saved-item-body { flex: 1; min-width: 0; padding: 8px; }
 .saved-item-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-item-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.quick-place-body { display: flex; align-items: center; gap: 12px; }
+.quick-place-icon { flex-shrink: 0; color: var(--text-dim); display: flex; }
+.quick-place-unset { color: var(--text-dim); }
 
 .icon-btn.small { width: 28px; height: 28px; flex-shrink: 0; margin-right: 4px; }
 .delete-btn { color: var(--danger); }
@@ -573,6 +589,22 @@ button {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* Small live speed readout — a second, smaller card under the next-turn
+   banner rather than a separately-positioned floating badge, so it inherits
+   #top-overlay's placement/safe-area handling for free instead of needing
+   its own fixed-position math around the map controls. */
+#nav-speed {
+  align-self: flex-start;
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 6px 12px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+#nav-speed.hidden { display: none; }
 
 /* ---------------------------------------------------------------- floating buttons */
 
@@ -1082,8 +1114,10 @@ button {
 .docs-credits-block .panel-section-title { margin-bottom: 10px; }
 .docs-credits-block p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--docs-body); }
 .credits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.6; color: var(--docs-body); }
-.credits-list a, .docs-credits-block a { color: var(--docs-link); font-weight: 600; text-decoration: none; }
-.credits-list a:hover, .credits-list a:focus-visible, .docs-credits-block a:hover, .docs-credits-block a:focus-visible { text-decoration: underline; }
+.credits-list a, .docs-credits-block a, .docs-item-body a { color: var(--docs-link); font-weight: 600; text-decoration: none; }
+.credits-list a:hover, .credits-list a:focus-visible,
+.docs-credits-block a:hover, .docs-credits-block a:focus-visible,
+.docs-item-body a:hover, .docs-item-body a:focus-visible { text-decoration: underline; }
 
 .panel-header {
   display: flex;

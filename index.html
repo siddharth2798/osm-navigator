@@ -152,6 +152,14 @@
             <span>Transit</span>
           </button>
         </div>
+        <!-- Drive-only route preferences — independent toggles, not a mode
+             choice, so they reuse .mode-btn's chip look without being part
+             of #travel-mode-toggle's mutually-exclusive group. Shown/hidden
+             alongside the Drive/Walk/Transit switch in app.js. -->
+        <div id="route-avoid-toggle">
+          <button type="button" class="mode-btn" data-avoid="avoidTolls"><span>Avoid tolls</span></button>
+          <button type="button" class="mode-btn" data-avoid="avoidHighways"><span>Avoid highways</span></button>
+        </div>
         <button id="plan-route-btn" type="button">Get directions</button>
 
         <!-- "Search along the route" — shown once a drive route is planned and
@@ -257,6 +265,9 @@
         <div id="nav-banner-distance">—</div>
       </div>
     </div>
+
+    <!-- ============ Live speed readout, shown only while navigating ============ -->
+    <div id="nav-speed" class="hidden">— km/h</div>
   </div>
 
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
@@ -468,6 +479,10 @@
     <!-- Overview: every list, tap one to see what's saved in it. -->
     <div id="saved-lists-view">
       <div class="panel-section">
+        <div class="panel-section-title">Quick places</div>
+        <ul id="quick-places-list" class="saved-list"></ul>
+      </div>
+      <div class="panel-section">
         <div class="panel-section-title">Your lists</div>
         <ul id="saved-lists-list" class="saved-list"></ul>
         <button id="new-list-btn" class="secondary" type="button">+ New list</button>
@@ -511,6 +526,13 @@
         <details class="docs-item">
           <summary>Searching for places<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body"><p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>A place is missing?<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body">
+            <p>Map data here comes from OpenStreetMap, a map anyone can edit — so if a place can't be found, it likely just hasn't been added yet. You can add it yourself in a couple of minutes on <a href="https://www.openstreetmap.org/edit" target="_blank" rel="noopener">openstreetmap.org/edit</a>.</p>
+            <p>New to editing? This <a href="https://www.youtube.com/watch?v=p56zkOtWwIk" target="_blank" rel="noopener">walkthrough video</a> covers adding a point and tagging it correctly. Once it's added, it usually shows up here within a few hours.</p>
+          </div>
         </details>
         <details class="docs-item">
           <summary>Getting directions<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
