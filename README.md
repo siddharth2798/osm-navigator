@@ -44,7 +44,7 @@ If you change `MAP_STYLE_URL` to a self-hosted tile server, also update `TILE_HO
 Static files, so GitHub Pages or Cloudflare Pages both work by pointing at this folder. A few things worth knowing:
 
 - **`_headers`** (Cloudflare Pages only) sets cache-control so that `index.html`, `app.js`, `style.css`, etc. always revalidate with the server (cheap 304s) instead of getting stuck stale in the CDN cache after a redeploy — none of these files use content-hashed names, so a long cache lifetime would otherwise mean visitors keep seeing an old version until the cache expires. GitHub Pages doesn't support a custom-headers file, so this only takes effect on Cloudflare.
-- **Service worker versioning**: `sw.js` precaches the app shell under `SHELL_CACHE_NAME`. Bump that string (e.g. `v3` → `v4`) whenever you change any of the precached files, so returning visitors' browsers actually fetch the new versions instead of serving what they already installed. If you ever install this as a PWA and see it rendering blank or obviously stale after an update, this cache is the first thing to suspect — see "Troubleshooting" below.
+- **Service worker versioning**: `sw.js` precaches the app shell under `SHELL_CACHE_NAME`. Bump that string (e.g. `v3` → `v4`) whenever you change any of the precached files, so returning visitors' browsers actually fetch the new versions instead of serving what they already installed. If you ever install this as a PWA and see it rendering blank or obviously stale after an update, this cache is the first thing to suspect.
 - The offline map tile cache (`offline-tiles`, Milestone 3A) is intentionally never purged by a service-worker version bump — that's user data (tiles you explicitly downloaded), not app code.
 
 ## Data freshness (OSM updates)
@@ -77,12 +77,3 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **Transit mode** covers planning and rendering only, not live GPS-guided transit navigation — boarding/alighting detection for buses and trains is a different problem from road-snapping and was out of scope. It also can't be tested end-to-end here since there's no public OpenTripPlanner demo server to default to.
 - **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server `VALHALLA_URL` points at (confirmed working on the public demo server) — if a self-hosted instance has it disabled, the walking route itself still works fine, just without the chart.
 - **Android shell** — see above; unverified on a real device.
-
-## Troubleshooting: PWA installed on Android renders blank
-
-If the same deployment works fine in a normal browser tab but shows nothing once installed to the home screen, the leading suspects, in order:
-
-1. **Stale/mismatched service worker cache.** If you edited any app file without bumping `SHELL_CACHE_NAME` in `sw.js`, an already-installed PWA can end up running a mix of old and new cached files. Bump the version string and reload (you may need to fully uninstall/reinstall the PWA, or clear site data, since an already-broken SW won't necessarily self-heal from a version bump alone).
-2. **Case-sensitivity mismatch.** macOS's default filesystem is case-insensitive; most real hosting (GitHub Pages, Cloudflare Pages) is not. A reference like `Icons/Icon.svg` vs the real `icons/icon.svg` would work when testing locally on a Mac and fail once actually deployed. Double check every file path referenced in `index.html`, `manifest.json`, and `sw.js`'s `SHELL_FILES` list matches the real filename's case exactly.
-3. **`manifest.json` `start_url`/`scope` under a subpath deployment.** If deployed under a repo-name subpath (e.g. a GitHub Pages *project* site at `username.github.io/repo-name/`), confirm the installed icon actually opens `.../repo-name/index.html` and not a 404 at the domain root.
-4. If none of those explain it, the next step is checking the actual browser console on the device — connect the phone to a desktop Chrome via USB and use `chrome://inspect` to see the real error, since it can't be reproduced without a physical device and the actual deployed URL.

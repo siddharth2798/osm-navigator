@@ -123,6 +123,9 @@ const el = {
   travelModeToggle: document.getElementById('travel-mode-toggle'),
   routeAvoidToggle: document.getElementById('route-avoid-toggle'),
   mapControlsLeft: document.getElementById('map-controls-left'),
+  weatherBadge: document.getElementById('weather-badge'),
+  weatherEmoji: document.getElementById('weather-emoji'),
+  weatherTemp: document.getElementById('weather-temp'),
   docsBtn: document.getElementById('docs-btn'),
   docsPanel: document.getElementById('docs-panel'),
   docsCloseBtn: document.getElementById('docs-close-btn'),
@@ -1329,6 +1332,106 @@ async function categorySearchNear(tag, lat, lon) {
   return [];
 }
 
+// ============================================================================
+// Weather badge — current conditions either at a selected place or at the
+// live GPS position while navigating (see refreshWeatherBadge below).
+// Backed by Open-Meteo: free, keyless, CORS-enabled, no config needed —
+// unlike every other external service this app talks to, there's no
+// self-hosted alternative to point at instead, which is exactly why
+// CONFIG.WEATHER_ENABLED exists as a one-line escape hatch for a
+// privacy-conscious user who doesn't want this app's GPS position going
+// anywhere, even to a free/anonymous API.
+// ============================================================================
+const WEATHER_EMOJI_BY_CODE = {
+  0: '☀️', 1: '☀️',
+  2: '☁️', 3: '☁️', 45: '☁️', 48: '☁️',
+  51: '🌧️', 53: '🌧️', 55: '🌧️', 56: '🌧️', 57: '🌧️',
+  61: '🌧️', 63: '🌧️', 65: '🌧️', 66: '🌧️', 67: '🌧️',
+  80: '🌧️', 81: '🌧️', 82: '🌧️',
+  71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️', 85: '🌨️', 86: '🌨️',
+  95: '⛈️', 96: '⛈️', 99: '⛈️',
+};
+function weatherEmojiForCode(code) {
+  return WEATHER_EMOJI_BY_CODE[code] || '☁️'; // unrecognized code — safe default rather than showing nothing
+}
+
+// Session-only cache keyed by (rounded lat/lon, coarse time bucket) — same
+// idea as nominatimCache/categorySearchCache above. Rounding to ~0.05°
+// (~5km) plus a 10-minute time bucket means the constant stream of GPS
+// fixes during navigation mostly resolves from cache instead of hitting
+// Open-Meteo on every tick — the cache key itself is the throttle, no
+// separate timer needed.
+const weatherCache = new Map();
+function weatherCacheKey(lat, lon) {
+  const bucket = Math.floor(Date.now() / (10 * 60 * 1000));
+  const rLat = (Math.round(lat / 0.05) * 0.05).toFixed(2);
+  const rLon = (Math.round(lon / 0.05) * 0.05).toFixed(2);
+  return `${rLat}|${rLon}|${bucket}`;
+}
+
+/** Never throws — any failure (network error, non-200, malformed JSON)
+ * resolves to null so the badge simply stays hidden rather than showing an
+ * error, matching how every other optional enrichment in this app degrades. */
+async function fetchWeather(lat, lon) {
+  const cacheKey = weatherCacheKey(lat, lon);
+  if (weatherCache.has(cacheKey)) return weatherCache.get(cacheKey);
+  try {
+    const res = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`);
+    if (!res.ok) throw new Error('bad status');
+    const data = await res.json();
+    const result = {
+      tempC: Math.round(data.current.temperature_2m),
+      emoji: weatherEmojiForCode(data.current.weather_code),
+    };
+    weatherCache.set(cacheKey, result);
+    return result;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Guards against an older, slower-to-resolve refreshWeatherBadge() call
+// clobbering the badge after a newer one has already applied — same
+// "ignore a superseded async result" idea as the isStale() checks around
+// the autocomplete/geocoding calls above, just without needing a whole
+// closure since there's only ever one badge to keep consistent.
+let weatherRequestToken = 0;
+
+/** Single source of truth for what the weather badge currently shows: the
+ * live GPS position while navigating takes priority over an incidentally-
+ * still-open place card, which in turn beats showing nothing. Call this
+ * from anywhere state changes in a way that could affect it — see the
+ * showPlaceCard/hidePlaceCard/startNavigation/onPositionUpdate/
+ * endNavigation call sites. Always fire-and-forget: never awaited by
+ * callers, since none of this should block a synchronous UI update. */
+async function refreshWeatherBadge() {
+  const myToken = ++weatherRequestToken;
+  if (!CONFIG.WEATHER_ENABLED) {
+    el.weatherBadge.classList.add('hidden');
+    return;
+  }
+  let lat, lon;
+  if (state.navigating && state.lastFix) {
+    lat = state.lastFix.lat;
+    lon = state.lastFix.lng;
+  } else if (state.to && !el.placeCard.classList.contains('hidden')) {
+    lat = state.to.lat;
+    lon = state.to.lon;
+  } else {
+    el.weatherBadge.classList.add('hidden');
+    return;
+  }
+  const weather = await fetchWeather(lat, lon);
+  if (myToken !== weatherRequestToken) return; // superseded by a newer call while this one was in flight
+  if (!weather) {
+    el.weatherBadge.classList.add('hidden');
+    return;
+  }
+  el.weatherEmoji.textContent = weather.emoji;
+  el.weatherTemp.textContent = `${weather.tempC}°`;
+  el.weatherBadge.classList.remove('hidden');
+}
+
 /** How many points along the route to sample for an along-route category
  * search — few enough to stay reasonably fast against a rate-limited public
  * Nominatim instance, more for longer trips where a couple of samples would
@@ -1852,9 +1955,11 @@ function showPlaceCard({ label, lat, lon }) {
     el.placeCardActions.insertBefore(svBtn, el.placeClearBtn);
   }
   el.placeCard.classList.remove('hidden');
+  refreshWeatherBadge(); // fire-and-forget — weather for this place, doesn't block the card appearing
 }
 function hidePlaceCard() {
   el.placeCard.classList.add('hidden');
+  refreshWeatherBadge(); // re-evaluate: hides the badge unless navigation is still active
 }
 
 /** The place card's own close-layer callback (registered via pushBackLayer).
@@ -2228,7 +2333,10 @@ function setPlanningUiMode(mode) {
   const isSimple = mode === 'simple';
   el.searchSimple.classList.toggle('hidden', !isSimple);
   el.searchDirections.classList.toggle('hidden', isSimple);
-  if (!isSimple) el.placeCard.classList.add('hidden');
+  if (!isSimple) {
+    el.placeCard.classList.add('hidden');
+    refreshWeatherBadge(); // place card just went away outside the normal hidePlaceCard() path — re-evaluate so a stale badge doesn't linger
+  }
 }
 
 /** Jumps straight into directions mode with the given origin/destination
@@ -4282,6 +4390,7 @@ function onPositionUpdate(pos) {
   }
   state.lastHeading = headingDeg;
   state.lastFix = { lng, lat, t: pos.timestamp || Date.now() };
+  refreshWeatherBadge(); // fire-and-forget; the cache's coarse time bucket is what stops this from refetching on every tick
 
   updatePuck(lngLat, headingDeg);
   if (state.followMode) followCamera(lngLat, headingDeg);
@@ -4349,6 +4458,7 @@ async function startNavigation() {
   el.navBanner.classList.remove('hidden');
   el.navSpeed.classList.remove('hidden');
   updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
+  refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
   el.bottomSheet.classList.remove('expanded');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
@@ -4399,6 +4509,7 @@ function endNavigation() {
 
   el.navBanner.classList.add('hidden');
   el.navSpeed.classList.add('hidden');
+  refreshWeatherBadge(); // re-evaluate now state.navigating is false — shows a place card's weather if one's still open, else hides
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');

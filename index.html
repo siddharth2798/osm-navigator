@@ -302,12 +302,19 @@
     </button>
   </div>
 
-  <!-- Mirror of #map-controls on the left — just the one help/docs button
-       for now, but its own stack in case anything else lands here later.
-       Raises in sync with #map-controls (see the MutationObserver in
-       app.js) rather than duplicating every one of that button's own
-       "raise when the bottom sheet appears" call sites. -->
+  <!-- Mirror of #map-controls on the left — the help/docs button plus a
+       weather badge above it, its own stack in case anything else lands
+       here later. Raises in sync with #map-controls (see the
+       MutationObserver in app.js) rather than duplicating every one of
+       that button's own "raise when the bottom sheet appears" call sites.
+       The weather badge is first in DOM so normal flex-column order
+       stacks it above the docs button (see #map-controls-left in
+       style.css) — informational only, not a button, so no click action. -->
   <div id="map-controls-left">
+    <div id="weather-badge" class="weather-badge hidden">
+      <span id="weather-emoji">☁️</span>
+      <span id="weather-temp">--°</span>
+    </div>
     <button id="docs-btn" class="fab" type="button" aria-label="Help and documentation">
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="9"/>

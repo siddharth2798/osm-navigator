@@ -126,4 +126,14 @@ export const CONFIG = {
   // demo server to default to (unlike Valhalla), and a GTFS feed is specific
   // to whichever local transit agency you care about.
   OTP2_URL: '',
+
+  // --- Weather badge -----------------------------------------------------
+  // Shows current conditions (emoji + temperature) at a selected place, and
+  // at the live GPS position while navigating. Backed by Open-Meteo — free,
+  // keyless, CORS-enabled, no signup — so unlike every other external
+  // service in this file there's no self-hosted alternative to point at
+  // instead. Set to false to disable the feature entirely: no badge, no
+  // calls to Open-Meteo, for a privacy-conscious user who'd rather not have
+  // this app's GPS position leave the device even to a free/anonymous API.
+  WEATHER_ENABLED: true,
 };
