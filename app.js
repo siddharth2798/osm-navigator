@@ -4298,13 +4298,6 @@ el.shareRouteBtn.addEventListener('click', async () => {
   }
 });
 
-/** Reads and validates the `?share=` query param, if any. Returns null (not
- * a throw) on anything malformed — a bad/corrupted link should fall through
- * to the normal startup flow, never a stuck blank screen. Note: the value is
- * decoded exactly once — URLSearchParams already reverses the single
- * encodeURIComponent applied when the link was built, so JSON.parse runs
- * directly on it; a second decodeURIComponent would corrupt any label that
- * happens to contain a literal '%'. */
 /** Reverses compactPlace back into the {label, lat, lon} shape the rest of
  * the app already works with (goToDirections, addStopRow, state.from/to) —
  * returns null on anything malformed so a bad link degrades to "ignore it"
@@ -4314,6 +4307,13 @@ function expandPlace(p) {
   return { label: p.lb, lat: p.la, lon: p.lo };
 }
 
+/** Reads and validates the `?share=` query param, if any. Returns null (not
+ * a throw) on anything malformed — a bad/corrupted link should fall through
+ * to the normal startup flow, never a stuck blank screen. Note: the value is
+ * decoded exactly once — URLSearchParams already reverses the single
+ * encodeURIComponent applied when the link was built, so JSON.parse runs
+ * directly on it; a second decodeURIComponent would corrupt any label that
+ * happens to contain a literal '%'. */
 function parseShareParam() {
   const raw = new URLSearchParams(location.search).get('share');
   if (!raw) return null;

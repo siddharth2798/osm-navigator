@@ -8,14 +8,18 @@ The app itself has a **Help & documentation** screen (the circled "?" button, bo
 
 ## Features
 
-- **Search** — place search with typo-tolerant fallback, plus one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels).
-- **Directions** — multi-stop routing (up to 8 stops, drag to reorder), a plain-text "X to Y" shortcut typed straight into the search box, and Drive/Walk (/Transit, if configured) modes that re-plan the same trip instantly.
+- **Search** — place search with typo-tolerant fallback, plus one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels); "X near me" resolves "me" to your live GPS position.
+- **Directions** — multi-stop routing (up to 8 stops, drag to reorder), a plain-text "X to Y" shortcut typed straight into the search box (recognizes "Home"/"Work" on either side), Drive/Walk (/Transit, if configured) modes that re-plan the same trip instantly, and optional avoid-tolls/avoid-highways for driving.
+- **Home & Work shortcuts** — one-tap directions to two saved places, set from the Saved panel or just by typing "Home"/"Work" into a from/to field.
 - **Elevation profile** — walking routes show a hill profile with the biggest elevation changes marked; tapping one highlights that exact spot on the map.
-- **Turn-by-turn navigation** — spoken directions, auto-reroute on deviation, works with the screen off via the optional Android shell (see below).
+- **Turn-by-turn navigation** — a bold directional arrow marks your live position, the traveled part of the route dulls to gray as you go, and a live speed readout sits above the next-turn card.
+- **Voice guidance** — an early "in X meters, turn right" heads-up followed by a short reminder right before the turn; a mute/important-only/full toggle (same three-way choice as Google Maps); auto-reroute on deviation with a distinct alert tone (not a voice prompt).
+- **Weather at a glance** — a small badge shows current conditions for a selected place, or your live position while driving; tap it to refresh.
 - **Search along the route** — find things ahead of you (or along the whole route, before you start) without leaving your trip; picking one adds it as a stop.
 - **Favorites & recent trips**, **offline map tiles** for a whole area, and a **resume-in-progress-trip** if the tab reloads mid-drive.
 - **Shareable route links** — encode a whole trip (stops and mode included) into a URL with no backend involved; opening one pre-fills the trip for whoever you send it to.
 - **Street-level imagery** coverage via Mapillary, when configured.
+- Works with the screen off via the optional Android shell (see below).
 
 ## Running it
 
@@ -36,6 +40,7 @@ Every URL and tunable lives at the top of **`config.js`**, each with a comment e
 - `VALHALLA_URL` — point at your own Valhalla instance. The public default is a shared demo server.
 - `MAPILLARY_ACCESS_TOKEN` — optional (Milestone 4A). Leave empty to disable street-level imagery entirely; there's no public shared token since Mapillary requires every app to register its own.
 - `OTP2_URL` — optional (Milestone 4C). Leave empty and the transit mode toggle never appears; there's no public OpenTripPlanner demo to default to.
+- `WEATHER_ENABLED` — set to `false` to disable the weather badge entirely (no Open-Meteo calls at all) if you'd rather this app's GPS position never leave the device, even to a free/anonymous API.
 
 If you change `MAP_STYLE_URL` to a self-hosted tile server, also update `TILE_HOSTS` at the top of `sw.js` — the service worker can't import `config.js` (Safari doesn't support module service workers yet), so that one value is duplicated there.
 
