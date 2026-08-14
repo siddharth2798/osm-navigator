@@ -640,10 +640,11 @@ button {
 }
 #map-controls-left.raised { bottom: 148px; }
 
-/* Weather badge — round like the .fab family but purely informational (no
-   click action), so it's its own class rather than a .fab modifier. Emoji
-   on top, temperature below in dim text, same panel/shadow as every other
-   floating control. */
+/* Weather badge — round like the .fab family, tap to force-refresh (see
+   handleWeatherBadgeRefresh in app.js), so it's its own class rather than a
+   .fab modifier only because it also carries emoji/temperature text .fab
+   never needs. Emoji on top, temperature below in dim text, same
+   panel/shadow as every other floating control. */
 .weather-badge {
   width: 52px;
   height: 52px;
@@ -655,7 +656,10 @@ button {
   align-items: center;
   justify-content: center;
   gap: 1px;
+  cursor: pointer;
 }
+.weather-badge:active { background: var(--panel-2); }
+.weather-badge.refreshing { opacity: 0.55; }
 #weather-emoji { font-size: 19px; line-height: 1; }
 #weather-temp {
   font-size: 10px;
@@ -682,6 +686,9 @@ button {
 /* markers built from plain DOM/SVG, no image assets */
 .pin-marker { width: 30px; height: 40px; display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
 .puck-marker { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; }
+/* Bigger footprint for the active-navigation arrow puck specifically — see
+   createPuckElement vs createLocationDotElement in app.js. */
+.puck-marker-nav { width: 40px; height: 40px; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5)); }
 .poi-marker {
   width: 22px;
   height: 22px;

@@ -67,16 +67,22 @@ export const CONFIG = {
 
   // --- Navigation / voice guidance behaviour ----------------------------------
   // Speak the next instruction once the live position is within this many
-  // metres of the upcoming maneuver.
+  // metres of the upcoming maneuver ("in X meters, turn right" — see speak()
+  // call sites in app.js). Below VOICE_NEAR_DISTANCE_M, a second, shorter
+  // reminder is spoken with no distance prefix ("turn right").
   VOICE_PROMPT_DISTANCE_M: 200,
+  VOICE_NEAR_DISTANCE_M: 30,
 
   // Perpendicular distance (metres) from the route line beyond which the
-  // driver is considered "off route".
-  DEVIATION_THRESHOLD_M: 50,
+  // driver is considered "off route". Lowered from the original 50m — user
+  // feedback was that the app let you travel too far in the wrong direction
+  // before recalculating.
+  DEVIATION_THRESHOLD_M: 30,
 
   // How long (ms) the driver must remain continuously off-route before the
-  // app automatically requests a new route.
-  DEVIATION_DURATION_MS: 5000,
+  // app automatically requests a new route. Lowered from the original 5000ms
+  // alongside DEVIATION_THRESHOLD_M, for the same reason.
+  DEVIATION_DURATION_MS: 3000,
 
   // Camera behaviour while auto-following during navigation.
   NAV_ZOOM: 17,

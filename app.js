@@ -123,6 +123,7 @@ const el = {
   travelModeToggle: document.getElementById('travel-mode-toggle'),
   routeAvoidToggle: document.getElementById('route-avoid-toggle'),
   mapControlsLeft: document.getElementById('map-controls-left'),
+  voiceModeBtn: document.getElementById('voice-mode-btn'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -156,7 +157,12 @@ const state = {
   myLocationMarker: null, // one-shot "you are here" dot shown by the locate button before navigation starts
   navigating: false,
   watchId: null,
-  spoken: new Set(),   // indices of maneuvers we've already spoken aloud
+  // Indices of maneuvers already spoken aloud, tracked separately per prompt
+  // stage so each maneuver gets its own far ("in 150 meters, turn right")
+  // and near ("turn right") reminder exactly once.
+  spokenFar: new Set(),
+  spokenNear: new Set(),
+  voiceMode: 'all', // 'all' | 'important' | 'off' — see the voice-mode toggle button
   arrivedAnnounced: false,
   lastFix: null,       // {lng, lat, t} of the previous GPS fix, for bearing fallback
   lastHeading: 0,
@@ -306,6 +312,14 @@ function createLimiter(minIntervalMs) {
 function formatDistance(m) {
   if (m < 950) return Math.round(m) + ' m';
   return (m / 1000).toFixed(1) + ' km';
+}
+
+/** Same idea as formatDistance, but for text handed to speechSynthesis —
+ * "150 m" is read aloud as the letter "m", not "meters", so voice prompts
+ * need the units spelled out in full. Never used for on-screen text. */
+function formatDistanceForSpeech(m) {
+  if (m < 950) return `${Math.round(m)} meters`;
+  return `${(m / 1000).toFixed(1)} kilometers`;
 }
 
 function formatDuration(s) {
@@ -552,6 +566,18 @@ mapLoad.then(() => {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#3d8bfd', 'line-width': 5, 'line-opacity': 0.9 },
   });
+  // Painted over route-line (added after, so it draws on top) for whatever
+  // portion of the route has already been driven — see
+  // updateTraveledRouteSegment, called on every position update during
+  // navigation. Empty until then, so it's invisible before/between trips.
+  map.addSource('route-traveled', { type: 'geojson', data: emptyFeatureCollection() });
+  map.addLayer({
+    id: 'route-traveled-line',
+    type: 'line',
+    source: 'route-traveled',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: { 'line-color': '#5b6472', 'line-width': 5, 'line-opacity': 0.85 },
+  });
   map.on('click', 'route-alternates-line', (e) => {
     if (e.features.length) selectRouteOption(e.features[0].properties.optionIndex);
   });
@@ -668,14 +694,18 @@ function createStopPinElement(colorHex, number) {
   return div;
 }
 
+/** The live-navigation puck — a bold directional chevron, deliberately
+ * bigger and more distinct than the plain idle dot (createLocationDotElement
+ * below), so movement/heading reads clearly at a glance while driving.
+ * `.puck-marker-nav` (style.css) gives it a larger footprint than the base
+ * `.puck-marker` size shared with the idle dot. */
 function createPuckElement() {
   const div = document.createElement('div');
-  div.className = 'puck-marker';
+  div.className = 'puck-marker puck-marker-nav';
   div.setAttribute('aria-label', 'Your location');
-  div.innerHTML = `<svg width="26" height="26" viewBox="0 0 26 26" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="13" cy="13" r="11" fill="#3d8bfd" fill-opacity="0.25"/>
-    <circle cx="13" cy="13" r="6" fill="#3d8bfd" stroke="#fff" stroke-width="2"/>
-    <path d="M13 1 L17.5 11 L13 8.3 L8.5 11 Z" fill="#fff"/>
+  div.innerHTML = `<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="20" cy="20" r="17" fill="#3d8bfd" fill-opacity="0.20"/>
+    <path d="M20 3 L33 33 L20 25 L7 33 Z" fill="#3d8bfd" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>
   </svg>`;
   return div;
 }
@@ -1333,6 +1363,35 @@ async function categorySearchNear(tag, lat, lon) {
 }
 
 // ============================================================================
+// Voice mode toggle — cycles state.voiceMode through 'all' -> 'important' ->
+// 'off' -> 'all', same three-way choice Google Maps offers. speak() (above,
+// in the live-tracking section) is what actually reads this; this block is
+// just the button and its icon/label per state. Not persisted across a
+// reload — a session preference, same as the avoid-tolls/avoid-highways
+// toggles elsewhere in this app.
+// ============================================================================
+const VOICE_MODE_ORDER = ['all', 'important', 'off'];
+const VOICE_MODE_LABEL = { all: 'Voice guidance: on', important: 'Voice guidance: important only', off: 'Voice guidance: off' };
+function voiceModeIcon(mode) {
+  const speaker = '<path d="M4 9 v6 h4 l5 4 V5 l-5 4 Z"/>';
+  if (mode === 'off') return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M15 9 L20 15 M20 9 L15 15"/></svg>`;
+  if (mode === 'important') return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M16.5 10.5 a3 3 0 0 1 0 5"/></svg>`;
+  return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M16.5 9 a5 5 0 0 1 0 8"/><path d="M19 7 a8.5 8.5 0 0 1 0 12"/></svg>`;
+}
+function renderVoiceModeBtn() {
+  el.voiceModeBtn.innerHTML = voiceModeIcon(state.voiceMode);
+  el.voiceModeBtn.setAttribute('aria-label', VOICE_MODE_LABEL[state.voiceMode]);
+}
+el.voiceModeBtn.addEventListener('click', () => {
+  const nextIdx = (VOICE_MODE_ORDER.indexOf(state.voiceMode) + 1) % VOICE_MODE_ORDER.length;
+  state.voiceMode = VOICE_MODE_ORDER[nextIdx];
+  renderVoiceModeBtn();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // switching to important/off mid-sentence shouldn't let the old prompt keep talking
+  showStatus(VOICE_MODE_LABEL[state.voiceMode], 'info');
+});
+renderVoiceModeBtn();
+
+// ============================================================================
 // Weather badge — current conditions either at a selected place or at the
 // live GPS position while navigating (see refreshWeatherBadge below).
 // Backed by Open-Meteo: free, keyless, CORS-enabled, no config needed —
@@ -1371,10 +1430,13 @@ function weatherCacheKey(lat, lon) {
 
 /** Never throws — any failure (network error, non-200, malformed JSON)
  * resolves to null so the badge simply stays hidden rather than showing an
- * error, matching how every other optional enrichment in this app degrades. */
-async function fetchWeather(lat, lon) {
+ * error, matching how every other optional enrichment in this app degrades.
+ * `force` skips the cache *read* (still writes the fresh result back to it)
+ * — used by the weather badge's own tap-to-refresh, since otherwise the
+ * 10-minute cache bucket would make a manual refresh a no-op. */
+async function fetchWeather(lat, lon, force = false) {
   const cacheKey = weatherCacheKey(lat, lon);
-  if (weatherCache.has(cacheKey)) return weatherCache.get(cacheKey);
+  if (!force && weatherCache.has(cacheKey)) return weatherCache.get(cacheKey);
   try {
     const res = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`);
     if (!res.ok) throw new Error('bad status');
@@ -1403,8 +1465,10 @@ let weatherRequestToken = 0;
  * from anywhere state changes in a way that could affect it — see the
  * showPlaceCard/hidePlaceCard/startNavigation/onPositionUpdate/
  * endNavigation call sites. Always fire-and-forget: never awaited by
- * callers, since none of this should block a synchronous UI update. */
-async function refreshWeatherBadge() {
+ * callers, since none of this should block a synchronous UI update.
+ * `force` forwards to fetchWeather to bypass its cache — see the badge's
+ * own click handler below. */
+async function refreshWeatherBadge(force = false) {
   const myToken = ++weatherRequestToken;
   if (!CONFIG.WEATHER_ENABLED) {
     el.weatherBadge.classList.add('hidden');
@@ -1421,8 +1485,10 @@ async function refreshWeatherBadge() {
     el.weatherBadge.classList.add('hidden');
     return;
   }
-  const weather = await fetchWeather(lat, lon);
+  if (force) el.weatherBadge.classList.add('refreshing');
+  const weather = await fetchWeather(lat, lon, force);
   if (myToken !== weatherRequestToken) return; // superseded by a newer call while this one was in flight
+  el.weatherBadge.classList.remove('refreshing');
   if (!weather) {
     el.weatherBadge.classList.add('hidden');
     return;
@@ -1431,6 +1497,21 @@ async function refreshWeatherBadge() {
   el.weatherTemp.textContent = `${weather.tempC}°`;
   el.weatherBadge.classList.remove('hidden');
 }
+
+// Tap-to-refresh: only meaningful while the badge is actually visible (it's
+// not a button when hidden/non-interactive-looking), force-bypasses the
+// cache so a manual refresh always hits the network rather than silently
+// no-op'ing within the same 10-minute cache bucket. Also reachable via
+// keyboard (Enter/Space) since the badge is a role="button" div, not a
+// real <button>, for layout reasons matching the other .fab controls.
+function handleWeatherBadgeRefresh() {
+  if (el.weatherBadge.classList.contains('hidden')) return;
+  refreshWeatherBadge(true);
+}
+el.weatherBadge.addEventListener('click', handleWeatherBadgeRefresh);
+el.weatherBadge.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleWeatherBadgeRefresh(); }
+});
 
 /** How many points along the route to sample for an along-route category
  * search — few enough to stay reasonably fast against a rate-limited public
@@ -1535,14 +1616,44 @@ const NEAR_QUERY_PATTERN = /^(.+?)\s+(?:near|close to|around|in)\s+(.+)$/i;
 // intended near-search — see setupAutocomplete's onDirectionsShortcut.
 const TO_QUERY_PATTERN = /^(.+?)\s+to\s+(.+)$/i;
 
+// Sentinel label for a place resolved from live GPS rather than a search —
+// shared by geocodeNear's "near me" case right below, useCurrentLocationFor,
+// and the recent-trips reuse path (resolvePlaceForReuse), so all three
+// recognize the same string consistently.
+const CURRENT_LOCATION_LABEL = 'Your location';
+const NEAR_ME_KEYWORDS = new Set(['me', 'my location', 'here', 'current location']);
+
+/** One-shot GPS fetch used as the anchor for a "X near me" query — rejects
+ * (rather than resolving null) on failure so the caller's existing
+ * "could not find X to search near" error path handles it uniformly with
+ * a genuine geocoding failure. */
+function resolveCurrentLocationAnchor() {
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) { reject(new Error('This browser does not support GPS location.')); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ label: CURRENT_LOCATION_LABEL, lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => reject(new Error('Could not get your location. Check location permissions.')),
+      CONFIG.GEOLOCATION_OPTIONS,
+    );
+  });
+}
+
 /** "EV charging near Gateway of India" (or "EV charging in Kochi") → geocode
  * the place first as the anchor, then search "EV charging" around that
- * anchor rather than near the device's own location — the whole point of a
- * location-biased "X near/in Y" query. */
+ * anchor. "EV charging near me"/"...near here" is the one case that should
+ * mean the device's own location instead of a geocoded place — Nominatim
+ * obviously can't resolve the literal word "me" to anywhere real, so that
+ * case is special-cased to a live GPS fix before falling through to the
+ * normal anchor-geocoding path for everything else. */
 async function geocodeNear(subject, anchorQuery) {
-  const anchorResults = await nominatimSearch(anchorQuery);
-  if (!anchorResults.length) throw new Error(`Could not find "${anchorQuery}" to search near.`);
-  const anchor = anchorResults[0];
+  let anchor;
+  if (NEAR_ME_KEYWORDS.has(anchorQuery.trim().toLowerCase())) {
+    anchor = await resolveCurrentLocationAnchor(); // throws its own message on failure
+  } else {
+    const anchorResults = await nominatimSearch(anchorQuery);
+    if (!anchorResults.length) throw new Error(`Could not find "${anchorQuery}" to search near.`);
+    anchor = anchorResults[0];
+  }
 
   const tag = matchCategoryTag(subject);
   if (tag) {
@@ -2485,12 +2596,19 @@ async function appendQuickPicks(listEl, onChanged) {
     listEl.appendChild(quickPickRow({
       iconSvg: clockIcon(),
       label: `${splitPlaceLabel(trip.originLabel).primary} → ${splitPlaceLabel(trip.destLabel).primary}`,
-      onSelect: () => {
+      onSelect: async () => {
         listEl.classList.add('hidden');
-        goToDirections({
-          from: { label: trip.originLabel, lat: trip.originLat, lon: trip.originLon },
-          to: { label: trip.destLabel, lat: trip.destLat, lon: trip.destLon },
-        });
+        // A saved "Your location" side is a frozen GPS snapshot from
+        // whenever the trip was first planned — re-resolve it to where you
+        // actually are now rather than silently replaying stale coordinates.
+        const usesCurrentLocation = trip.originLabel === CURRENT_LOCATION_LABEL || trip.destLabel === CURRENT_LOCATION_LABEL;
+        if (usesCurrentLocation) showStatus('Finding your location…', 'info', { sticky: true });
+        const [from, to] = await Promise.all([
+          resolvePlaceForReuse(trip.originLabel, trip.originLat, trip.originLon),
+          resolvePlaceForReuse(trip.destLabel, trip.destLat, trip.destLon),
+        ]);
+        if (usesCurrentLocation) clearStatus();
+        goToDirections({ from, to });
       },
       onDelete: async () => {
         try { await deleteRecentTrip(trip.id); await onChanged(); }
@@ -2520,17 +2638,19 @@ async function appendQuickPicks(listEl, onChanged) {
 
 /** Focus handler shared by the search box and the from/to fields: shown only
  * when the field is genuinely empty, so it can never clobber an existing
- * pick or interrupt someone mid-search. */
-async function showQuickPicksFor(inputEl, listEl, { includeLocationOption = false } = {}) {
+ * pick or interrupt someone mid-search. `locationOptionSide` ('from' | 'to'
+ * | null) controls whether a "Use my current location" row is prepended,
+ * and which side it applies to when tapped. */
+async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } = {}) {
   if (inputEl.value.trim()) return;
-  const render = () => showQuickPicksFor(inputEl, listEl, { includeLocationOption });
+  const render = () => showQuickPicksFor(inputEl, listEl, { locationOptionSide });
 
   listEl.innerHTML = '';
-  if (includeLocationOption) {
+  if (locationOptionSide) {
     const li = document.createElement('li');
     li.className = 'quick-option';
     li.innerHTML = `${locationPinIcon()}<span>Use my current location</span>`;
-    li.addEventListener('click', useCurrentLocationAsFrom);
+    li.addEventListener('click', () => useCurrentLocationFor(locationOptionSide));
     listEl.appendChild(li);
   }
   await appendQuickPicks(listEl, render);
@@ -2538,9 +2658,14 @@ async function showQuickPicksFor(inputEl, listEl, { includeLocationOption = fals
   if (listEl.children.length) listEl.classList.remove('hidden');
 }
 
-function useCurrentLocationAsFrom() {
-  el.fromSuggestions.classList.add('hidden');
-  el.fromSuggestions.innerHTML = '';
+/** Fetches a fresh GPS fix and applies it to whichever side is asked for —
+ * shared by the from-field and to-field "Use my current location" quick
+ * picks (previously two near-duplicate functions, one from-only). */
+function useCurrentLocationFor(side) {
+  const inputEl = side === 'from' ? el.fromInput : el.toInput;
+  const suggestionsEl = side === 'from' ? el.fromSuggestions : el.toSuggestions;
+  suggestionsEl.classList.add('hidden');
+  suggestionsEl.innerHTML = '';
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location.', 'error');
     return;
@@ -2548,8 +2673,9 @@ function useCurrentLocationAsFrom() {
   showStatus('Finding your location…', 'info', { sticky: true });
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      state.from = { label: 'Your location', lat: pos.coords.latitude, lon: pos.coords.longitude };
-      el.fromInput.value = 'Your location';
+      const place = { label: CURRENT_LOCATION_LABEL, lat: pos.coords.latitude, lon: pos.coords.longitude };
+      if (side === 'from') state.from = place; else state.to = place;
+      inputEl.value = CURRENT_LOCATION_LABEL;
       updatePlanningMarkers();
       clearStatus();
     },
@@ -2558,9 +2684,30 @@ function useCurrentLocationAsFrom() {
   );
 }
 
+/** Recent trips whose origin/destination was "Your location" at save time
+ * store a frozen snapshot of GPS coordinates from that moment (there's no
+ * live position tracking outside active navigation — see native-location.js
+ * — so a plain literal snapshot is all there ever was to save). Reusing the
+ * trip re-resolves that side to a fresh fix instead of silently replaying
+ * wherever the user happened to be last time. Never rejects: a GPS failure
+ * (denied permission, timeout) falls back to the stored snapshot rather
+ * than blocking the recent trip from being reused at all. */
+function resolvePlaceForReuse(label, lat, lon) {
+  if (label !== CURRENT_LOCATION_LABEL || !('geolocation' in navigator)) {
+    return Promise.resolve({ label, lat, lon });
+  }
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ label, lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => resolve({ label, lat, lon }),
+      CONFIG.GEOLOCATION_OPTIONS,
+    );
+  });
+}
+
 el.placeInput.addEventListener('focus', () => showQuickPicksFor(el.placeInput, el.placeSuggestions));
-el.toInput.addEventListener('focus', () => showQuickPicksFor(el.toInput, el.toSuggestions));
-el.fromInput.addEventListener('focus', () => showQuickPicksFor(el.fromInput, el.fromSuggestions, { includeLocationOption: true }));
+el.toInput.addEventListener('focus', () => showQuickPicksFor(el.toInput, el.toSuggestions, { locationOptionSide: 'to' }));
+el.fromInput.addEventListener('focus', () => showQuickPicksFor(el.fromInput, el.fromSuggestions, { locationOptionSide: 'from' }));
 
 // ---- Long-press on the map: show what's at that point ---------------------
 let longPressTimer = null;
@@ -3735,11 +3882,13 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   const built = buildRouteState(trip, stops);
   built.lineFeature = turf.lineString(built.coords);
   state.route = built;
-  state.spoken = new Set();
+  state.spokenFar = new Set();
+  state.spokenNear = new Set();
   state.arrivedAnnounced = false;
 
   await awaitMapLoad();
   map.getSource('route').setData(built.lineFeature);
+  clearTraveledRouteSegment(); // a fresh/rerouted trip starts with nothing "already driven" yet
 
   if (fitView) {
     const bounds = built.coords.reduce(
@@ -4053,6 +4202,7 @@ function cancelPlannedRoute() {
   map.getSource('route').setData(emptyFeatureCollection());
   map.getSource('transit-route').setData(emptyFeatureCollection());
   map.getSource('route-alternates').setData(emptyFeatureCollection());
+  clearTraveledRouteSegment();
   el.routeOptionsRow.classList.add('hidden');
 
   resetToRouteView();
@@ -4210,10 +4360,45 @@ function applyShareLink(payload) {
 // Live tracking, voice guidance, deviation/reroute
 // ============================================================================
 
-function speak(text) {
+function speak(text, isImportant = false) {
   if (!('speechSynthesis' in window)) return; // silently unsupported, never crashes navigation
+  if (state.voiceMode === 'off') return;
+  if (state.voiceMode === 'important' && !isImportant) return;
   window.speechSynthesis.cancel(); // never let prompts queue up / overlap
   window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+
+/** A short two-tone alert chime for the moment a reroute actually fires —
+ * deliberately NOT a voice prompt (a plain earcon, like Google Maps' own
+ * "you're off route, recalculating" sound), so it plays regardless of
+ * state.voiceMode. Built with the Web Audio API rather than shipping an
+ * audio file, consistent with this app having no bundled assets beyond
+ * icons. One AudioContext is reused across calls rather than created fresh
+ * each time — cheap, and avoids the handful of contexts some browsers cap
+ * a page at. Never throws: a blocked/unsupported AudioContext just means
+ * navigation continues silently rather than erroring out. */
+let alertAudioCtx = null;
+function playAlertTone() {
+  try {
+    if (!alertAudioCtx) alertAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = alertAudioCtx;
+    const now = ctx.currentTime;
+    [880, 660].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const start = now + i * 0.16;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.3, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.15);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.16);
+    });
+  } catch (err) {
+    // Web Audio unsupported/blocked — never let this break navigation.
+  }
 }
 
 function updatePuck(lngLat, headingDeg) {
@@ -4239,6 +4424,25 @@ function followCamera(lngLat, headingDeg) {
   });
 }
 
+/** Paints the already-driven portion of the route in a dull gray
+ * (route-traveled-line, added on top of route-line in the mapLoad setup
+ * above) so it visually falls away as you progress, rather than the whole
+ * route staying a uniform blue from start to finish. Cleared via
+ * clearTraveledRouteSegment whenever a route is (re)planned or navigation
+ * ends, so a new trip never starts with a stale dulled segment left over
+ * from the previous one. */
+function updateTraveledRouteSegment(traveledM) {
+  if (!state.route || traveledM <= 0) {
+    map.getSource('route-traveled').setData(emptyFeatureCollection());
+    return;
+  }
+  const traveled = turf.lineSliceAlong(state.route.lineFeature, 0, Math.min(traveledM, state.route.totalDistM), { units: 'meters' });
+  map.getSource('route-traveled').setData(traveled);
+}
+function clearTraveledRouteSegment() {
+  map.getSource('route-traveled').setData(emptyFeatureCollection());
+}
+
 /** Figures out which maneuver is "next" from how far the driver has
  * travelled along the route, updates the banner/list, and fires the voice
  * prompt once we're within VOICE_PROMPT_DISTANCE_M of it. */
@@ -4262,9 +4466,19 @@ function updateActiveManeuver(traveledM) {
     el.navBannerInstruction.textContent = maneuvers[nextIdx].instruction;
     el.navBannerDistance.textContent = 'in ' + formatDistance(distToNextM);
 
-    if (distToNextM <= CONFIG.VOICE_PROMPT_DISTANCE_M && !state.spoken.has(nextIdx)) {
+    // Two-stage voice prompt per maneuver: an early "in X meters, turn
+    // right" heads-up while there's still real distance left, then a short
+    // plain "turn right" reminder right before it — same two-cue pattern
+    // Google Maps uses, rather than one prompt that's either too early or
+    // too abrupt on its own. Each stage fires at most once per maneuver
+    // (spokenFar/spokenNear), independently of the other.
+    if (distToNextM <= CONFIG.VOICE_PROMPT_DISTANCE_M && distToNextM > CONFIG.VOICE_NEAR_DISTANCE_M && !state.spokenFar.has(nextIdx)) {
+      speak(`In ${formatDistanceForSpeech(distToNextM)}, ${maneuvers[nextIdx].instruction}`);
+      state.spokenFar.add(nextIdx);
+    }
+    if (distToNextM <= CONFIG.VOICE_NEAR_DISTANCE_M && !state.spokenNear.has(nextIdx)) {
       speak(maneuvers[nextIdx].instruction);
-      state.spoken.add(nextIdx);
+      state.spokenNear.add(nextIdx);
     }
   } else {
     // Past the start of the final maneuver: we've arrived.
@@ -4274,7 +4488,7 @@ function updateActiveManeuver(traveledM) {
     el.navBannerDistance.textContent = 'Arriving';
     if (!state.arrivedAnnounced) {
       state.arrivedAnnounced = true;
-      speak('You have arrived at your destination.');
+      speak('You have arrived at your destination.', true); // important — still spoken in 'important' voice mode
       showStatus('You have arrived at your destination.', 'success');
     }
   }
@@ -4316,6 +4530,7 @@ function checkDeviation(offsetM, currentLngLat) {
 async function triggerReroute(currentLngLat) {
   if (state.isRerouting) return;
   state.isRerouting = true;
+  playAlertTone(); // a distinct earcon, not a voice prompt — see playAlertTone's own comment
 
   if (!navigator.onLine) {
     showStatus('Off route, no signal — continuing on the current route until reconnected.', 'error', { sticky: true });
@@ -4404,6 +4619,7 @@ function onPositionUpdate(pos) {
   const traveledM = snapped.properties.location;
   const offsetM = snapped.properties.dist;
   state.traveledM = traveledM;
+  updateTraveledRouteSegment(traveledM);
 
   updateActiveManeuver(traveledM);
   checkDeviation(offsetM, lngLat);
@@ -4443,7 +4659,8 @@ async function startNavigation() {
   state.offRouteSince = null;
   state.isRerouting = false;
   state.pendingRerouteFrom = null;
-  state.spoken = new Set();
+  state.spokenFar = new Set();
+  state.spokenNear = new Set();
   state.arrivedAnnounced = false;
   state.lastFix = null;
 
@@ -4506,6 +4723,7 @@ function endNavigation() {
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  clearTraveledRouteSegment();
 
   el.navBanner.classList.add('hidden');
   el.navSpeed.classList.add('hidden');

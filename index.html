@@ -302,16 +302,20 @@
     </button>
   </div>
 
-  <!-- Mirror of #map-controls on the left — the help/docs button plus a
-       weather badge above it, its own stack in case anything else lands
-       here later. Raises in sync with #map-controls (see the
-       MutationObserver in app.js) rather than duplicating every one of
-       that button's own "raise when the bottom sheet appears" call sites.
-       The weather badge is first in DOM so normal flex-column order
-       stacks it above the docs button (see #map-controls-left in
-       style.css) — informational only, not a button, so no click action. -->
+  <!-- Mirror of #map-controls on the left — the voice-mode toggle and
+       weather badge stacked above the help/docs button, its own stack in
+       case anything else lands here later. Raises in sync with
+       #map-controls (see the MutationObserver in app.js) rather than
+       duplicating every one of that button's own "raise when the bottom
+       sheet appears" call sites. DOM order top-to-bottom matches visual
+       stacking order (see #map-controls-left in style.css). -->
   <div id="map-controls-left">
-    <div id="weather-badge" class="weather-badge hidden">
+    <button id="voice-mode-btn" class="fab small" type="button" aria-label="Voice guidance: on">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 9 v6 h4 l5 4 V5 l-5 4 Z"/><path d="M16.5 9 a5 5 0 0 1 0 8"/><path d="M19 7 a8.5 8.5 0 0 1 0 12"/>
+      </svg>
+    </button>
+    <div id="weather-badge" class="weather-badge hidden" role="button" tabindex="0" aria-label="Refresh weather">
       <span id="weather-emoji">☁️</span>
       <span id="weather-temp">--°</span>
     </div>
