@@ -7,3 +7,7 @@ android/build/
 android/.gradle/
 android/local.properties
 android/capacitor-cordova-android-plugins/build/
+
+# Local secrets for testing Cloudflare Pages Functions (wrangler pages dev) —
+# holds a real/throwaway TOMTOM_API_KEY for local runs only, never committed.
+.dev.vars
