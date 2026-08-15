@@ -73,6 +73,11 @@ export const CONFIG = {
   VOICE_PROMPT_DISTANCE_M: 200,
   VOICE_NEAR_DISTANCE_M: 30,
 
+  // Once the live position is within this many metres of the destination,
+  // navigation ends automatically (same as tapping "End") and "You have
+  // arrived at your destination" is spoken — see updateActiveManeuver.
+  ARRIVAL_RADIUS_M: 10,
+
   // Perpendicular distance (metres) from the route line beyond which the
   // driver is considered "off route". Lowered from the original 50m — user
   // feedback was that the app let you travel too far in the wrong direction

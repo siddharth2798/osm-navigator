@@ -316,9 +316,12 @@ function formatDistance(m) {
 
 /** Same idea as formatDistance, but for text handed to speechSynthesis —
  * "150 m" is read aloud as the letter "m", not "meters", so voice prompts
- * need the units spelled out in full. Never used for on-screen text. */
+ * need the units spelled out in full. Never used for on-screen text.
+ * Rounds meters DOWN to the nearest 10 ("in 50 meters", not "in 56 meters")
+ * — a spoken distance reads as an approximation anyway, and a round number
+ * is quicker to process while driving than an oddly specific one. */
 function formatDistanceForSpeech(m) {
-  if (m < 950) return `${Math.round(m)} meters`;
+  if (m < 950) return `${Math.floor(m / 10) * 10} meters`;
   return `${(m / 1000).toFixed(1)} kilometers`;
 }
 
@@ -465,6 +468,15 @@ function decodeTripCoords(trip) {
   return coords;
 }
 
+/** Valhalla's own narrative text says "Bear left"/"Bear right" for a slight
+ * turn — confusingly, since "bear" isn't otherwise used that way in
+ * everyday directions. Swapped for "Slight left"/"Slight right", the same
+ * wording Google Maps uses for the identical maneuver. Everything else
+ * about Valhalla's generated phrasing stays as-is. */
+function rewordInstruction(instruction) {
+  return instruction.replace(/\bbear\b/gi, (match) => (match[0] === 'B' ? 'Slight' : 'slight'));
+}
+
 function buildRouteState(trip, stops = []) {
   const coords = decodeTripCoords(trip);
   const maneuvers = [];
@@ -475,13 +487,25 @@ function buildRouteState(trip, stops = []) {
 
     legManeuvers.forEach((m, mIdx) => {
       const lengthM = (m.length || 0) * 1000; // requested units: kilometers
-      let instruction = m.instruction || 'Continue';
+      let instruction = rewordInstruction(m.instruction || 'Continue');
+
+      const isArrivalType = m.type >= 4 && m.type <= 6;
+
+      // Valhalla's maneuver-level `bridge` flag is real routing data, not a
+      // guess — worth calling out explicitly, since Valhalla's generic
+      // "ramp"/"exit" wording for a grade-separated interchange reads
+      // identically whether that ramp is an actual elevated flyover or just
+      // an OSM-tagged at-grade connector road (common in India), which is
+      // exactly the "why does it call this a ramp?" confusion this
+      // disambiguates where the data actually lets us.
+      if (m.bridge && !isArrivalType) {
+        instruction += ' — this leads onto a flyover.';
+      }
 
       // Valhalla labels arrival at an intermediate stop the same generic way
       // as the true final destination ("You have arrived at your
       // destination."). Relabel it with the actual stop name so a
       // multi-stop trip doesn't say "destination" twice in a row.
-      const isArrivalType = m.type >= 4 && m.type <= 6;
       const isEndOfLeg = mIdx === legManeuvers.length - 1;
       if (isArrivalType && isEndOfLeg && legIdx < stops.length) {
         instruction = `You have arrived at ${stops[legIdx].label}.`;
@@ -3186,10 +3210,12 @@ el.placeCardSaveBtn.addEventListener('click', () => {
 setupAutocomplete(el.fromInput, el.fromSuggestions, (picked) => {
   state.from = picked;
   updatePlanningMarkers();
+  el.planBtn.classList.remove('hidden'); // source changed — any route already shown is now stale
 });
 setupAutocomplete(el.toInput, el.toSuggestions, (picked) => {
   state.to = picked;
   updatePlanningMarkers();
+  el.planBtn.classList.remove('hidden'); // destination changed — any route already shown is now stale
 });
 
 /** Reverses the visit order of stop rows — each `.stop-unit` wrapper already
@@ -3205,6 +3231,7 @@ el.swapBtn.addEventListener('click', () => {
   el.toInput.value = shortLabel(state.to);
   reverseStopRows(); // a reversed trip should visit its stops in reverse order too
   updatePlanningMarkers();
+  el.planBtn.classList.remove('hidden'); // source/destination just swapped — any route already shown is now stale
 });
 
 /** Removes every stop row (and its marker) — used whenever a fresh
@@ -4133,6 +4160,11 @@ el.planBtn.addEventListener('click', async () => {
       const warning = checkRoutePlausibility(trip, state.from, state.to, stops.length > 0);
       if (warning) showStatus(warning, 'error'); else clearStatus();
     }
+    // A route is now shown — freeing up screen space and avoiding a
+    // redundant extra tap is more useful here than leaving the button
+    // sitting there; it reappears the moment the source/destination
+    // actually changes (see the from/to/swap/cancel handlers below).
+    el.planBtn.classList.add('hidden');
     // Records as soon as a route is successfully found — a "recent search",
     // not a "completed trip" — so it shows up in the from/to fields' quick
     // picks (see showQuickPicksFor) whether or not you ever tap "Start
@@ -4237,6 +4269,7 @@ function cancelPlannedRoute() {
   hidePlaceCard();
   clearStops(); // also redraws the (empty) planning markers
   setPlanningUiMode('simple');
+  el.planBtn.classList.remove('hidden'); // source/destination just cleared — need it back to plan a new trip
 
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
 }
@@ -4472,6 +4505,23 @@ function updateActiveManeuver(traveledM) {
   // triggerReroute() — so this has to track live as the trip progresses.
   state.currentLegIndex = maneuvers[currentIdx].legIndex;
   const nextIdx = currentIdx + 1 < maneuvers.length ? currentIdx + 1 : null;
+  const remainingM = Math.max(0, state.route.totalDistM - traveledM);
+
+  // Ends the ride once genuinely close to the destination — checked by
+  // remaining distance alone, independent of whichever maneuver index
+  // traveledM nominally falls under. Valhalla's own cumulative maneuver
+  // lengths and turf's measured distance along the same decoded polyline
+  // can differ by several metres over a long/winding route, so "currentIdx
+  // has reached the last maneuver" and "remainingM is small" don't always
+  // line up — gating on nextIdx === null here could mean this never fires
+  // at all on some real routes. Same action as tapping "End" yourself.
+  if (!state.arrivedAnnounced && remainingM <= CONFIG.ARRIVAL_RADIUS_M) {
+    state.arrivedAnnounced = true;
+    speak('You have arrived at your destination.', true); // important — still spoken in 'important' voice mode
+    endNavigation(); // clears any status banner as part of its own cleanup — show the arrival message after, not before, so it isn't wiped
+    showStatus('You have arrived at your destination.', 'success');
+    return; // navigation just ended — nothing below is still meaningful
+  }
 
   if (nextIdx !== null) {
     const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
@@ -4495,21 +4545,18 @@ function updateActiveManeuver(traveledM) {
       state.spokenNear.add(nextIdx);
     }
   } else {
-    // Past the start of the final maneuver: we've arrived.
+    // Past the start of the final maneuver but not yet within
+    // ARRIVAL_RADIUS_M (e.g. a final maneuver with real length left) —
+    // just the "Arriving" banner; the actual end-of-ride check above
+    // handles the moment it's genuinely time to stop.
     highlightManeuver(currentIdx);
     el.navBannerIcon.innerHTML = maneuverIcon(4); // flag
     el.navBannerInstruction.textContent = maneuvers[currentIdx].instruction || 'You have arrived';
     el.navBannerDistance.textContent = 'Arriving';
-    if (!state.arrivedAnnounced) {
-      state.arrivedAnnounced = true;
-      speak('You have arrived at your destination.', true); // important — still spoken in 'important' voice mode
-      showStatus('You have arrived at your destination.', 'success');
-    }
   }
 
   // Live ETA line in the collapsed bottom sheet, replacing the static
   // total-trip summary shown before navigation started.
-  const remainingM = Math.max(0, state.route.totalDistM - traveledM);
   const remainingTimeS = state.route.totalDistM > 0
     ? state.route.totalTimeS * (remainingM / state.route.totalDistM)
     : 0;
@@ -4665,6 +4712,39 @@ function navigatingBackGuard() {
   return true;
 }
 
+// ============================================================================
+// Screen Wake Lock — keeps the display on while actively navigating, same
+// idea as Google Maps/every other turn-by-turn app (nobody wants the phone
+// to lock itself mid-drive). Supported in all current major browsers
+// (Chrome 84+, Safari 16.4+, Firefox 126+); unsupported browsers just never
+// get a lock — this never blocks or breaks navigation either way.
+// ============================================================================
+let wakeLockSentinel = null;
+
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return; // unsupported browser — quietly do nothing
+  try {
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
+    wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+  } catch (err) {
+    wakeLockSentinel = null; // e.g. denied, low battery mode, tab not visible yet — never blocks navigation
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLockSentinel) {
+    wakeLockSentinel.release().catch(() => { /* already released or unsupported — fine either way */ });
+    wakeLockSentinel = null;
+  }
+}
+
+// The browser automatically releases the wake lock the instant the tab is
+// backgrounded/minimized — re-acquire it the moment it's visible again, but
+// only if a drive is still actually in progress.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.navigating && !wakeLockSentinel) acquireWakeLock();
+});
+
 async function startNavigation() {
   if (!state.route) return;
   if (!('geolocation' in navigator)) {
@@ -4681,6 +4761,7 @@ async function startNavigation() {
   state.spokenNear = new Set();
   state.arrivedAnnounced = false;
   state.lastFix = null;
+  acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
 
   forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
   resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
@@ -4738,6 +4819,7 @@ function endNavigation() {
   if (state.watchId != null) stopLocationWatch(state.watchId).catch(() => { /* best-effort cleanup */ });
   state.watchId = null;
   state.navigating = false;
+  releaseWakeLock();
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
