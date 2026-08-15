@@ -287,7 +287,7 @@
     <div id="nav-speed" class="hidden">— km/h</div>
 
     <!-- ============ "Heavy traffic ahead" indicator — drive-mode navigation
-         only, and only ever shown if TOMTOM_API_KEY is configured. See
+         only, and only ever shown if TOMTOM_FEATURES_ENABLED is true. See
          maybeCheckTraffic/refreshTrafficBadge in app.js. ============ -->
     <div id="traffic-badge" class="hidden" role="status" aria-live="polite">
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 L22 20 H2 Z"/><path d="M12 10 v4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>
@@ -658,7 +658,7 @@
       <div class="docs-group">
         <details class="docs-item">
           <summary>Searching for places<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
-          <div class="docs-item-body"><p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly.</p></div>
+          <div class="docs-item-body"><p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly. If a category search comes back empty and TomTom is configured, it automatically tries TomTom&#8217;s Places Search before giving up &#8212; helpful for EV charging especially, which has sparse coverage in OpenStreetMap today.</p></div>
         </details>
         <details class="docs-item">
           <summary>EV charging station details<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>

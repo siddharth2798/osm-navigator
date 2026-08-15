@@ -929,6 +929,27 @@ mapLoad.then(() => {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#5b6472', 'line-width': 5, 'line-opacity': 0.85 },
   });
+  // A handful of colored dashes over the road ahead — see runTrafficCheckin.
+  // Only ever populated during drive-mode navigation with
+  // CONFIG.TOMTOM_FEATURES_ENABLED true; empty (and so invisible) otherwise.
+  // Added after route-traveled-line so it always draws on top.
+  map.addSource('route-traffic', { type: 'geojson', data: emptyFeatureCollection() });
+  map.addLayer({
+    id: 'route-traffic-line',
+    type: 'line',
+    source: 'route-traffic',
+    layout: { 'line-cap': 'round', 'line-join': 'round' },
+    paint: {
+      'line-width': 6,
+      // Amber breakpoint reuses CONFIG.TRAFFIC_HEAVY_THRESHOLD so the line
+      // coloring and the badge/ETA "heavy" cutoff stay tied together.
+      'line-color': ['interpolate', ['linear'], ['get', 'ratio'],
+        0.3, '#ef4444',
+        CONFIG.TRAFFIC_HEAVY_THRESHOLD, '#f59e0b',
+        0.85, '#22c55e',
+      ],
+    },
+  });
   map.on('click', 'route-alternates-line', (e) => {
     if (e.features.length) selectRouteOption(e.features[0].properties.optionIndex);
   });
@@ -2082,12 +2103,68 @@ async function fetchNearbyChargingStations(lat, lon) {
   return results;
 }
 
+// Maps our OSM category tags to a plain-text TomTom Category Search term.
+// TomTom's endpoint takes a free-text query term biased by lat/lon/radius
+// rather than requiring an exact numeric category ID, so this stays a
+// simple lookup instead of a fragile hardcoded ID table.
+const TOMTOM_CATEGORY_TERM = {
+  'amenity=fuel': 'petrol station',
+  'amenity=charging_station': 'ev charging station',
+  'amenity=pharmacy': 'pharmacy',
+  'amenity=atm': 'atm',
+  'amenity=hospital': 'hospital',
+  'amenity=restaurant': 'restaurant',
+  'amenity=parking': 'parking',
+  'tourism=hotel': 'hotel',
+};
+
+/** Fallback for when Nominatim's OSM-tag search comes back empty at both
+ * radii — real for categories with genuinely sparse OSM coverage in India
+ * (EV charging especially, see README's "Known limitations"). Only ever
+ * called with CONFIG.TOMTOM_FEATURES_ENABLED true (same flag the traffic
+ * feature uses; false means this fallback never fires either, and behaviour
+ * is unchanged from before it existed). Calls this app's own /api/places
+ * route (a Cloudflare Pages Function — see functions/api/places.js) rather
+ * than TomTom directly, so the real API key never reaches the client.
+ * Degrades quietly on any failure — network error, timeout, non-200,
+ * malformed body — same as every other optional integration in this file: a
+ * search simply stays empty rather than surfacing a scary error for a
+ * non-critical path. */
+async function tomtomCategorySearchNear(tag, lat, lon) {
+  const term = TOMTOM_CATEGORY_TERM[tag];
+  if (!term || !CONFIG.TOMTOM_FEATURES_ENABLED) return [];
+  try {
+    const url = `/api/places?term=${encodeURIComponent(term)}&lat=${lat}&lon=${lon}&radius=${CONFIG.TOMTOM_PLACES_FALLBACK_RADIUS_M}`;
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const results = Array.isArray(data.results) ? data.results : [];
+    return results
+      .filter((r) => r.position && typeof r.position.lat === 'number' && typeof r.position.lon === 'number')
+      .map((r) => {
+        const name = r.poi && r.poi.name;
+        const address = r.address && r.address.freeformAddress;
+        return {
+          label: name && address ? `${name}, ${address}` : (name || address || term),
+          lat: r.position.lat,
+          lon: r.position.lon,
+        };
+      });
+  } catch (err) {
+    return []; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — all treated the same
+  }
+}
+
 /** Nominatim's bracket syntax (`q=[amenity=fuel]`) searches by OSM tag
  * rather than by name — this is what makes "petrol pumps near me" work at
  * all, since petrol pumps mostly aren't individually named in OSM. Tries
  * the default radius first, then a wider one, since some categories (EV
  * charging especially) have genuinely sparse OSM coverage in India and a
- * too-tight box can come back empty even where results do exist nearby. */
+ * too-tight box can come back empty even where results do exist nearby.
+ * Only after BOTH Nominatim radii come back empty does it try TomTom
+ * Places Search as a last resort (see tomtomCategorySearchNear) — Nominatim
+ * stays the primary source since it needs no API key and generally has
+ * better OSM-native coverage; TomTom only fills the genuine gaps. */
 async function categorySearchNear(tag, lat, lon) {
   const cacheKey = categorySearchCacheKey(tag, lat, lon);
   if (categorySearchCache.has(cacheKey)) return categorySearchCache.get(cacheKey);
@@ -2120,8 +2197,9 @@ async function categorySearchNear(tag, lat, lon) {
       return results;
     }
   }
-  categorySearchCache.set(cacheKey, []);
-  return [];
+  const tomtomResults = await tomtomCategorySearchNear(tag, lat, lon);
+  categorySearchCache.set(cacheKey, tomtomResults);
+  return tomtomResults;
 }
 
 // ============================================================================
@@ -2294,20 +2372,33 @@ el.weatherBadge.addEventListener('keydown', (e) => {
 // routing (Valhalla remains the only routing engine). A handful of samples
 // fired a few times per drive stays nowhere near either cap.
 //
-// CONFIG.TOMTOM_API_KEY empty (the shipped default) disables this entirely:
-// maybeCheckTraffic bails before any fetch. See config.js for the full
-// cadence/sampling/threshold tunables.
+// CONFIG.TOMTOM_FEATURES_ENABLED false (the shipped default) disables this
+// entirely: maybeCheckTraffic bails before any fetch. See config.js for the
+// full cadence/sampling/threshold tunables.
 // ============================================================================
 
-/** One Flow Segment Data request for a single point. Returns
- * currentSpeed/freeFlowSpeed, or null on any failure — network error,
+/** One Flow Segment Data request for a single point. Returns the
+ * currentSpeed/freeFlowSpeed ratio, or null on any failure — network error,
  * timeout, non-200 (including HTTP 429 quota-exceeded), or a
  * malformed/missing body. Callers simply exclude a null from the average:
  * same quiet-degrade treatment as fetchWeather above, and navigation is
- * never affected by this failing. */
+ * never affected by this failing.
+ *
+ * Calls this app's own /api/traffic route (a Cloudflare Pages Function —
+ * see functions/api/traffic.js) rather than TomTom directly, so the real
+ * API key never reaches the client.
+ *
+ * Deliberately does NOT use the response's own coordinates.coordinate
+ * geometry for anything — that's TomTom's own matched road segment from
+ * TomTom's map data, which is a different dataset than the OSM/Valhalla
+ * route actually being drawn. In a dense area with parallel or crossing
+ * roads it can snap to a nearby-but-different road, drawing a colored dash
+ * that's visibly off the route. runTrafficCheckin instead slices our own
+ * route.lineFeature around the queried point, so any dash is guaranteed to
+ * land exactly on the line already on screen. */
 async function fetchTomTomFlowRatio(lat, lon) {
   try {
-    const url = `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point=${lat},${lon}&key=${CONFIG.TOMTOM_API_KEY}`;
+    const url = `/api/traffic?lat=${lat}&lon=${lon}`;
     const res = await fetchWithTimeout(url);
     if (!res.ok) return null; // covers 429 and any other non-200
     const data = await res.json();
@@ -2341,6 +2432,12 @@ function resetTrafficTracking() {
   state.trafficCheckInFlight = false;
   state.trafficRatio = null;
   refreshTrafficBadge();
+  // Guarded: renderRoute calls this before awaitMapLoad() resolves (same
+  // spot spokenFar/spokenNear get reset), so on the very first route of a
+  // cold page load the map's sources may not exist yet — nothing to clear
+  // in that case anyway, since route-traffic couldn't have any stale data.
+  const trafficSource = map.getSource('route-traffic');
+  if (trafficSource) trafficSource.setData(emptyFeatureCollection());
 }
 
 /** Samples CONFIG.TRAFFIC_SAMPLE_POINTS points evenly spaced over the next
@@ -2350,7 +2447,10 @@ function resetTrafficTracking() {
  * currentSpeed/freeFlowSpeed across whichever succeed. Same
  * turf.lineSliceAlong/turf.along usage as routeSearchScope above — nothing
  * new. If every sample fails, state.trafficRatio becomes null ("no data"),
- * never something alarming. */
+ * never something alarming. Each successful sample that also returned usable
+ * road-segment geometry becomes one colored dash on the route-traffic map
+ * layer — a response missing that but still owning valid speeds still counts
+ * toward the ratio average, it just draws nothing. */
 async function runTrafficCheckin(traveledM, remainingM) {
   state.trafficCheckInFlight = true;
   try {
@@ -2359,33 +2459,49 @@ async function runTrafficCheckin(traveledM, remainingM) {
     const sliceEndM = Math.min(traveledM + aheadM, state.route.totalDistM);
     const ahead = turf.lineSliceAlong(state.route.lineFeature, traveledM, sliceEndM, { units: 'meters' });
     const n = Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS);
-    const samplePoints = [];
+    const samples = [];
     for (let i = 0; i < n; i++) {
       // Midpoints of n equal segments across the sampled window — spreads
       // samples evenly without wasting one right at the live position
       // (already known) or right at the far cap edge.
       const d = Math.min(aheadM * (i + 0.5) / n, aheadM);
-      samplePoints.push(turf.along(ahead, d, { units: 'meters' }).geometry.coordinates); // [lon, lat]
+      const [lon, lat] = turf.along(ahead, d, { units: 'meters' }).geometry.coordinates;
+      samples.push({ lon, lat, absoluteM: traveledM + d }); // absoluteM: this sample's distance along the FULL route, for dash placement below
     }
-    const ratios = await Promise.all(samplePoints.map(([lon, lat]) => fetchTomTomFlowRatio(lat, lon)));
-    const valid = ratios.filter((r) => typeof r === 'number' && Number.isFinite(r));
-    state.trafficRatio = valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+    const ratios = await Promise.all(samples.map((s) => fetchTomTomFlowRatio(s.lat, s.lon)));
+    const valid = samples
+      .map((s, i) => ({ ...s, ratio: ratios[i] }))
+      .filter((s) => typeof s.ratio === 'number' && Number.isFinite(s.ratio));
+    state.trafficRatio = valid.length ? valid.reduce((sum, s) => sum + s.ratio, 0) / valid.length : null;
     refreshTrafficBadge();
+
+    // Each dash is a short slice of OUR OWN route line centered on the
+    // sample point — not TomTom's own matched-segment geometry (see
+    // fetchTomTomFlowRatio's comment) — so it's always exactly on the route
+    // actually drawn on screen, never a nearby-but-different road.
+    const half = CONFIG.TRAFFIC_DASH_HALF_WIDTH_M;
+    const lineFeatures = valid.map((s) => {
+      const from = Math.max(0, s.absoluteM - half);
+      const to = Math.min(state.route.totalDistM, s.absoluteM + half);
+      const dash = turf.lineSliceAlong(state.route.lineFeature, from, to, { units: 'meters' });
+      return { type: 'Feature', properties: { ratio: s.ratio }, geometry: dash.geometry };
+    });
+    map.getSource('route-traffic').setData({ type: 'FeatureCollection', features: lineFeatures });
   } finally {
     state.trafficCheckInFlight = false;
   }
 }
 
 /** Gates and paces TomTom check-ins from onPositionUpdate: only while
- * actually driving with a key configured (never planning, walking, or
- * transit — and never at all with the shipped empty-string key default),
- * at most once both CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS and
- * CONFIG.TRAFFIC_CHECK_MIN_DISTANCE_M have elapsed since the last one, and
- * never once under CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M from the
+ * actually driving with the feature enabled (never planning, walking, or
+ * transit — and never at all with the shipped CONFIG.TOMTOM_FEATURES_ENABLED
+ * = false default), at most once both CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS
+ * and CONFIG.TRAFFIC_CHECK_MIN_DISTANCE_M have elapsed since the last one,
+ * and never once under CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M from the
  * destination. Fire-and-forget, like refreshWeatherBadge — this must never
  * hold up maneuver-advance or deviation checks on the same GPS callback. */
 function maybeCheckTraffic(traveledM) {
-  if (!state.navigating || state.travelMode !== 'drive' || !CONFIG.TOMTOM_API_KEY || !state.route) return;
+  if (!state.navigating || state.travelMode !== 'drive' || !CONFIG.TOMTOM_FEATURES_ENABLED || !state.route) return;
   if (state.trafficCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
   const remainingM = state.route.totalDistM - traveledM;
   if (remainingM < CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M) return;

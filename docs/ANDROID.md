@@ -34,3 +34,5 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 adb shell appops set com.navigator.app PICTURE_IN_PICTURE allow
 ```
 `adb logcat -s NavPip` after minimizing shows exactly why it didn't enter, if it's still not working after that.
+
+**`TOMTOM_FEATURES_ENABLED`'s `/api/traffic` and `/api/places` calls are relative, same-origin paths — not yet fixed for the Android shell.** Correct for the web PWA (served from your actual deployment domain), but the packaged Android app isn't served from that domain, so those calls won't resolve there as-is. Fixing it means making the URL absolute (the same `isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : ''` pattern already used for the Google Maps link resolver) for native builds specifically — not done yet.

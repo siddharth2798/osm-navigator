@@ -14,9 +14,9 @@ android/.idea/
 # Cloudflare Pages Functions local dev state (wrangler pages dev)
 .wrangler/
 
-# Local secrets for `wrangler dev`/`wrangler pages dev` (e.g. OPENCHARGEMAP_API_KEY)
-# — real secrets belong in `wrangler secret put` / the Pages dashboard, never
-# committed here even for local testing.
+# Local secrets for `wrangler dev`/`wrangler pages dev` (e.g. OPENCHARGEMAP_API_KEY,
+# TOMTOM_API_KEY) — real secrets belong in `wrangler secret put` / the Pages
+# dashboard, never committed here even for local testing.
 .dev.vars
 
 .DS_Store

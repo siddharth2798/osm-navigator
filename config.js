@@ -325,12 +325,19 @@ export const CONFIG = {
   // this app's GPS position leave the device even to a free/anonymous API.
   WEATHER_ENABLED: true,
 
-  // --- Live traffic: TomTom -------------------------------------------------
-  // Get a free API key at https://developer.tomtom.com (Flow Segment Data is
-  // 20K free requests/month — plenty for a single personal user, since this
-  // is only ever called a few times per drive, never continuously). Leave
-  // empty to disable the feature entirely: no traffic indicator, no calls.
-  TOMTOM_API_KEY: '',
+  // --- TomTom: live traffic + places-search fallback --------------------------
+  // Two independent features, both gated on this one flag: live traffic
+  // during drive navigation (TomTom Flow Segment Data) and a Places Search
+  // fallback for category searches ("EV charging near me") that come back
+  // empty from Nominatim/OSM — genuinely sparse in India for some categories
+  // (see README). The real TomTom API key never lives here or anywhere else
+  // client-side — both features call this app's own /api/traffic and
+  // /api/places routes (see functions/api/), Cloudflare Pages Functions that
+  // hold the actual key as a server-side secret. Set that secret in the
+  // Cloudflare dashboard (Settings → Environment variables → TOMTOM_API_KEY),
+  // deploy, then flip this to true. Leave false to disable both entirely —
+  // no calls to /api/traffic or /api/places at all.
+  TOMTOM_FEATURES_ENABLED: false,
 
   // A check-in only fires once BOTH this much time AND this much distance
   // have passed since the last one (whichever is satisfied later) — keeps a
@@ -347,13 +354,29 @@ export const CONFIG = {
   // How many points to sample ahead of the live position on each check-in,
   // evenly spaced over the next TRAFFIC_SAMPLE_AHEAD_M metres of the
   // *remaining* route (fewer/closer together if less than that remains).
-  // One Flow Segment Data request per point, fired in parallel.
-  TRAFFIC_SAMPLE_POINTS: 3,
+  // One Flow Segment Data request per point, fired in parallel — each
+  // successful one also draws a short colored dash on the map (see
+  // route-traffic-line), so this also controls how dense that overlay looks.
+  // 6 stays nowhere near the 20K/month free cap even for a long daily drive.
+  TRAFFIC_SAMPLE_POINTS: 6,
   TRAFFIC_SAMPLE_AHEAD_M: 5000,
+
+  // Each colored dash on the map is our own route line sliced this many
+  // metres to either side of the sample point it's centered on (so a 150
+  // default draws a 300m-long dash) — deliberately NOT TomTom's own matched
+  // road segment geometry, which comes from a different map dataset and can
+  // visibly land on a nearby-but-different road in dense areas.
+  TRAFFIC_DASH_HALF_WIDTH_M: 150,
 
   // If the average of (currentSpeed / freeFlowSpeed) across all samples that
   // succeeded drops below this, show the "Heavy traffic ahead" indicator and
   // scale the live ETA line's remaining time by the inverse of that ratio.
   // At/above threshold: no indicator, no ETA adjustment.
   TRAFFIC_HEAVY_THRESHOLD: 0.6,
+
+  // Search radius (metres) for the TomTom Places Search fallback — only
+  // tried after Nominatim's own default + wide radius category search both
+  // come back empty. Wider than Nominatim's wide radius on purpose, since
+  // this only ever runs for genuinely sparse categories/areas.
+  TOMTOM_PLACES_FALLBACK_RADIUS_M: 5000,
 };
