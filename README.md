@@ -35,12 +35,13 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **Search** — typo-tolerant fallback, one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels), "X near me" resolves to your live GPS position.
 - **EV charging station details** via Open Charge Map — connector type, power, operator, cost, and an honestly-labeled operational status. Falls back to a plain OSM pin without a configured Open Charge Map key.
 - **Paste a Google Maps link** — a full link or `maps.app.goo.gl` short link resolves straight to that place, including places with no street address (Plus Codes decode automatically). Also registers as an Android Share target.
-- **Directions** — multi-stop routing (up to 8, drag to reorder), a plain-text "X to Y" shortcut, Drive/Walk/Transit modes, avoid-tolls/avoid-highways. Route cards lead with distance, not Valhalla's time estimate — that estimate has no live traffic behind it.
+- **Directions** — multi-stop routing (up to 8, drag to reorder), a plain-text "X to Y" shortcut, Drive/Walk/Transit modes, avoid-tolls/avoid-highways. Route cards lead with distance, not Valhalla's time estimate — that estimate has no live traffic behind it, unless TomTom live traffic is configured (see below).
 - **Long-press to pin a place** (4-second press) — fills the search box, or sets it as the destination directly if you're already mid-trip.
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, shown automatically as soon as GPS resolves, toggleable from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes.
 - **Turn-by-turn navigation** — live position arrow, traveled-route dulling, screen stays awake, automatic arrival detection, survives a mid-drive reload, reroutes onto whatever road you actually took. Auto-enters **Picture-in-Picture** on the [Android shell](docs/ANDROID.md) when minimized mid-drive.
 - **Voice guidance** — early and near turn prompts scaled to your actual speed, natural phrasing, an on/off toggle, a distinct alert tone on deviation, combined prompts for closely-spaced turns.
+- **Live traffic during driving** — an occasional "Heavy traffic ahead" indicator and a traffic-adjusted ETA, backed by TomTom's Flow Segment Data, when configured.
 - **Weather at a glance**, **search along the route**, **favorites & recent trips**, **offline map tiles**, **shareable route links** (no backend involved), **street-level imagery** via Mapillary when configured.
 - Works with the screen off via the [optional Android shell](docs/ANDROID.md).
 
