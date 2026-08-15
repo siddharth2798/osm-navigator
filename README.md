@@ -15,6 +15,7 @@ The app itself has a **Help & documentation** screen (the circled "?" button, bo
 - **Turn-by-turn navigation** — a bold directional arrow marks your live position, the traveled part of the route dulls to gray as you go, and a live speed readout sits above the next-turn card.
 - **Voice guidance** — an early "in X meters, turn right" heads-up followed by a short reminder right before the turn; a mute/important-only/full toggle (same three-way choice as Google Maps); auto-reroute on deviation with a distinct alert tone (not a voice prompt).
 - **Weather at a glance** — a small badge shows current conditions for a selected place, or your live position while driving; tap it to refresh.
+- **Live traffic during driving** — an occasional "Heavy traffic ahead" indicator and a traffic-adjusted ETA, backed by TomTom's Flow Segment Data, when configured.
 - **Search along the route** — find things ahead of you (or along the whole route, before you start) without leaving your trip; picking one adds it as a stop.
 - **Favorites & recent trips**, **offline map tiles** for a whole area, and a **resume-in-progress-trip** if the tab reloads mid-drive.
 - **Shareable route links** — encode a whole trip (stops and mode included) into a URL with no backend involved; opening one pre-fills the trip for whoever you send it to.
@@ -41,6 +42,7 @@ Every URL and tunable lives at the top of **`config.js`**, each with a comment e
 - `MAPILLARY_ACCESS_TOKEN` — optional (Milestone 4A). Leave empty to disable street-level imagery entirely; there's no public shared token since Mapillary requires every app to register its own.
 - `OTP2_URL` — optional (Milestone 4C). Leave empty and the transit mode toggle never appears; there's no public OpenTripPlanner demo to default to.
 - `WEATHER_ENABLED` — set to `false` to disable the weather badge entirely (no Open-Meteo calls at all) if you'd rather this app's GPS position never leave the device, even to a free/anonymous API.
+- `TOMTOM_API_KEY` — optional. Get a free key at [developer.tomtom.com](https://developer.tomtom.com) (Flow Segment Data is 20K free requests/month). Leave empty to disable live traffic entirely: no indicator, no calls, and the check-in logic never runs. Only ever used during drive-mode navigation, at most a few times per trip — see the `TRAFFIC_*` tunables in `config.js` for cadence/sampling/threshold.
 
 If you change `MAP_STYLE_URL` to a self-hosted tile server, also update `TILE_HOSTS` at the top of `sw.js` — the service worker can't import `config.js` (Safari doesn't support module service workers yet), so that one value is duplicated there.
 
