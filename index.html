@@ -268,6 +268,14 @@
 
     <!-- ============ Live speed readout, shown only while navigating ============ -->
     <div id="nav-speed" class="hidden">— km/h</div>
+
+    <!-- ============ "Heavy traffic ahead" indicator — drive-mode navigation
+         only, and only ever shown if TOMTOM_API_KEY is configured. See
+         maybeCheckTraffic/refreshTrafficBadge in app.js. ============ -->
+    <div id="traffic-badge" class="hidden" role="status" aria-live="polite">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 L22 20 H2 Z"/><path d="M12 10 v4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>
+      <span>Heavy traffic ahead</span>
+    </div>
   </div>
 
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->

@@ -142,4 +142,36 @@ export const CONFIG = {
   // calls to Open-Meteo, for a privacy-conscious user who'd rather not have
   // this app's GPS position leave the device even to a free/anonymous API.
   WEATHER_ENABLED: true,
+
+  // --- Live traffic: TomTom -------------------------------------------------
+  // Get a free API key at https://developer.tomtom.com (Flow Segment Data is
+  // 20K free requests/month — plenty for a single personal user, since this
+  // is only ever called a few times per drive, never continuously). Leave
+  // empty to disable the feature entirely: no traffic indicator, no calls.
+  TOMTOM_API_KEY: '',
+
+  // A check-in only fires once BOTH this much time AND this much distance
+  // have passed since the last one (whichever is satisfied later) — keeps a
+  // long highway cruise from re-checking every few seconds just because the
+  // clock ticked, and keeps dead-stopped traffic from re-checking every few
+  // meters just because time passed.
+  TRAFFIC_CHECK_MIN_INTERVAL_MS: 180000, // 3 min
+  TRAFFIC_CHECK_MIN_DISTANCE_M: 1500,
+
+  // Stop checking once this close to the destination — re-checking flow data
+  // for a segment you're about to arrive at isn't useful.
+  TRAFFIC_STOP_CHECKING_REMAINING_M: 1000,
+
+  // How many points to sample ahead of the live position on each check-in,
+  // evenly spaced over the next TRAFFIC_SAMPLE_AHEAD_M metres of the
+  // *remaining* route (fewer/closer together if less than that remains).
+  // One Flow Segment Data request per point, fired in parallel.
+  TRAFFIC_SAMPLE_POINTS: 3,
+  TRAFFIC_SAMPLE_AHEAD_M: 5000,
+
+  // If the average of (currentSpeed / freeFlowSpeed) across all samples that
+  // succeeded drops below this, show the "Heavy traffic ahead" indicator and
+  // scale the live ETA line's remaining time by the inverse of that ratio.
+  // At/above threshold: no indicator, no ETA adjustment.
+  TRAFFIC_HEAVY_THRESHOLD: 0.6,
 };

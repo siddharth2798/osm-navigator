@@ -606,6 +606,27 @@ button {
 }
 #nav-speed.hidden { display: none; }
 
+/* "Heavy traffic ahead" indicator — same small-pill treatment as #nav-speed
+   right above it (inherits #top-overlay's placement/safe-area handling for
+   free), amber text rather than --danger's red since this is informational,
+   not an error: navigation is never blocked by it. Only ever shown while
+   TOMTOM_API_KEY is configured and the averaged flow ratio actually drops
+   below CONFIG.TRAFFIC_HEAVY_THRESHOLD — see refreshTrafficBadge in app.js. */
+#traffic-badge {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 6px 12px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 700;
+  color: #f59e0b;
+}
+#traffic-badge.hidden { display: none; }
+
 /* ---------------------------------------------------------------- floating buttons */
 
 /* Google-Maps-style control stack: zoom +/- above a "my location" button,

@@ -84,6 +84,7 @@ const el = {
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
   navSpeed: document.getElementById('nav-speed'),
+  trafficBadge: document.getElementById('traffic-badge'),
   maneuverList: document.getElementById('maneuver-list'),
   offlinePanel: document.getElementById('offline-panel'),
   offlineCloseBtn: document.getElementById('offline-close-btn'),
@@ -170,6 +171,13 @@ const state = {
   isRerouting: false,
   pendingRerouteFrom: null, // last known-good lngLat we owe a reroute to, once connectivity returns
   followMode: true,    // whether the camera auto-follows the live position
+  // Live traffic (TomTom Flow Segment Data) — see maybeCheckTraffic/
+  // runTrafficCheckin. All reset together by resetTrafficTracking()
+  // whenever a route is (re)planned or navigation starts/ends.
+  lastTrafficCheckAt: null,     // Date.now() of the last check-in, or null before the first one
+  lastTrafficCheckDistM: null,  // state.traveledM at the last check-in, or null before the first one
+  trafficCheckInFlight: false,  // guards against a slow check-in overlapping the next one
+  trafficRatio: null,           // last averaged currentSpeed/freeFlowSpeed, or null if no data yet / all samples failed
 };
 
 // ============================================================================
@@ -1512,6 +1520,122 @@ el.weatherBadge.addEventListener('click', handleWeatherBadgeRefresh);
 el.weatherBadge.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleWeatherBadgeRefresh(); }
 });
+
+// ============================================================================
+// Live traffic — TomTom Flow Segment Data, drive-mode navigation only.
+//
+// Deliberately narrow in scope: TomTom's free tier gives Flow Segment Data
+// 20K requests/month, but Traffic Incident Details only 2,500/month, so this
+// only ever uses Flow Segment Data (currentSpeed vs. freeFlowSpeed for the
+// road segment nearest a point) — never incidents, never TomTom's own
+// routing (Valhalla remains the only routing engine). A handful of samples
+// fired a few times per drive stays nowhere near either cap.
+//
+// CONFIG.TOMTOM_API_KEY empty (the shipped default) disables this entirely:
+// maybeCheckTraffic bails before any fetch. See config.js for the full
+// cadence/sampling/threshold tunables.
+// ============================================================================
+
+/** One Flow Segment Data request for a single point. Returns
+ * currentSpeed/freeFlowSpeed, or null on any failure — network error,
+ * timeout, non-200 (including HTTP 429 quota-exceeded), or a
+ * malformed/missing body. Callers simply exclude a null from the average:
+ * same quiet-degrade treatment as fetchWeather above, and navigation is
+ * never affected by this failing. */
+async function fetchTomTomFlowRatio(lat, lon) {
+  try {
+    const url = `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point=${lat},${lon}&key=${CONFIG.TOMTOM_API_KEY}`;
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return null; // covers 429 and any other non-200
+    const data = await res.json();
+    const seg = data && data.flowSegmentData;
+    const current = seg && seg.currentSpeed;
+    const freeFlow = seg && seg.freeFlowSpeed;
+    if (typeof current !== 'number' || typeof freeFlow !== 'number' || freeFlow <= 0) return null;
+    return current / freeFlow;
+  } catch (err) {
+    return null; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — all treated the same
+  }
+}
+
+/** Single source of truth for the "Heavy traffic ahead" indicator: visible
+ * only while there's a valid averaged ratio under
+ * CONFIG.TRAFFIC_HEAVY_THRESHOLD. No data yet, all samples failed, or
+ * traffic is fine — all just hide it, so this reads as occasional, not
+ * constant chatter. */
+function refreshTrafficBadge() {
+  const heavy = state.trafficRatio != null && state.trafficRatio < CONFIG.TRAFFIC_HEAVY_THRESHOLD;
+  el.trafficBadge.classList.toggle('hidden', !heavy);
+}
+
+/** Resets every piece of check-in bookkeeping and hides the indicator.
+ * Called whenever a route is (re)planned (renderRoute) and when navigation
+ * starts/ends, so a stale ratio or cadence timer from a previous/replaced
+ * route never leaks into the next one. */
+function resetTrafficTracking() {
+  state.lastTrafficCheckAt = null;
+  state.lastTrafficCheckDistM = null;
+  state.trafficCheckInFlight = false;
+  state.trafficRatio = null;
+  refreshTrafficBadge();
+}
+
+/** Samples CONFIG.TRAFFIC_SAMPLE_POINTS points evenly spaced over the next
+ * CONFIG.TRAFFIC_SAMPLE_AHEAD_M metres of the *remaining* route (or less, if
+ * less than that remains — never past the destination), fires one Flow
+ * Segment Data request per point in parallel, and averages
+ * currentSpeed/freeFlowSpeed across whichever succeed. Same
+ * turf.lineSliceAlong/turf.along usage as routeSearchScope above — nothing
+ * new. If every sample fails, state.trafficRatio becomes null ("no data"),
+ * never something alarming. */
+async function runTrafficCheckin(traveledM, remainingM) {
+  state.trafficCheckInFlight = true;
+  try {
+    const aheadM = Math.min(CONFIG.TRAFFIC_SAMPLE_AHEAD_M, remainingM);
+    if (aheadM <= 0) return;
+    const sliceEndM = Math.min(traveledM + aheadM, state.route.totalDistM);
+    const ahead = turf.lineSliceAlong(state.route.lineFeature, traveledM, sliceEndM, { units: 'meters' });
+    const n = Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS);
+    const samplePoints = [];
+    for (let i = 0; i < n; i++) {
+      // Midpoints of n equal segments across the sampled window — spreads
+      // samples evenly without wasting one right at the live position
+      // (already known) or right at the far cap edge.
+      const d = Math.min(aheadM * (i + 0.5) / n, aheadM);
+      samplePoints.push(turf.along(ahead, d, { units: 'meters' }).geometry.coordinates); // [lon, lat]
+    }
+    const ratios = await Promise.all(samplePoints.map(([lon, lat]) => fetchTomTomFlowRatio(lat, lon)));
+    const valid = ratios.filter((r) => typeof r === 'number' && Number.isFinite(r));
+    state.trafficRatio = valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+    refreshTrafficBadge();
+  } finally {
+    state.trafficCheckInFlight = false;
+  }
+}
+
+/** Gates and paces TomTom check-ins from onPositionUpdate: only while
+ * actually driving with a key configured (never planning, walking, or
+ * transit — and never at all with the shipped empty-string key default),
+ * at most once both CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS and
+ * CONFIG.TRAFFIC_CHECK_MIN_DISTANCE_M have elapsed since the last one, and
+ * never once under CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M from the
+ * destination. Fire-and-forget, like refreshWeatherBadge — this must never
+ * hold up maneuver-advance or deviation checks on the same GPS callback. */
+function maybeCheckTraffic(traveledM) {
+  if (!state.navigating || state.travelMode !== 'drive' || !CONFIG.TOMTOM_API_KEY || !state.route) return;
+  if (state.trafficCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
+  const remainingM = state.route.totalDistM - traveledM;
+  if (remainingM < CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M) return;
+  const now = Date.now();
+  if (state.lastTrafficCheckAt != null) {
+    const elapsedOk = now - state.lastTrafficCheckAt >= CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS;
+    const distOk = traveledM - state.lastTrafficCheckDistM >= CONFIG.TRAFFIC_CHECK_MIN_DISTANCE_M;
+    if (!elapsedOk || !distOk) return; // both must be true — whichever condition is satisfied later gates the check-in
+  }
+  state.lastTrafficCheckAt = now;
+  state.lastTrafficCheckDistM = traveledM;
+  runTrafficCheckin(traveledM, remainingM);
+}
 
 /** How many points along the route to sample for an along-route category
  * search — few enough to stay reasonably fast against a rate-limited public
@@ -3899,6 +4023,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.arrivedAnnounced = false;
+  resetTrafficTracking(); // a (re)planned route invalidates any prior traffic sampling/cadence
 
   await awaitMapLoad();
   map.getSource('route').setData(built.lineFeature);
@@ -4510,10 +4635,19 @@ function updateActiveManeuver(traveledM) {
   // Live ETA line in the collapsed bottom sheet, replacing the static
   // total-trip summary shown before navigation started.
   const remainingM = Math.max(0, state.route.totalDistM - traveledM);
-  const remainingTimeS = state.route.totalDistM > 0
+  let remainingTimeS = state.route.totalDistM > 0
     ? state.route.totalTimeS * (remainingM / state.route.totalDistM)
     : 0;
-  el.sheetSummary.textContent = `${formatDistance(remainingM)} remaining · about ${formatDuration(remainingTimeS)}`;
+  // Heavy-traffic adjustment (see maybeCheckTraffic/runTrafficCheckin):
+  // only scales the estimate once the averaged ratio is actually below the
+  // "heavy" threshold, same condition that shows the indicator itself —
+  // otherwise this line stays exactly as before, no traffic chatter.
+  let etaSuffix = '';
+  if (state.trafficRatio != null && state.trafficRatio < CONFIG.TRAFFIC_HEAVY_THRESHOLD) {
+    remainingTimeS = remainingTimeS / state.trafficRatio; // inverse of the ratio — still just an estimate
+    etaSuffix = ' (traffic, est.)';
+  }
+  el.sheetSummary.textContent = `${formatDistance(remainingM)} remaining · about ${formatDuration(remainingTimeS)}${etaSuffix}`;
 }
 
 /** Tracks how long the driver has been continuously off-route and triggers a
@@ -4641,6 +4775,7 @@ function onPositionUpdate(pos) {
 
   updateActiveManeuver(traveledM);
   checkDeviation(offsetM, lngLat);
+  maybeCheckTraffic(traveledM);
 }
 
 function onPositionError(err) {
@@ -4681,6 +4816,7 @@ async function startNavigation() {
   state.spokenNear = new Set();
   state.arrivedAnnounced = false;
   state.lastFix = null;
+  resetTrafficTracking();
 
   forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
   resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
@@ -4742,6 +4878,7 @@ function endNavigation() {
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   clearTraveledRouteSegment();
+  resetTrafficTracking();
 
   el.navBanner.classList.add('hidden');
   el.navSpeed.classList.add('hidden');
