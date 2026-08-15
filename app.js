@@ -2265,7 +2265,13 @@ async function addStopFromPoi(picked) {
     // route from the origin through every stop, as usual.
     const isMidDrive = state.navigating && state.lastFix;
     const fromPoint = isMidDrive ? { lat: state.lastFix.lat, lon: state.lastFix.lng } : state.from;
-    const stops = isMidDrive ? getStops().slice(state.currentLegIndex) : getStops();
+    // Mid-drive: slice the CURRENT route's own stops list (state.route.stops
+    // — see renderRoute), not the original getStops(), since currentLegIndex
+    // is relative to whichever subset built the route that's active right
+    // now (itself possibly already reduced by an earlier reroute). addStopRow
+    // above already appended `picked` as the new last stop in the DOM, so it
+    // has to be added back on after slicing rather than read via getStops().
+    const stops = isMidDrive ? [...state.route.stops.slice(state.currentLegIndex), picked] : getStops();
     if (!isMidDrive) state.currentLegIndex = 0; // mid-drive: left alone, the next GPS fix recomputes it against the new route
     const { trip } = await requestRoute(fromPoint, state.to, stops, 0, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways }); // no alternates — adding a stop already commits you to a specific trip
     state.routeOptions = [trip];
@@ -2385,7 +2391,9 @@ function routeSearchScope() {
     lineFeature: ahead,
     coords: ahead.geometry.coordinates,
     totalDistM: remainingM,
-    waypoints: [currentPoint, ...getStops().slice(state.currentLegIndex), state.to],
+    // Slice state.route.stops (the reference frame currentLegIndex is
+    // actually relative to), not getStops() — see renderRoute's comment.
+    waypoints: [currentPoint, ...state.route.stops.slice(state.currentLegIndex), state.to],
   };
 }
 
@@ -3881,6 +3889,12 @@ async function selectRouteOption(index) {
 async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   const built = buildRouteState(trip, stops);
   built.lineFeature = turf.lineString(built.coords);
+  // Remembers exactly which stops list this trip's maneuvers' legIndex values
+  // are relative to — a reroute or mid-drive stop-add only knows the stops
+  // still ahead by slicing *this* array, never the original full getStops()
+  // list, since a previous reroute may have already been built from a
+  // reduced subset of it.
+  built.stops = stops;
   state.route = built;
   state.spokenFar = new Set();
   state.spokenNear = new Set();
@@ -4545,8 +4559,12 @@ async function triggerReroute(currentLngLat) {
     const from = { lat: currentLngLat[1], lon: currentLngLat[0] };
     // Only route through stops still ahead — currentLegIndex tracks how many
     // have already been visited, so a stop you've already been to is never
-    // routed back through on a reroute.
-    const remainingStops = getStops().slice(state.currentLegIndex);
+    // routed back through on a reroute. Sliced from state.route.stops (the
+    // stops list the CURRENT route's own maneuvers are indexed against), not
+    // getStops() — a previous reroute may have already narrowed that list,
+    // and currentLegIndex is relative to whatever narrowed list is active
+    // now, not the original full set of stops.
+    const remainingStops = state.route.stops.slice(state.currentLegIndex);
     const { trip } = await requestRoute(from, state.to, remainingStops, 0, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways }); // no alternates — mid-reroute isn't the moment for route choice
     state.routeOptions = [trip];
     state.selectedRouteIndex = 0;
