@@ -17,3 +17,12 @@ android/
 package.json
 package-lock.json
 .git/
+
+# worker.js is bundled directly via wrangler.jsonc's "main" field, and
+# functions/ + lib/ are server-side source (a Pages Function entry point and
+# the module it shares with worker.js) — none of these are meant to be
+# fetchable as plain static files.
+worker.js
+wrangler.jsonc
+functions/
+lib/

@@ -1799,6 +1799,16 @@ async function resolveGoogleMapsLink(text) {
 async function autoBookmarkGoogleMapsLink({ label, lat, lon, sourceUrl }) {
   try {
     const listId = await getOrCreateNamedListId('To add to OSM');
+    // Re-pasting/re-resolving the same place (or two different link variants
+    // that land on the same pin) shouldn't pile up duplicate entries — a
+    // coordinate match is what "the same place" actually means here, not
+    // exact link text, since a short link and its resolved long link are
+    // different strings for the same spot.
+    const existing = await getFavorites(listId);
+    if (existing.some((f) => f.lat === lat && f.lon === lon)) {
+      showStatus(`"${splitPlaceLabel(label).primary}" is already in your "To add to OSM" list.`, 'info');
+      return;
+    }
     await addFavorite({ label, lat, lon, listId, note: sourceUrl });
     showStatus(`Saved "${splitPlaceLabel(label).primary}" to your "To add to OSM" list.`, 'success');
   } catch (err) {

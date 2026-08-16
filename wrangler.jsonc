@@ -1,0 +1,17 @@
+{
+  // "osm-navigator" must match this Worker's existing name in the Cloudflare
+  // dashboard — that's what the deployed *.workers.dev subdomain is derived
+  // from, and it's how a Git-connected redeploy updates the SAME Worker
+  // instead of creating a new one.
+  "name": "osm-navigator",
+  "compatibility_date": "2026-08-16",
+  "main": "./worker.js",
+  "assets": {
+    // Static assets take priority over the Worker script for any request
+    // that matches a real file — worker.js only ever runs as a fallback for
+    // /api/resolve-maps-url, which isn't a file. Every other page/script/
+    // style/tile-cache request is served exactly as before this file existed.
+    "directory": "./",
+    "binding": "ASSETS"
+  }
+}
