@@ -1791,6 +1791,21 @@ async function resolveGoogleMapsLink(text) {
   return null;
 }
 
+/** Every place resolved from a pasted Google Maps link is, by definition,
+ * one OSM/Nominatim couldn't find on its own — bookmark it into "To add to
+ * OSM" automatically, no save-star tap required, so nothing found this way
+ * is ever lost. Fire-and-forget: a failed save shouldn't block using the
+ * resolved place for search/directions, and there's no UI waiting on this. */
+async function autoBookmarkGoogleMapsLink({ label, lat, lon, sourceUrl }) {
+  try {
+    const listId = await getOrCreateNamedListId('To add to OSM');
+    await addFavorite({ label, lat, lon, listId, note: sourceUrl });
+    showStatus(`Saved "${splitPlaceLabel(label).primary}" to your "To add to OSM" list.`, 'success');
+  } catch (err) {
+    showStatus('Resolved the link, but could not bookmark it: ' + err.message, 'error');
+  }
+}
+
 // Sentinel label for a place resolved from live GPS rather than a search —
 // shared by geocodeNear's "near me" case right below, useCurrentLocationFor,
 // and the recent-trips reuse path (resolvePlaceForReuse), so all three
@@ -2199,6 +2214,7 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
         if (resolved) {
           inputEl.value = resolved.label;
           onSelect(resolved);
+          autoBookmarkGoogleMapsLink(resolved);
         } else {
           showStatus("Couldn't resolve that Google Maps link.", 'error');
         }
