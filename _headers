@@ -9,6 +9,25 @@
 # from over-caching un-hashed files. Only truly static, rarely-changed
 # assets (icons) get a real cache lifetime.
 
+# Security headers, applied to every response. CSP is the main one worth
+# explaining: NOMINATIM_URL/VALHALLA_URL/MAP_STYLE_URL/OTP2_URL/Mapillary are
+# all user-configurable to an arbitrary self-hosted host (see config.js), so
+# connect-src/img-src stay open to any https origin rather than an allowlist
+# that would break the moment you point this at your own server. script-src
+# is still origin-restricted to only this site plus unpkg.com (MapLibre/Turf,
+# pinned + SRI-checked — see index.html), no plugins/objects can be embedded
+# at all, and there's no inline script anywhere in the app for 'unsafe-eval'
+# to matter much in practice — but 'unsafe-eval' itself IS required: Turf.js's
+# UMD bundle calls `new Function(...)` in its own module-environment-detection
+# bootstrap (confirmed by testing — the map fails to load without it), not
+# anything this app's own code does.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(self), camera=(), microphone=(), payment=(), usb=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'
+
 /sw.js
   Cache-Control: no-cache
 

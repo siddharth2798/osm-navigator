@@ -17,6 +17,14 @@ export async function onRequestGet(context) {
   } catch {
     return new Response('Bad request', { status: 400 });
   }
+  // Belt-and-suspenders alongside the host check: only ever follow a plain
+  // http(s) link. fetch() already rejects any other scheme on its own, but
+  // that's an implicit side effect of the runtime rather than something
+  // this function asserts itself — a scheme like `javascript://google.com`
+  // still parses `.hostname` as "google.com" (the URL parser treats `//`
+  // as introducing an authority regardless of scheme), so the host check
+  // alone doesn't rule it out.
+  if (targetUrl.protocol !== 'https:' && targetUrl.protocol !== 'http:') return new Response('Bad request', { status: 400 });
   if (!ALLOWED_HOSTS.has(targetUrl.hostname)) return new Response('Bad request', { status: 400 });
 
   try {
