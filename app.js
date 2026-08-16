@@ -1737,20 +1737,38 @@ function parseGoogleMapsUrl(text) {
   try {
     url = new URL(trimmed);
   } catch {
-    return null;
+    // Not a bare URL by itself — Google Maps' own "Share" action (and most
+    // other apps) share a place name and link together as one blob of text
+    // ("Cafe UUTOPIA ft. Toddy\nhttps://maps.app.goo.gl/...") rather than a
+    // clean URL on its own, so look for a URL anywhere inside the string
+    // before giving up. The rest of this function still matches !3d/!4d and
+    // @lat,lng against the whole original blob below, which is fine — those
+    // are numeric URL-only patterns a place name won't coincidentally contain.
+    const embedded = trimmed.match(/https?:\/\/\S+/);
+    if (!embedded) return null;
+    try {
+      url = new URL(embedded[0]);
+    } catch {
+      return null;
+    }
   }
   if (!GOOGLE_MAPS_HOSTS.has(url.hostname) || (url.hostname !== 'maps.app.goo.gl' && !url.pathname.includes('/maps'))) return null;
+  // The isolated URL itself — not the surrounding blob — is what a caller
+  // needs to hand to /api/resolve-maps-url for a short link; the raw text
+  // (e.g. "Cafe UUTOPIA ft. Toddy\nhttps://maps.app.goo.gl/...") isn't a
+  // valid URL on its own and would just get rejected as a bad request.
+  const matchedUrl = url.toString();
 
   const nameMatch = url.pathname.match(/\/maps\/place\/([^/@]+)/);
   const name = nameMatch ? decodeURIComponent(nameMatch[1].replace(/\+/g, ' ')) : (url.searchParams.get('q') || null);
 
   const preciseMatch = trimmed.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
-  if (preciseMatch) return { lat: parseFloat(preciseMatch[1]), lon: parseFloat(preciseMatch[2]), name };
+  if (preciseMatch) return { lat: parseFloat(preciseMatch[1]), lon: parseFloat(preciseMatch[2]), name, matchedUrl };
 
   const centerMatch = trimmed.match(/@(-?\d+\.\d+),(-?\d+\.\d+),/);
-  if (centerMatch) return { lat: parseFloat(centerMatch[1]), lon: parseFloat(centerMatch[2]), name };
+  if (centerMatch) return { lat: parseFloat(centerMatch[1]), lon: parseFloat(centerMatch[2]), name, matchedUrl };
 
-  return name ? { name } : {};
+  return name ? { name, matchedUrl } : { matchedUrl };
 }
 
 /** Resolves a pasted Google Maps link (any format: a long place/coordinate
@@ -1766,7 +1784,7 @@ async function resolveGoogleMapsLink(text) {
 
   if (parsed.lat == null) {
     try {
-      const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(text.trim())}`);
+      const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(parsed.matchedUrl)}`);
       if (res.ok) {
         const { resolvedUrl } = await res.json();
         if (resolvedUrl) parsed = parseGoogleMapsUrl(resolvedUrl) || parsed;
@@ -1777,13 +1795,17 @@ async function resolveGoogleMapsLink(text) {
     }
   }
 
+  // sourceUrl is always the isolated Google Maps URL (parsed.matchedUrl),
+  // never the raw shared/pasted text — that text can be a whole blob
+  // ("Cafe UUTOPIA ft. Toddy\nhttps://maps.app.goo.gl/..."), and sourceUrl
+  // ends up as a favorite's note, rendered directly as a link href.
   if (parsed.lat != null) {
-    return { label: parsed.name || 'Pinned location', lat: parsed.lat, lon: parsed.lon, sourceUrl: text.trim() };
+    return { label: parsed.name || 'Pinned location', lat: parsed.lat, lon: parsed.lon, sourceUrl: parsed.matchedUrl };
   }
   if (parsed.name) {
     try {
       const results = await geocodeSearch(parsed.name, {});
-      if (results && results[0]) return { ...results[0], sourceUrl: text.trim() };
+      if (results && results[0]) return { ...results[0], sourceUrl: parsed.matchedUrl };
     } catch {
       // Nominatim also drew a blank — nothing more to try.
     }
@@ -4665,6 +4687,37 @@ function expandPlace(p) {
   return { label: p.lb, lat: p.la, lon: p.lo };
 }
 
+/** Reads the OS-level "Share" params (see manifest.json's share_target),
+ * present when this installed PWA was opened via Android's share sheet —
+ * e.g. sharing a place straight from the Google Maps app, instead of
+ * copying the link and switching apps yourself. Different apps put the
+ * actual content in different fields (Google Maps' Android share puts a
+ * place name + link together in `text`), so this just concatenates
+ * whatever's present; parseGoogleMapsUrl finds the link inside it either
+ * way. Returns null (not a throw) if this wasn't a share-target open. */
+function parseShareTargetParam() {
+  const params = new URLSearchParams(location.search);
+  const combined = [params.get('title'), params.get('text'), params.get('url')].filter(Boolean).join(' ');
+  return combined.trim() || null;
+}
+
+/** Resolves shared text exactly like pasting the same text into the search
+ * box would (see setupAutocomplete's Google Maps URL branch) — populates
+ * the search field with the resolved place and bookmarks it the same way,
+ * so sharing a place straight from Google Maps needs no extra steps beyond
+ * picking this app from the share sheet. */
+async function handleSharedGoogleMapsLink(text) {
+  showStatus('Resolving shared Google Maps link…', 'info');
+  const resolved = await resolveGoogleMapsLink(text);
+  if (resolved) {
+    el.placeInput.value = resolved.label;
+    selectPlace(resolved);
+    autoBookmarkGoogleMapsLink(resolved);
+  } else {
+    showStatus("That shared link couldn't be resolved to a place.", 'error');
+  }
+}
+
 /** Reads and validates the `?share=` query param, if any. Returns null (not
  * a throw) on anything malformed — a bad/corrupted link should fall through
  * to the normal startup flow, never a stuck blank screen. Note: the value is
@@ -5172,8 +5225,15 @@ if ('serviceWorker' in navigator) {
 // restarted mid-drive. Favorites/recents need no startup work of
 // their own — they're loaded on demand when a search field is focused.
 // ============================================================================
-const sharedRoutePayload = parseShareParam();
-if (sharedRoutePayload) {
+const shareTargetText = parseShareTargetParam();
+const sharedRoutePayload = shareTargetText ? null : parseShareParam();
+if (shareTargetText) {
+  // Same replaceState reasoning as the ?share= branch below: strips the
+  // share-target params so reloading/going back doesn't keep re-resolving
+  // the same shared link.
+  history.replaceState(null, '', location.pathname);
+  handleSharedGoogleMapsLink(shareTargetText);
+} else if (sharedRoutePayload) {
   // Strips ?share=... via replaceState (not pushState) so it doesn't add a
   // closeable layer to the app's own back-stack, and so reloading/going back
   // afterward doesn't keep re-triggering the same shared link. A deliberately
