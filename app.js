@@ -589,11 +589,25 @@ let mapViewMode = 'map'; // 'map' | 'satellite'
  * every base-style layer rather than swapping styles, so the route line,
  * live puck, and every other runtime-added layer stay exactly as they are —
  * you see your route drawn over satellite imagery, not a bare basemap. */
+// Only these layer *types* actually need hiding for satellite mode — the
+// ones that paint a solid area (land/water/buildings, the plain background
+// color, and "liberty"'s own low-zoom natural_earth raster backdrop) would
+// otherwise sit on top of and completely obscure the real imagery. Roads,
+// borders (all 'line' layers) and every label/POI icon ('symbol' layers)
+// are deliberately left alone, so satellite mode is a proper hybrid view —
+// imagery plus labels — not a bare, unlabeled photo. Confirmed via the
+// style's own JSON (curl https://tiles.openfreemap.org/styles/liberty) that
+// "liberty" has exactly one layer of each of these three obscuring types.
+const SATELLITE_HIDE_LAYER_TYPES = new Set(['background', 'fill', 'fill-extrusion', 'raster']);
+
 function setMapViewMode(mode) {
   mapViewMode = mode;
   const satellite = mode === 'satellite';
   baseStyleLayerIds.forEach((id) => {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite ? 'none' : 'visible');
+    const layer = map.getLayer(id);
+    if (!layer) return;
+    const shouldHide = satellite && SATELLITE_HIDE_LAYER_TYPES.has(layer.type);
+    map.setLayoutProperty(id, 'visibility', shouldHide ? 'none' : 'visible');
   });
   map.setLayoutProperty('satellite-layer', 'visibility', satellite ? 'visible' : 'none');
   el.mapLayerBtn.classList.toggle('active', satellite);
@@ -603,15 +617,21 @@ function setMapViewMode(mode) {
 mapLoad.then(() => {
   baseStyleLayerIds = map.getStyle().layers.map((l) => l.id);
 
-  // Added first (bottom of the layer stack) so it only actually shows once
-  // the base style's own layers are hidden — see setMapViewMode.
+  // Inserted with an explicit beforeId so it lands at the very BOTTOM of the
+  // layer stack (addLayer with no second argument appends to the END —
+  // i.e. on TOP of every base-style layer already loaded at this point,
+  // which would silently cover the road/label layers setMapViewMode keeps
+  // visible over it). Everything else (roads, labels, our own route/puck
+  // layers) draws above this either way, so it only actually shows once the
+  // base style's obscuring layers (land/water fills, background) are
+  // hidden — see setMapViewMode/SATELLITE_HIDE_LAYER_TYPES.
   map.addSource('satellite', {
     type: 'raster',
     tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
     tileSize: 256,
     attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS User Community',
   });
-  map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'satellite', layout: { visibility: 'none' } });
+  map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'satellite', layout: { visibility: 'none' } }, baseStyleLayerIds[0]);
 
   // Alternate routes render UNDER the primary line (added first, so later
   // layers draw on top) — muted gray, tappable to switch to that option,
