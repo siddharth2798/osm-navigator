@@ -629,6 +629,15 @@ mapLoad.then(() => {
     type: 'raster',
     tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
     tileSize: 256,
+    // Esri's service nominally supports up to z23, but real imagery
+    // resolution varies a lot by place — plenty of areas (especially
+    // outside major cities) have nothing past z17-19, and requesting a
+    // tile deeper than what's actually captured there returns a literal
+    // gray "Map data not yet available" placeholder image, not a clean
+    // failure. Capping maxzoom here means MapLibre instead automatically
+    // upscales the deepest real tile once you zoom in past this — blurrier,
+    // but never that placeholder.
+    maxzoom: 19,
     attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS User Community',
   });
   map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'satellite', layout: { visibility: 'none' } }, baseStyleLayerIds[0]);
