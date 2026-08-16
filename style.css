@@ -455,6 +455,8 @@ button {
 .saved-item-body { flex: 1; min-width: 0; padding: 8px; }
 .saved-item-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .saved-item-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.saved-item-link { display: block; font-size: 12px; color: var(--accent); margin-top: 2px; text-decoration: none; }
+.saved-item-link:active { text-decoration: underline; }
 
 .quick-place-body { display: flex; align-items: center; gap: 12px; }
 .quick-place-icon { flex-shrink: 0; color: var(--text-dim); display: flex; }

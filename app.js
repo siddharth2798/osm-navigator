@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import {
   addFavorite, getFavorites, deleteFavorite, moveFavoriteToList,
-  addList, getLists, renameList, deleteList,
+  addList, getLists, renameList, deleteList, getOrCreateNamedListId,
   addRecentTrip, getRecentTrips, deleteRecentTrip,
   addDownloadedArea, getDownloadedAreas, deleteDownloadedArea,
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
@@ -1716,6 +1716,81 @@ const NEAR_QUERY_PATTERN = /^(.+?)\s+(?:near|close to|around|in)\s+(.+)$/i;
 // intended near-search — see setupAutocomplete's onDirectionsShortcut.
 const TO_QUERY_PATTERN = /^(.+?)\s+to\s+(.+)$/i;
 
+const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com', 'google.com', 'maps.google.com']);
+
+/** Pure, no-network parse of a pasted Google Maps URL. `!3d<lat>!4d<lng>`
+ * (present on most /maps/place/ links) is the precise place-pin coordinate
+ * Google itself resolved the name to — preferred over the `@lat,lng,zoom`
+ * segment, which is only ever the map's viewport center at share time (can
+ * be off if the sharer had panned before sharing). Falls back to the place
+ * name in the path for a short link with no coordinates yet, or a URL that
+ * only ever had a name (e.g. a plain `?q=` search link).
+ * Returns `null` only when `text` isn't a Google Maps URL at all — once the
+ * host matches, always returns an object (`{lat, lon, name?}`, `{name}`, or
+ * `{}`), even when nothing could be extracted yet (a bare short link with
+ * no name/coordinates in its own URL — resolveGoogleMapsLink's redirect
+ * hop is what fills that in), so callers can tell "not a Google Maps
+ * link" apart from "is one, nothing to show yet". */
+function parseGoogleMapsUrl(text) {
+  const trimmed = text.trim();
+  let url;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (!GOOGLE_MAPS_HOSTS.has(url.hostname) || (url.hostname !== 'maps.app.goo.gl' && !url.pathname.includes('/maps'))) return null;
+
+  const nameMatch = url.pathname.match(/\/maps\/place\/([^/@]+)/);
+  const name = nameMatch ? decodeURIComponent(nameMatch[1].replace(/\+/g, ' ')) : (url.searchParams.get('q') || null);
+
+  const preciseMatch = trimmed.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  if (preciseMatch) return { lat: parseFloat(preciseMatch[1]), lon: parseFloat(preciseMatch[2]), name };
+
+  const centerMatch = trimmed.match(/@(-?\d+\.\d+),(-?\d+\.\d+),/);
+  if (centerMatch) return { lat: parseFloat(centerMatch[1]), lon: parseFloat(centerMatch[2]), name };
+
+  return name ? { name } : {};
+}
+
+/** Resolves a pasted Google Maps link (any format: a long place/coordinate
+ * URL, or a maps.app.goo.gl/goo.gl short link) to `{label, lat, lon,
+ * sourceUrl}`, or `null` if `text` isn't a Google Maps link at all — in
+ * which case the caller should fall through to a normal search unchanged.
+ * A short link has no coordinates in the URL itself, so it needs one
+ * server-side hop (see functions/api/resolve-maps-url.js) to follow the
+ * redirect — a browser can't read a cross-origin redirect's target itself. */
+async function resolveGoogleMapsLink(text) {
+  let parsed = parseGoogleMapsUrl(text);
+  if (!parsed) return null;
+
+  if (parsed.lat == null) {
+    try {
+      const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(text.trim())}`);
+      if (res.ok) {
+        const { resolvedUrl } = await res.json();
+        if (resolvedUrl) parsed = parseGoogleMapsUrl(resolvedUrl) || parsed;
+      }
+    } catch {
+      // Network hiccup or the function unavailable — fall through to
+      // whatever `parsed` already had (a name, or nothing) below.
+    }
+  }
+
+  if (parsed.lat != null) {
+    return { label: parsed.name || 'Pinned location', lat: parsed.lat, lon: parsed.lon, sourceUrl: text.trim() };
+  }
+  if (parsed.name) {
+    try {
+      const results = await geocodeSearch(parsed.name, {});
+      if (results && results[0]) return { ...results[0], sourceUrl: text.trim() };
+    } catch {
+      // Nominatim also drew a blank — nothing more to try.
+    }
+  }
+  return null;
+}
+
 // Sentinel label for a place resolved from live GPS rather than a search —
 // shared by geocodeNear's "near me" case right below, useCurrentLocationFor,
 // and the recent-trips reuse path (resolvePlaceForReuse), so all three
@@ -2112,6 +2187,23 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
       // still in flight — the seq guard alone lets it render. Re-checking
       // the live input value at render time catches this.
       const isStale = () => mySeq !== seq || inputEl.value.trim() !== query;
+
+      // A pasted Google Maps link should never fall through to the near/to
+      // shortcut regexes below or a wasted Nominatim typo-fallback cascade
+      // against what is, to Nominatim, just garbage text.
+      if (parseGoogleMapsUrl(query)) {
+        showSuggestionLoading(listEl, 'Resolving Google Maps link…');
+        const resolved = await resolveGoogleMapsLink(query);
+        if (isStale()) return;
+        hideSuggestionList(listEl);
+        if (resolved) {
+          inputEl.value = resolved.label;
+          onSelect(resolved);
+        } else {
+          showStatus("Couldn't resolve that Google Maps link.", 'error');
+        }
+        return;
+      }
 
       if (opts.onDirectionsShortcut && !NEAR_QUERY_PATTERN.test(query)) {
         const toMatch = query.match(TO_QUERY_PATTERN);
@@ -3195,8 +3287,14 @@ async function renderSavedListDetail(listId) {
     const li = document.createElement('li');
     const body = document.createElement('div');
     body.className = 'saved-item-body';
-    body.innerHTML = `<div class="saved-item-title">${escapeHtml(splitPlaceLabel(fav.name).primary)}</div>`;
-    body.addEventListener('click', () => {
+    // A note is currently only ever the original Google Maps link a place
+    // was resolved from (see resolveGoogleMapsLink/placeCardSaveBtn) — kept
+    // as a direct jump-back for later cross-referencing while adding this
+    // place to OSM.
+    body.innerHTML = `<div class="saved-item-title">${escapeHtml(splitPlaceLabel(fav.name).primary)}</div>`
+      + (fav.note ? `<a class="saved-item-link" href="${escapeHtml(fav.note)}" target="_blank" rel="noopener">View on Google Maps ↗</a>` : '');
+    body.addEventListener('click', (e) => {
+      if (e.target.closest('.saved-item-link')) return; // let the link navigate on its own, not the row
       closeSavedPanelEntirely();
       goToDirections({ to: { label: fav.name, lat: fav.lat, lon: fav.lon } });
     });
@@ -3348,12 +3446,17 @@ el.docsCloseBtn.addEventListener('click', goBackInApp);
 new MutationObserver(() => {
   el.mapControlsLeft.classList.toggle('raised', el.mapControls.classList.contains('raised'));
 }).observe(el.mapControls, { attributes: true, attributeFilter: ['class'] });
-el.placeCardSaveBtn.addEventListener('click', () => {
+el.placeCardSaveBtn.addEventListener('click', async () => {
   if (!state.to) return;
-  const { label, lat, lon } = state.to;
-  openSaveToListPrompt(splitPlaceLabel(label).primary, null, async (listId) => {
+  const { label, lat, lon, sourceUrl } = state.to;
+  // A place resolved from a pasted Google Maps link is, by definition, one
+  // OSM/Nominatim didn't have — default it into a dedicated list with the
+  // original link kept as a note, so it's easy to come back and add to OSM
+  // later. Anything picked the normal way still just goes to the first list.
+  const preselectedListId = sourceUrl ? await getOrCreateNamedListId('To add to OSM').catch(() => null) : null;
+  openSaveToListPrompt(splitPlaceLabel(label).primary, preselectedListId, async (listId) => {
     try {
-      await addFavorite({ label, lat, lon, listId });
+      await addFavorite({ label, lat, lon, listId, note: sourceUrl });
       showStatus('Saved to favorites.', 'success');
     } catch (err) {
       showStatus('Could not save this favorite: ' + err.message, 'error');

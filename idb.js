@@ -117,6 +117,15 @@ async function getOrCreateDefaultListId() {
   if (lists.length) return lists[0].id;
   return addList({ name: 'Favorites' });
 }
+/** Finds a list by exact name, creating it if it doesn't exist yet — used
+ * to file a place under a specific named list (e.g. "To add to OSM")
+ * rather than falling back to whichever list happens to be first. */
+export async function getOrCreateNamedListId(name) {
+  const lists = await getLists();
+  const existing = lists.find((l) => l.name === name);
+  if (existing) return existing.id;
+  return addList({ name });
+}
 
 // ---- favorites --------------------------------------------------------------
 
