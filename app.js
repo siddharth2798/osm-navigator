@@ -56,6 +56,12 @@ const el = {
   saveToListNewBtn: document.getElementById('save-to-list-new-btn'),
   saveToListCancel: document.getElementById('save-to-list-cancel'),
   saveToListSave: document.getElementById('save-to-list-save'),
+  pinnedPlacePrompt: document.getElementById('pinned-place-prompt'),
+  pinnedPlaceName: document.getElementById('pinned-place-name'),
+  pinnedPlaceUseFrom: document.getElementById('pinned-place-use-from'),
+  pinnedPlaceUseTo: document.getElementById('pinned-place-use-to'),
+  pinnedPlaceUseStop: document.getElementById('pinned-place-use-stop'),
+  pinnedPlaceCancel: document.getElementById('pinned-place-cancel'),
   searchDirections: document.getElementById('search-directions'),
   directionsSummaryRow: document.getElementById('directions-summary-row'),
   directionsBackBtn: document.getElementById('directions-back-btn'),
@@ -124,6 +130,7 @@ const el = {
   routeAvoidToggle: document.getElementById('route-avoid-toggle'),
   mapControlsLeft: document.getElementById('map-controls-left'),
   voiceModeBtn: document.getElementById('voice-mode-btn'),
+  mapLayerBtn: document.getElementById('map-layer-btn'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -569,7 +576,43 @@ function awaitMapLoad() {
   ]);
 }
 
+// Every layer belonging to the base "liberty" vector style, captured before
+// any of our own sources/layers are added below — this is exactly what
+// setMapViewMode hides/shows to switch to satellite imagery, without the
+// disruptive full map.setStyle() swap that would otherwise drop every
+// custom source (route, puck, etc.) added at runtime.
+let baseStyleLayerIds = [];
+let mapViewMode = 'map'; // 'map' | 'satellite'
+
+/** Toggles between the normal vector map and Esri World Imagery satellite
+ * tiles (free, keyless — the standard no-signup option for this). Hides
+ * every base-style layer rather than swapping styles, so the route line,
+ * live puck, and every other runtime-added layer stay exactly as they are —
+ * you see your route drawn over satellite imagery, not a bare basemap. */
+function setMapViewMode(mode) {
+  mapViewMode = mode;
+  const satellite = mode === 'satellite';
+  baseStyleLayerIds.forEach((id) => {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite ? 'none' : 'visible');
+  });
+  map.setLayoutProperty('satellite-layer', 'visibility', satellite ? 'visible' : 'none');
+  el.mapLayerBtn.classList.toggle('active', satellite);
+  el.mapLayerBtn.setAttribute('aria-label', satellite ? 'Switch to map view' : 'Switch to satellite view');
+}
+
 mapLoad.then(() => {
+  baseStyleLayerIds = map.getStyle().layers.map((l) => l.id);
+
+  // Added first (bottom of the layer stack) so it only actually shows once
+  // the base style's own layers are hidden — see setMapViewMode.
+  map.addSource('satellite', {
+    type: 'raster',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    tileSize: 256,
+    attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+  });
+  map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'satellite', layout: { visibility: 'none' } });
+
   // Alternate routes render UNDER the primary line (added first, so later
   // layers draw on top) — muted gray, tappable to switch to that option,
   // exactly mirroring the route-option cards in the bottom sheet.
@@ -1414,6 +1457,10 @@ el.voiceModeBtn.addEventListener('click', () => {
   showStatus(VOICE_MODE_LABEL[state.voiceMode], 'info');
 });
 renderVoiceModeBtn();
+
+el.mapLayerBtn.addEventListener('click', () => {
+  setMapViewMode(mapViewMode === 'satellite' ? 'map' : 'satellite');
+});
 
 // ============================================================================
 // Weather badge — current conditions either at a selected place or at the
@@ -2441,6 +2488,7 @@ function wireRouteChipButtons(container, { isPopover }) {
       el.poiResultsLabel.textContent = state.navigating ? `${label} ahead` : `${label} along your route`;
       el.poiResultsHeader.classList.remove('hidden');
       el.maneuverList.classList.add('hidden');
+      el.bottomSheet.classList.remove('half');
       el.bottomSheet.classList.add('expanded');
       pushBackLayer(resetToRouteView);
       showSuggestionLoading(el.poiResultsList);
@@ -2514,7 +2562,7 @@ function buildRouteSummarySentence() {
 function syncDirectionsCollapse() {
   const hasRoute = !!(state.route || state.transitItinerary);
   const shouldCollapse = hasRoute
-    && el.bottomSheet.classList.contains('expanded')
+    && (el.bottomSheet.classList.contains('expanded') || el.bottomSheet.classList.contains('half'))
     && !el.searchDirections.classList.contains('hidden');
   if (shouldCollapse) el.directionsSummaryRow.textContent = buildRouteSummarySentence();
   el.searchDirections.classList.toggle('directions-collapsed', shouldCollapse);
@@ -2523,7 +2571,7 @@ function syncDirectionsCollapse() {
 new MutationObserver(syncDirectionsCollapse).observe(el.bottomSheet, { attributes: true, attributeFilter: ['class'] });
 
 el.directionsSummaryRow.addEventListener('click', () => {
-  el.bottomSheet.classList.remove('expanded');
+  el.bottomSheet.classList.remove('expanded', 'half');
 });
 
 /** The directions editor's own back arrow AND the hardware/gesture back
@@ -2781,7 +2829,7 @@ function startLongPress(e, isTouch) {
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     handleLongPress(e.lngLat);
-  }, 1000);
+  }, 2000); // long enough that an ordinary tap-and-hold to inspect the map never accidentally drops a pin
 }
 function moveLongPress(e) {
   if (!longPressTimer || !longPressStartPoint) return;
@@ -2790,12 +2838,11 @@ function moveLongPress(e) {
   if (Math.hypot(dx, dy) > 10) cancelLongPress(); // a real drag/pan, not a held tap
 }
 
-/** A long press just tells you what's at that point — a quick "what's this
- * address" lookup, not an entry point into saving anything (favorites are
- * saved from search results and the place card instead, via the save-star
- * everywhere that already appears). Drops a marker and shows the label as
- * a plain status message; both clear themselves after the same timeout
- * rather than needing an explicit dismiss. */
+/** A long press looks up what's at that point, then hands it straight to
+ * usePinnedPlace — which decides what to actually do with it depending on
+ * whatever's already in the from/to fields (see there for the exact rules).
+ * Drops a marker as a "this is the point you pinned" visual cue either way,
+ * clearing itself after a while rather than needing an explicit dismiss. */
 async function handleLongPress(lngLat) {
   showStatus('Looking up this location…', 'info', { sticky: true });
   let label = `${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)}`;
@@ -2813,12 +2860,91 @@ async function handleLongPress(lngLat) {
   longPressMarker = new maplibregl.Marker({ element: createPinElement('#9aabc2', 'Location'), anchor: 'bottom' })
     .setLngLat(lngLat).addTo(map);
   const timeoutMs = 4000;
-  showStatus(label, 'info', { timeoutMs });
   clearTimeout(longPressMarkerTimer);
   longPressMarkerTimer = setTimeout(() => {
     if (longPressMarker) { longPressMarker.remove(); longPressMarker = null; }
   }, timeoutMs);
+
+  clearStatus();
+  usePinnedPlace({ label, lat: lngLat.lat, lon: lngLat.lng });
 }
+
+/** What a dropped pin actually does depends on what's already in the
+ * from/to fields — three cases, each matching the one obviously useful
+ * thing to do with a place you just pointed at on the map:
+ *   - neither set: it's your first pick, so treat it exactly like picking a
+ *     plain search result (shows the place card, "Get directions" etc.).
+ *   - exactly one set: fill in whichever field is still empty — the other
+ *     obvious next step.
+ *   - both already set: ambiguous on purpose (start? destination? a stop
+ *     along the way?), so ask via a small prompt instead of guessing. */
+function usePinnedPlace(picked) {
+  const hasFrom = !!state.from;
+  const hasTo = !!state.to;
+
+  if (!hasFrom && !hasTo) {
+    el.placeInput.value = splitPlaceLabel(picked.label).primary;
+    selectPlace(picked);
+    return;
+  }
+
+  if (hasFrom !== hasTo) {
+    if (!hasFrom) {
+      state.from = picked;
+      el.fromInput.value = shortLabel(picked);
+    } else {
+      state.to = picked;
+      el.toInput.value = shortLabel(picked);
+    }
+    updatePlanningMarkers();
+    el.planBtn.classList.remove('hidden');
+    showStatus(`${shortLabel(picked)} added.`, 'success');
+    return;
+  }
+
+  openPinnedPlacePrompt(picked);
+}
+
+let pinnedPlaceForPrompt = null;
+function openPinnedPlacePrompt(picked) {
+  pinnedPlaceForPrompt = picked;
+  el.pinnedPlaceName.textContent = shortLabel(picked);
+  if (el.pinnedPlacePrompt.classList.contains('hidden')) pushBackLayer(closePinnedPlacePrompt);
+  el.pinnedPlacePrompt.classList.remove('hidden');
+}
+function closePinnedPlacePrompt() {
+  el.pinnedPlacePrompt.classList.add('hidden');
+  pinnedPlaceForPrompt = null;
+}
+el.pinnedPlaceCancel.addEventListener('click', goBackInApp);
+el.pinnedPlaceUseFrom.addEventListener('click', () => {
+  const picked = pinnedPlaceForPrompt;
+  goBackInApp();
+  state.from = picked;
+  el.fromInput.value = shortLabel(picked);
+  updatePlanningMarkers();
+  el.planBtn.classList.remove('hidden');
+  showStatus(`Starting point set to ${shortLabel(picked)}.`, 'success');
+});
+el.pinnedPlaceUseTo.addEventListener('click', () => {
+  const picked = pinnedPlaceForPrompt;
+  goBackInApp();
+  state.to = picked;
+  el.toInput.value = shortLabel(picked);
+  updatePlanningMarkers();
+  el.planBtn.classList.remove('hidden');
+  showStatus(`Destination set to ${shortLabel(picked)}.`, 'success');
+});
+el.pinnedPlaceUseStop.addEventListener('click', () => {
+  const picked = pinnedPlaceForPrompt;
+  goBackInApp();
+  const countBefore = el.stopsContainer.querySelectorAll('.stop-row').length;
+  addStopRow(picked); // shows its own error status and no-ops if MAX_STOPS is already reached
+  if (el.stopsContainer.querySelectorAll('.stop-row').length > countBefore) {
+    el.planBtn.classList.remove('hidden');
+    showStatus(`${shortLabel(picked)} added as a stop.`, 'success');
+  }
+});
 
 // ============================================================================
 // Saved places — a real, browsable "Saved" screen (opened via the bookmark
@@ -4015,6 +4141,7 @@ modeButtons.forEach((btn) => {
     state.travelMode = btn.dataset.mode;
     modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
     el.routeAvoidToggle.classList.toggle('hidden', state.travelMode !== 'drive');
+    el.planBtn.classList.remove('hidden'); // travel mode changed — any route already shown was planned for the old mode
   });
 });
 
@@ -4030,6 +4157,7 @@ avoidButtons.forEach((btn) => {
     const key = btn.dataset.avoid;
     state[key] = !state[key];
     btn.classList.toggle('active', state[key]);
+    el.planBtn.classList.remove('hidden'); // avoid-tolls/highways changed — any route already shown was planned without this
   });
 });
 
@@ -4136,7 +4264,7 @@ el.planBtn.addEventListener('click', async () => {
     if (state.travelMode === 'transit') {
       const itinerary = await requestTransitRoute(state.from, state.to);
       await renderTransitRoute(itinerary);
-      el.bottomSheet.classList.remove('expanded');
+      el.bottomSheet.classList.remove('expanded', 'half');
       el.startNavBtn.classList.add('hidden'); // no live transit navigation — see scope note above
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
@@ -4152,7 +4280,7 @@ el.planBtn.addEventListener('click', async () => {
       state.selectedRouteIndex = 0;
       await renderRouteOptions();
       await renderRoute(trip, { stops });
-      el.bottomSheet.classList.remove('expanded');
+      el.bottomSheet.classList.remove('expanded', 'half');
       el.startNavBtn.classList.remove('hidden');
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
@@ -4193,7 +4321,23 @@ el.planBtn.addEventListener('click', async () => {
 // DOM button outside the map canvas — no risk of the touch/synthetic-mouse
 // double-fire that the map's own long-press handling has to guard against.
 const SHEET_PEEK_PX = 136; // keep in sync with #bottom-sheet's base max-height in style.css
+function sheetHalfPx() { return window.innerHeight * 0.42; } // keep in sync with .half's 42vh — the middle stop, so a full drag-up doesn't have to mean "barely any map left"
 function sheetExpandedPx() { return window.innerHeight * 0.72; } // keep in sync with .expanded's 72vh
+
+const SHEET_STOPS = [
+  { state: 'peek', px: () => SHEET_PEEK_PX },
+  { state: 'half', px: sheetHalfPx },
+  { state: 'expanded', px: sheetExpandedPx },
+];
+function currentSheetState() {
+  if (el.bottomSheet.classList.contains('expanded')) return 'expanded';
+  if (el.bottomSheet.classList.contains('half')) return 'half';
+  return 'peek';
+}
+function setSheetState(targetState) {
+  el.bottomSheet.classList.toggle('half', targetState === 'half');
+  el.bottomSheet.classList.toggle('expanded', targetState === 'expanded');
+}
 
 let sheetDragStartY = null;
 let sheetDragStartHeight = null;
@@ -4223,14 +4367,23 @@ function endSheetDrag(e) {
   el.bottomSheet.classList.remove('dragging');
   el.bottomSheet.style.maxHeight = ''; // hand control back to the CSS class
   if (sheetDragDistance < 10) {
-    // Barely moved — treat it as a plain tap on the handle.
-    el.bottomSheet.classList.toggle('expanded');
+    // Barely moved — treat it as a plain tap on the handle: step to the next
+    // stop in the ladder (peek → half → expanded → peek), so repeated taps
+    // reach all three rather than just bouncing between the two extremes.
+    const order = SHEET_STOPS.map((s) => s.state);
+    const next = order[(order.indexOf(currentSheetState()) + 1) % order.length];
+    setSheetState(next);
     return;
   }
   const dy = sheetDragStartY - e.clientY;
   const finalHeight = Math.min(sheetExpandedPx(), Math.max(SHEET_PEEK_PX, sheetDragStartHeight + dy));
-  const midpoint = (SHEET_PEEK_PX + sheetExpandedPx()) / 2;
-  el.bottomSheet.classList.toggle('expanded', finalHeight > midpoint);
+  // Snaps to whichever of the three stops the drag ended nearest to, rather
+  // than a binary "past the midpoint or not" — dragging up from peek can now
+  // land on the half stop instead of always jumping all the way to expanded.
+  const nearest = SHEET_STOPS.reduce((a, b) => (
+    Math.abs(b.px() - finalHeight) < Math.abs(a.px() - finalHeight) ? b : a
+  ));
+  setSheetState(nearest.state);
 }
 el.sheetHandle.addEventListener('pointerup', endSheetDrag);
 el.sheetHandle.addEventListener('pointercancel', endSheetDrag);
@@ -4253,7 +4406,7 @@ function cancelPlannedRoute() {
 
   resetToRouteView();
   el.bottomSheet.classList.add('hidden');
-  el.bottomSheet.classList.remove('expanded');
+  el.bottomSheet.classList.remove('expanded', 'half');
   el.maneuverList.innerHTML = '';
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
@@ -4775,7 +4928,7 @@ async function startNavigation() {
   el.navSpeed.classList.remove('hidden');
   updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
   refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
-  el.bottomSheet.classList.remove('expanded');
+  el.bottomSheet.classList.remove('expanded', 'half');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
   // Along-route search stays available while driving (see routeSearchScope) —

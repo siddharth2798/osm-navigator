@@ -477,7 +477,7 @@ button {
    document's flow. No dimming backdrop, though, consistent with every
    other prompt here. */
 
-#save-to-list-prompt, #list-name-prompt {
+#save-to-list-prompt, #list-name-prompt, #pinned-place-prompt {
   position: fixed;
   left: 50%;
   top: 50%;
@@ -492,7 +492,19 @@ button {
   box-shadow: var(--shadow);
   padding: 12px 14px;
 }
-#save-to-list-prompt.hidden, #list-name-prompt.hidden { display: none; }
+#save-to-list-prompt.hidden, #list-name-prompt.hidden, #pinned-place-prompt.hidden { display: none; }
+
+.pinned-place-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
+.pinned-place-options button {
+  width: 100%;
+  padding: 11px;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.pinned-place-options button:active { background: var(--accent); color: #fff; }
 
 .save-to-list-place-name { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
 .list-name-prompt-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
@@ -780,6 +792,10 @@ button {
    72vh-derived max-height below (maneuver list, poi results list) needs
    the same pairing to stay in sync with this one. */
 #bottom-sheet.expanded { max-height: 72vh; max-height: 72dvh; }
+/* The middle stop between peek and fully expanded — see setSheetState in
+   app.js — so dragging up doesn't have to mean "barely any map left". Same
+   vh/dvh pairing as .expanded, for the same mobile-address-bar reason. */
+#bottom-sheet.half { max-height: 42vh; max-height: 42dvh; }
 #bottom-sheet.hidden { display: none; }
 /* While actively being dragged, app.js sets max-height inline on every
    pointermove for 1:1 tracking — the eased transition would otherwise lag

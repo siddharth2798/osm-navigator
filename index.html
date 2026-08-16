@@ -257,6 +257,23 @@
       </div>
     </div>
 
+    <!-- ============ "Where should this pinned place go?" prompt — shown
+         when a long-press pin is dropped while both a source and
+         destination are already set (see usePinnedPlace in app.js). ============ -->
+    <div id="pinned-place-prompt" class="hidden">
+      <div id="pinned-place-name" class="list-name-prompt-title"></div>
+      <div class="pinned-place-options">
+        <button id="pinned-place-use-from" type="button">Set as starting point</button>
+        <button id="pinned-place-use-to" type="button">Set as destination</button>
+        <button id="pinned-place-use-stop" type="button">Add as a stop</button>
+      </div>
+      <div class="favorite-prompt-actions">
+        <button id="pinned-place-cancel" class="icon-btn" type="button" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+        </button>
+      </div>
+    </div>
+
     <!-- ============ Floating "next turn" card ============ -->
     <div id="nav-banner" class="hidden">
       <div id="nav-banner-icon" aria-hidden="true"></div>
@@ -313,6 +330,11 @@
     <button id="voice-mode-btn" class="fab small" type="button" aria-label="Voice guidance: on">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 9 v6 h4 l5 4 V5 l-5 4 Z"/><path d="M16.5 9 a5 5 0 0 1 0 8"/><path d="M19 7 a8.5 8.5 0 0 1 0 12"/>
+      </svg>
+    </button>
+    <button id="map-layer-btn" class="fab small" type="button" aria-label="Switch to satellite view">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3 L21 8 L12 13 L3 8 Z"/><path d="M3 12 L12 17 L21 12"/><path d="M3 16 L12 21 L21 16"/>
       </svg>
     </button>
     <div id="weather-badge" class="weather-badge hidden" role="button" tabindex="0" aria-label="Refresh weather">
@@ -550,7 +572,13 @@
           <div class="docs-item-body">
             <p>Tap the search box to switch to directions, or use the shortcut and type it straight into the search box: <em>&#8220;Connaught Place to India Gate&#8221;</em>.</p>
             <p>Add up to 8 stops with &#8220;Add stop&#8221;, and drag a stop by its handle on the left to reorder it.</p>
-            <p>&#8220;Get directions&#8221; hides itself once a route is shown, freeing up screen space — it reappears the moment you actually change the source or destination.</p>
+            <p>&#8220;Get directions&#8221; hides itself once a route is shown, freeing up screen space — it reappears the moment you actually change the source, destination, travel mode, or avoid-tolls/highways.</p>
+          </div>
+        </details>
+        <details class="docs-item">
+          <summary>Pinning a place on the map<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body">
+            <p>Press and hold anywhere on the map (about 2 seconds) to drop a pin there. What happens with it depends on what's already in the from/to fields: if neither is set, it shows up in the search box like any other result; if exactly one is set, it fills in whichever is still empty; if both are already set, you're asked whether to use it as the start, the destination, or an extra stop.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -571,6 +599,10 @@
         <details class="docs-item">
           <summary>Weather at a glance<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body"><p>The round badge above the Help button shows current conditions — for a place you've selected, or for your live position once you're navigating. Tap it any time to refresh.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>Satellite view<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body"><p>The layer button above the weather badge switches between the regular map and satellite imagery — your route and live position stay drawn on top either way. Tap it again to switch back.</p></div>
         </details>
       </div>
     </section>
@@ -639,6 +671,7 @@
             <li><a href="https://www.opentripplanner.org" target="_blank" rel="noopener">OpenTripPlanner</a> — transit trip planning, when configured.</li>
             <li><a href="https://www.mapillary.com" target="_blank" rel="noopener">Mapillary</a> — street-level imagery coverage, when configured.</li>
             <li><a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> — the weather badge's current conditions, free and keyless.</li>
+            <li><a href="https://www.esri.com" target="_blank" rel="noopener">Esri, Maxar, Earthstar Geographics, and the GIS User Community</a> — satellite imagery for the layer toggle.</li>
           </ul>
         </div>
         <div class="docs-credits-block">
