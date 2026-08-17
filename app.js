@@ -1897,11 +1897,20 @@ async function resolveGoogleMapsLink(text) {
   if (parsed.lat == null) {
     try {
       const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(parsed.matchedUrl)}`);
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      // A non-JSON body here (even on a 200) is never something this app's
+      // own worker code returns — it means something in front of it
+      // (a Cloudflare security challenge/interstitial, a carrier's
+      // transparent proxy injecting a block page, etc.) swapped in its own
+      // response. Surfacing a snippet of that body turns "network error"
+      // into an actual lead instead of a guess, without needing a remote
+      // debugger attached to the phone that's failing.
+      if (res.ok && contentType.includes('application/json')) {
         const { resolvedUrl } = await res.json();
         if (resolvedUrl) parsed = parseGoogleMapsUrl(resolvedUrl) || parsed;
       } else {
-        lastGoogleMapsResolveError = `the link resolver returned HTTP ${res.status}`;
+        const snippet = (await res.text().catch(() => '')).slice(0, 120).replace(/\s+/g, ' ').trim();
+        lastGoogleMapsResolveError = `the link resolver returned HTTP ${res.status}${snippet ? ` — "${snippet}"` : ''}`;
         console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError);
       }
     } catch (err) {
