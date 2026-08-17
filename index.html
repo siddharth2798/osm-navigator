@@ -277,6 +277,24 @@
     <div id="nav-speed" class="hidden">— km/h</div>
   </div>
 
+  <!-- On-screen trace of the Google Maps link resolver, for debugging on a
+       phone with no cable/remote-inspector attached. Auto-opens the moment
+       a resolve starts and stays open (with the resolved URL) until
+       dismissed, so it can be read directly off the screen or copied. A
+       top-level sibling here (not nested inside #top-overlay, which is its
+       own z-index:20 stacking context) so its own z-index actually wins
+       against every other fixed control on screen. -->
+  <div id="resolver-debug-panel" class="hidden">
+    <div class="resolver-debug-header">
+      <span>Resolver debug log</span>
+      <div class="resolver-debug-actions">
+        <button id="resolver-debug-copy" type="button">Copy</button>
+        <button id="resolver-debug-close" type="button" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div id="resolver-debug-log" role="log" aria-live="polite"></div>
+  </div>
+
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
   <div id="map-controls">
     <!-- "Search along the route" — shown only once navigation has actually
@@ -563,6 +581,7 @@
             <p>Paste a Google Maps link (a full <em>google.com/maps</em> address or a short <em>maps.app.goo.gl</em> link) into any search box and it resolves straight to that exact place — a way around gaps in OpenStreetMap's own coverage. It's automatically saved to a "To add to OSM" list with the original link kept alongside it, so it's easy to come back later and add that place to OpenStreetMap yourself — re-resolving the same place won't add it twice.</p>
             <p>On Android, once this is installed to your home screen, it also shows up in the system share sheet — sharing a place straight from the Google Maps app resolves it here the same way, no copy/paste needed. If it doesn't appear in the share sheet right after an update, removing and re-adding this app to your home screen usually fixes it.</p>
             <p>Short links occasionally hit a "your computer network sent unusual traffic" page from Google instead of resolving straight through — this app already recovers the real place from that page automatically, so it should still work, but if a resolve error ever names that message directly, waiting a bit before retrying helps.</p>
+            <p>Every attempt to resolve a link also opens a small debug log at the bottom of the screen with a step-by-step trace and the exact resolved URL — useful to copy and send along if a resolve ever fails somewhere unexpected. Tap the ✕ to dismiss it.</p>
           </div>
         </details>
         <details class="docs-item">

@@ -22,6 +22,10 @@ if (typeof maplibregl === 'undefined' || typeof turf === 'undefined') {
 // ============================================================================
 const el = {
   statusBanner: document.getElementById('status-banner'),
+  resolverDebugPanel: document.getElementById('resolver-debug-panel'),
+  resolverDebugLogEl: document.getElementById('resolver-debug-log'),
+  resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
+  resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
   placeInput: document.getElementById('place-input'),
@@ -1834,6 +1838,43 @@ const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com'
  * no name/coordinates in its own URL — resolveGoogleMapsLink's redirect
  * hop is what fills that in), so callers can tell "not a Google Maps
  * link" apart from "is one, nothing to show yet". */
+// On-screen trace of the Google Maps link resolver — the only practical way
+// to see what actually happened on a phone with no cable/remote-inspector
+// attached. resolverDebugReset() clears it at the start of each resolve
+// attempt so the panel always shows exactly one run's trace, never a mix of
+// several. resolverDebugLog() timestamps each line relative to that reset
+// and un-hides the panel, so it appears the moment there's anything to show.
+let resolverDebugStartTs = null;
+function resolverDebugReset() {
+  resolverDebugStartTs = Date.now();
+  if (el.resolverDebugLogEl) el.resolverDebugLogEl.innerHTML = '';
+}
+function resolverDebugLog(message, kind = '') {
+  if (resolverDebugStartTs == null) resolverDebugStartTs = Date.now();
+  console.log('[resolver]', message);
+  if (!el.resolverDebugLogEl) return;
+  const line = document.createElement('div');
+  line.className = kind ? `resolver-debug-line ${kind}` : 'resolver-debug-line';
+  line.textContent = `[+${Date.now() - resolverDebugStartTs}ms] ${message}`;
+  el.resolverDebugLogEl.appendChild(line);
+  el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
+  el.resolverDebugPanel.classList.remove('hidden');
+}
+if (el.resolverDebugCloseBtn) {
+  el.resolverDebugCloseBtn.addEventListener('click', () => el.resolverDebugPanel.classList.add('hidden'));
+}
+if (el.resolverDebugCopyBtn) {
+  el.resolverDebugCopyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(el.resolverDebugLogEl.innerText);
+      el.resolverDebugCopyBtn.textContent = 'Copied!';
+      setTimeout(() => { el.resolverDebugCopyBtn.textContent = 'Copy'; }, 1500);
+    } catch {
+      showStatus('Could not copy — select and copy the log text manually.', 'error');
+    }
+  });
+}
+
 function parseGoogleMapsUrl(text) {
   const trimmed = text.trim();
   let url;
@@ -1890,14 +1931,22 @@ function parseGoogleMapsUrl(text) {
 let lastGoogleMapsResolveError = null;
 
 async function resolveGoogleMapsLink(text) {
+  resolverDebugReset();
+  resolverDebugLog(`Input: "${text.length > 100 ? `${text.slice(0, 100)}…` : text}"`);
   lastGoogleMapsResolveError = null;
   let parsed = parseGoogleMapsUrl(text);
-  if (!parsed) return null;
+  if (!parsed) {
+    resolverDebugLog('Not a Google Maps link — bailing out.', 'error');
+    return null;
+  }
+  resolverDebugLog(`Parsed: matchedUrl="${parsed.matchedUrl}"${parsed.name ? `, name="${parsed.name}"` : ''}${parsed.lat != null ? `, coords already in URL (${parsed.lat}, ${parsed.lon})` : ', no coords in URL yet'}`);
 
   if (parsed.lat == null) {
+    resolverDebugLog('Calling /api/resolve-maps-url to follow the short link…');
     try {
       const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(parsed.matchedUrl)}`);
       const contentType = res.headers.get('content-type') || '';
+      resolverDebugLog(`Response: HTTP ${res.status}, content-type "${contentType || '(none)'}"`);
       // A non-JSON body here (even on a 200) is never something this app's
       // own worker code returns — it means something in front of it
       // (a Cloudflare security challenge/interstitial, a carrier's
@@ -1907,16 +1956,20 @@ async function resolveGoogleMapsLink(text) {
       // debugger attached to the phone that's failing.
       if (res.ok && contentType.includes('application/json')) {
         const { resolvedUrl } = await res.json();
+        resolverDebugLog(`resolvedUrl: ${resolvedUrl || '(empty)'}`, 'url');
         if (resolvedUrl) parsed = parseGoogleMapsUrl(resolvedUrl) || parsed;
+        resolverDebugLog(parsed.lat != null ? `Coordinates recovered: ${parsed.lat}, ${parsed.lon}` : 'No coordinates found in the resolved URL.', parsed.lat != null ? 'success' : 'error');
       } else {
         const snippet = (await res.text().catch(() => '')).slice(0, 120).replace(/\s+/g, ' ').trim();
         lastGoogleMapsResolveError = `the link resolver returned HTTP ${res.status}${snippet ? ` — "${snippet}"` : ''}`;
+        resolverDebugLog(lastGoogleMapsResolveError, 'error');
         console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError);
       }
     } catch (err) {
       lastGoogleMapsResolveError = err.name === 'AbortError'
         ? 'timed out reaching the link resolver'
         : `network error reaching the link resolver (${err.message})`;
+      resolverDebugLog(lastGoogleMapsResolveError, 'error');
       console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError, err);
     }
   }
@@ -1926,16 +1979,24 @@ async function resolveGoogleMapsLink(text) {
   // ("Cafe UUTOPIA ft. Toddy\nhttps://maps.app.goo.gl/..."), and sourceUrl
   // ends up as a favorite's note, rendered directly as a link href.
   if (parsed.lat != null) {
+    resolverDebugLog(`Done: resolved to ${parsed.lat}, ${parsed.lon}${parsed.name ? ` ("${parsed.name}")` : ''}`, 'success');
     return { label: parsed.name || 'Pinned location', lat: parsed.lat, lon: parsed.lon, sourceUrl: parsed.matchedUrl };
   }
   if (parsed.name) {
+    resolverDebugLog(`Falling back to a Nominatim search for "${parsed.name}"…`);
     try {
       const results = await geocodeSearch(parsed.name, {});
-      if (results && results[0]) return { ...results[0], sourceUrl: parsed.matchedUrl };
-    } catch {
+      if (results && results[0]) {
+        resolverDebugLog(`Done: Nominatim resolved "${parsed.name}" to ${results[0].lat}, ${results[0].lon}`, 'success');
+        return { ...results[0], sourceUrl: parsed.matchedUrl };
+      }
+      resolverDebugLog('Nominatim found nothing either.', 'error');
+    } catch (err) {
+      resolverDebugLog(`Nominatim fallback threw: ${err.message}`, 'error');
       // Nominatim also drew a blank — nothing more to try.
     }
   }
+  resolverDebugLog('Giving up — returning null.', 'error');
   return null;
 }
 
