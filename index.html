@@ -582,7 +582,7 @@
             <p>On Android, once this is installed to your home screen, it also shows up in the system share sheet — sharing a place straight from the Google Maps app resolves it here the same way, no copy/paste needed. If it doesn't appear in the share sheet right after an update, removing and re-adding this app to your home screen usually fixes it.</p>
             <p>Short links occasionally hit a "your computer network sent unusual traffic" page from Google instead of resolving straight through — this app already recovers the real place from that page automatically, so it should still work, but if a resolve error ever names that message directly, waiting a bit before retrying helps.</p>
             <p>A place with no proper street address (a sea wall, a stretch of open ground) shows a name that starts with a short code like "R72F+2J" instead — that's a Plus Code, Google's own location encoding, and it decodes automatically to the exact pin rather than falling back to a name search that wouldn't find anything anyway.</p>
-            <p>If a link ever fails to resolve for an unclear reason, open this app with <code>?debug=resolver</code> added to the address bar (it stays on across reloads until you visit with <code>?debug=off</code>) and retry — a step-by-step trace with the exact resolved URL appears at the bottom of the screen, with a Copy button, so it can be sent along instead of a screenshot. Off by default since it can show exact GPS coordinates on screen.</p>
+            <p>If a link ever fails to resolve for an unclear reason, turn on Debug mode (Developer tools, further down this screen) and retry — a step-by-step trace with the exact resolved URL appears at the bottom of the screen, with a Copy button, so it can be sent along instead of a screenshot. Off by default since it can show exact GPS coordinates on screen.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -704,6 +704,20 @@
         <div class="docs-credits-block">
           <div class="panel-section-title">A personal project</div>
           <p>Built as a self-hosted, single-user navigation app — no accounts, no tracking, no server beyond the open services listed above. Source on <a href="https://github.com/siddharth2798/osm-navigator" target="_blank" rel="noopener">GitHub</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="docs-section">
+      <h3 class="docs-section-title">Developer tools</h3>
+      <p class="docs-blurb">Diagnostic tools for troubleshooting — off by default, since some of this can show sensitive details (like exact GPS coordinates) on screen.</p>
+      <div class="docs-group">
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Debug mode</div>
+            <div class="docs-toggle-hint">Shows a step-by-step trace — including the resolved URL — every time a Google Maps link is pasted or shared, for troubleshooting a failed resolve. Same effect as opening this app with <code>?debug=resolver</code> in the address bar.</div>
+          </div>
+          <button id="debug-mode-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle debug mode"></button>
         </div>
       </div>
     </section>
