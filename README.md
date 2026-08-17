@@ -1,10 +1,28 @@
 # Navigator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-siddharth2798%2Fosm--navigator-181717?logo=github)](https://github.com/siddharth2798/osm-navigator)
+
 A personal, self-hosted turn-by-turn navigation web app for driving and walking, built on OpenStreetMap data. Single-user, no accounts, no sync, no server of your own beyond the geocoding/routing services you point it at.
 
 Map rendering is [MapLibre GL JS](https://maplibre.org/) with tiles from [OpenFreeMap](https://openfreemap.org/). Geocoding is [Nominatim](https://nominatim.org/). Routing is [Valhalla](https://valhalla.github.io/valhalla/). Everything else — favorites, recent trips, offline map tiles, the in-progress-trip resume, the Nominatim search cache — lives entirely in the browser (IndexedDB / Cache API), nothing is sent to a server of mine.
 
 The app itself has a **Help & documentation** screen (the circled "?" button, bottom-left of the map) covering all of this from a user's perspective, plus a Credits tab listing every open-source project it's built on — the feature list below is the short version for anyone reading the code.
+
+## Privacy
+
+This is written down as its own section, first, because it's the whole design philosophy, not an afterthought:
+
+- **No accounts, no sync, no analytics, no telemetry, no tracking scripts, no server-side database.** Nothing about you or your usage is collected, logged, or sold — there's no infrastructure of mine in this app's normal operation for that data to even go to.
+- **Everything personal to you — favorites, recent trips, Home/Work, offline map tiles, the in-progress-trip resume, the search cache — lives only in your own browser**, via IndexedDB and the Cache API. Clearing your browser's site data for this app deletes all of it, permanently, with nothing left anywhere else.
+- **What does leave your device, and to whom**, only when the corresponding feature is actually used:
+  - Search text and coordinates → **Nominatim** (geocoding).
+  - Origin/destination/stop coordinates → **Valhalla** (routing) and, if configured, **OpenTripPlanner** (transit).
+  - Map viewport tile coordinates → your configured tile host (**OpenFreeMap** by default).
+  - Your GPS coordinates → **Open-Meteo** (the weather badge, if `WEATHER_ENABLED`) and **Mapillary** (street-level imagery, only if you've configured an access token) — both are opt-out via `config.js` if you'd rather your position never leaves the device for these.
+  - A pasted/shared Google Maps link → this app's own tiny Cloudflare Worker/Function (see [Deploying](#deploying)), which forwards just that URL on to Google to follow its redirect. No other request ever goes to Google.
+- **The on-screen resolver debug log** (see [Troubleshooting](#troubleshooting)) is off by default and, when turned on, never transmits anything anywhere — it's a local, on-screen, ephemeral trace only, gone the moment you close the tab or reload.
+- None of the above is enforced by this app against the *services themselves* — Nominatim/Valhalla/OpenFreeMap/Open-Meteo/Mapillary are independent, third-party services with their own privacy policies, and a public/shared instance run by someone else can see and log requests same as any other web request would. Self-host your own instance of any of them (see [Configuring your own services](#configuring-your-own-services)) if that matters to you.
 
 ## Features
 
@@ -38,31 +56,44 @@ python3 -m http.server 8080
 
 ## Configuring your own services
 
-Every URL and tunable lives at the top of **`config.js`**, each with a comment explaining what it does and what the public default is. At minimum, before relying on this day-to-day rather than testing:
+Every URL and tunable lives at the top of **`config.js`**, each with its own comment explaining what it does, what the public default is, and when you'd want to change it — that file (not this README) is the actual source of truth for every one of them; read it top to bottom rather than assuming the handful called out below are the complete list.
 
-- `NOMINATIM_URL` — point at your own Nominatim instance. The public default has a hard 1 req/sec limit.
-- `VALHALLA_URL` — point at your own Valhalla instance. The public default is a shared demo server.
-- `MAPILLARY_ACCESS_TOKEN` — optional (Milestone 4A). Leave empty to disable street-level imagery entirely; there's no public shared token since Mapillary requires every app to register its own.
-- `OTP2_URL` — optional (Milestone 4C). Leave empty and the transit mode toggle never appears; there's no public OpenTripPlanner demo to default to.
+- **`GEOCODE_COUNTRY_CODES` defaults to `'in'` (India) — change this before using the app anywhere else.** This isn't a soft ranking preference, it's a hard filter passed straight to Nominatim: search results outside the listed country/countries are never even considered, so cloning this repo and deploying it as-is will silently return zero or wrong results for anywhere outside India. Set it to your own ISO country code(s), or `''` for worldwide search. `GEOCODE_NEAR_RADIUS_DEG_DEFAULT`/`_WIDE` are similarly tuned for Indian latitudes and are worth revisiting too.
+- `NOMINATIM_URL` — point at your own Nominatim instance. The public default has a hard 1 req/sec limit and is meant for light/testing use — see [Nominatim's usage policy](https://operations.osmfoundation.org/policies/nominatim/) before relying on it day-to-day. Self-hosting Nominatim means importing an OSM extract yourself (a country-sized extract is a multi-GB download and import, a full planet import needs a beefy server and can take the better part of a day) — see [Nominatim's installation docs](https://nominatim.org/release-docs/latest/admin/Installation/).
+- `VALHALLA_URL` — point at your own Valhalla instance. The public default is a [shared demo server](https://valhalla.github.io/demos/routing/) with its own fair-use expectations, not an SLA-backed API. Self-hosting means building a routing graph from an OSM extract (again, budget real disk/CPU time) — see [Valhalla's own docs](https://valhalla.github.io/valhalla/) for the extract-and-build steps.
+- `MAPILLARY_ACCESS_TOKEN` — optional. Leave empty to disable street-level imagery entirely; there's no public shared token since Mapillary requires every app to register its own.
+- `OTP2_URL` — optional. Leave empty and the transit mode toggle never appears; there's no public OpenTripPlanner demo to default to.
 - `WEATHER_ENABLED` — set to `false` to disable the weather badge entirely (no Open-Meteo calls at all) if you'd rather this app's GPS position never leave the device, even to a free/anonymous API.
 
 If you change `MAP_STYLE_URL` to a self-hosted tile server, also update `TILE_HOSTS` at the top of `sw.js` — the service worker can't import `config.js` (Safari doesn't support module service workers yet), so that one value is duplicated there.
 
 ## Deploying
 
-Static files, so GitHub Pages, Cloudflare Pages, or a Cloudflare Worker with static assets all work by pointing at this folder. A few things worth knowing:
+Static files, so GitHub Pages, Cloudflare Pages, or a Cloudflare Worker with static assets all work by pointing at this folder.
+
+### Deploy your own copy (quick start — Cloudflare Worker)
+
+This is the path this project itself uses, and the only one that gets the Google Maps link resolver (below) working with zero manual config:
+
+1. [Sign up for a free Cloudflare account](https://dash.cloudflare.com/sign-up) if you don't have one.
+2. Install Wrangler (Cloudflare's CLI) and log in: `npm install -g wrangler` then `wrangler login` (opens a browser tab to authorize).
+3. Clone this repo and, from its root, run `wrangler deploy`. First run will ask to create a new Worker — accept the suggested name or pick your own.
+4. Wrangler prints a `https://<name>.<your-subdomain>.workers.dev` URL when it finishes — that's your live app. Open it.
+5. **Set `GEOCODE_COUNTRY_CODES` in `config.js` to your own country before relying on search** (see [Configuring your own services](#configuring-your-own-services) — it defaults to India-only).
+6. Optional: add a custom domain to the Worker from the Cloudflare dashboard's Workers & Pages → your Worker → Settings → Domains & Routes.
+
+Redeploying after a code change is just `wrangler deploy` again — **`wrangler.jsonc`'s `"name"` must keep matching the Worker's actual dashboard name** (the first segment of its `*.workers.dev` subdomain) for this to update the same Worker instead of silently creating a new one.
+
+### Other things worth knowing
 
 - **`_headers`** (Cloudflare Pages and Cloudflare Workers static assets both honor this file, same syntax) sets cache-control so that `index.html`, `app.js`, `style.css`, etc. always revalidate with the server (cheap 304s) instead of getting stuck stale in the CDN cache after a redeploy, plus a baseline set of security headers (CSP, X-Frame-Options, etc.) — none of the app files use content-hashed names, so a long cache lifetime would otherwise mean visitors keep seeing an old version until the cache expires. GitHub Pages doesn't support a custom-headers file, so this only takes effect on Cloudflare.
-- **Service worker versioning**: `sw.js` precaches the app shell under `SHELL_CACHE_NAME`. Bump that string (e.g. `v3` → `v4`) whenever you change any of the precached files, so returning visitors' browsers actually fetch the new versions instead of serving what they already installed. If you ever install this as a PWA and see it rendering blank or obviously stale after an update, this cache is the first thing to suspect.
-- The offline map tile cache (`offline-tiles`, Milestone 3A) is intentionally never purged by a service-worker version bump — that's user data (tiles you explicitly downloaded), not app code.
+- **Service worker versioning**: `sw.js` precaches the app shell under `SHELL_CACHE_NAME`. Bump that string (e.g. `v3` → `v4`) whenever you change any of the precached files, so returning visitors' browsers actually fetch the new versions instead of serving what they already installed. If you ever install this as a PWA and see it rendering blank or obviously stale after an update, this cache is the first thing to suspect (see [Troubleshooting](#troubleshooting)).
+- The offline map tile cache (`offline-tiles`) is intentionally never purged by a service-worker version bump — that's user data (tiles you explicitly downloaded), not app code. Tiles seen just from ordinary browsing live in a separate, size-capped `incidental-tiles` cache instead, so casual use can't grow without bound or crowd out a deliberately-downloaded area.
 - **Resolving a `maps.app.goo.gl` short link needs one small server-side hop** (following the redirect — a browser can't read a cross-origin redirect's target itself), which this repo supports on two different Cloudflare deployment shapes, both wired to the same shared logic in `lib/resolve-maps-url.js`:
-  - **Cloudflare Pages** (a project created against this repo in the Pages dashboard): `functions/api/resolve-maps-url.js` deploys automatically, no config needed.
-  - **A plain Cloudflare Worker with static assets** (created via `wrangler deploy`, or the dashboard's Git-connected Workers flow, rather than a Pages project — recognizable by a `*.workers.dev` URL instead of `*.pages.dev`): `wrangler.jsonc` + `worker.js` at the repo root add the same route on top of otherwise-unchanged static-asset serving. **`wrangler.jsonc`'s `"name"` must match the Worker's actual name in your dashboard** (it's the first segment of its `*.workers.dev` subdomain) for a redeploy to update that same Worker instead of creating a new one.
+  - **A plain Cloudflare Worker with static assets** (the quick-start above; `wrangler deploy`, or the dashboard's Git-connected Workers flow — recognizable by a `*.workers.dev` URL): `wrangler.jsonc` + `worker.js` at the repo root add the resolver route on top of otherwise-unchanged static-asset serving.
+  - **Cloudflare Pages** (a project created against this repo in the Pages dashboard instead): `functions/api/resolve-maps-url.js` deploys automatically, no config needed.
   - **GitHub Pages** has no server functions at all, so a short link can't be resolved there — a full `google.com/maps` link still works everywhere, since those already carry the coordinates in the URL itself with nothing to resolve.
-  - **If resolving fails on one device but not another** (e.g. works on desktop Chrome, fails on a phone on mobile data), the on-screen error is the fastest lead: if it names an HTTP status plus a quoted snippet of HTML rather than JSON, something in front of the Worker (Cloudflare's Bot Fight Mode/Super Bot Fight Mode, a WAF managed ruleset, "I'm Under Attack Mode", or a carrier-side transparent proxy) is intercepting the request before it reaches `worker.js` — check the zone's Security settings in the Cloudflare dashboard the same way you'd check for the AI-crawler-block toggle. Mobile-carrier IPs (shared/CGNAT) get flagged by bot heuristics far more often than home broadband IPs, and a query string that itself contains an embedded `https://` URL (`?url=https://maps.app.goo.gl/...`) can trip an SSRF/RFI-style WAF signature that a plain page load never would.
-  - **Google itself can also intercept the redirect** with its own "unusual traffic from your computer network" page (`google.com/sorry/index?continue=...`) instead of the real place page — Cloudflare Workers' egress IPs are shared across many customers, so Google's abuse detection flags them far more readily than a residential IP, and heavy testing against the same link in a short window makes it more likely, not less. `lib/resolve-maps-url.js` already unwraps this automatically (the interstitial's own `continue` param still carries the real destination, coordinates included), so a resolve that used to dead-end on this page now recovers on its own with no dashboard change needed. If it ever recurs in a form the `continue` unwrap doesn't catch, the fix is the same shape: inspect what Google actually returned and widen the unwrap.
-  - **An on-screen debug panel makes this diagnosable on a phone with no cable attached.** Every call to `resolveGoogleMapsLink` in `app.js` logs a timestamped trace (parsed URL, the resolver's HTTP response, the resolved URL, and the final coordinates or failure reason) to a small panel that auto-opens the moment a resolve starts and stays open — with a "Copy" button — until dismissed. This is the fastest way to see exactly what a failing device is doing: open the app, trigger a resolve (paste or share a link), and read or copy the panel's contents instead of needing remote DevTools.
-  - **A place with no street address (a sea wall, an unnamed junction) resolves via its Plus Code, not a name search.** Google names these `"R72F+2J Chellanam Sea Wall, Chellanam, Kerala 682008"` — a [Plus Code](https://maps.google.com/pluscodes/) (Google's own open, offline-decodable location encoding) followed by locality text, and its resolved URL carries no `@lat,lng` or `!3d!4d` at all, only an opaque place ID. `resolveGoogleMapsLink` detects the leading Plus Code, geocodes the locality text after it via Nominatim as an approximate reference point (a short code only needs anchoring to within about a degree), then decodes the code against that reference using the vendored `vendor/open-location-code.js` (Google's own reference implementation, adapted from CommonJS to a plain ES module — see the file's header comment) to recover the exact pin. Searching the full name against Nominatim first (which is what happens for every other name) would never work here — the name isn't in OSM's data at all, which is the entire reason this feature exists.
+- **A place with no street address (a sea wall, an unnamed junction) resolves via its Plus Code, not a name search.** Google names these `"R72F+2J Chellanam Sea Wall, Chellanam, Kerala 682008"` — a [Plus Code](https://maps.google.com/pluscodes/) (Google's own open, offline-decodable location encoding) followed by locality text, and its resolved URL carries no `@lat,lng` or `!3d!4d` at all, only an opaque place ID. `resolveGoogleMapsLink` detects the leading Plus Code, validates it against the vendored library's own `isValid()`/`isShort()` rules, geocodes the locality text after it via Nominatim as an approximate reference point (a short code only needs anchoring to within about a degree), then decodes the code against that reference using the vendored `vendor/open-location-code.js` (Google's own reference implementation, dynamically imported only when actually needed, and adapted from CommonJS to a plain ES module — see the file's header comment) to recover the exact pin. Searching the full name against Nominatim first (which is what happens for every other name) would never work here — the name isn't in OSM's data at all, which is the entire reason this feature exists.
 
 ## Data freshness (OSM updates)
 
@@ -83,9 +114,24 @@ npm run cap:sync             # copies the web app into www/, syncs the android/ 
 npx cap open android         # opens the project in Android Studio
 ```
 
+**Build requirements** (as currently checked into `android/`): Android Gradle Plugin `8.13.0` / Gradle `8.14.3`, which need **JDK 17** — install a recent [Android Studio](https://developer.android.com/studio) release and it'll offer to manage this for you. `android/variables.gradle` sets `minSdkVersion 24` / `compileSdkVersion`/`targetSdkVersion 36` — Android Studio will prompt to install SDK Platform 36 the first time you open the project if you don't already have it.
+
+**Permissions**: `@capacitor-community/background-geolocation` declares everything it needs (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, `POST_NOTIFICATIONS`) in its own manifest, which Capacitor's build automatically merges into the app — no manual `AndroidManifest.xml` edits needed for that. Android 13+ separately requires *requesting* the `POST_NOTIFICATIONS` runtime permission (for the persistent "tracking your location" notification) — see the [plugin's own README](https://github.com/capacitor-community/background-geolocation#readme) for the recommended way to prompt for it.
+
+**Producing a release build**: `npx cap open android` gets you a debug build runnable in an emulator or over USB with zero extra setup. A signed release APK/AAB (needed to actually install on a device without debug mode, or to publish anywhere) needs your own keystore and Gradle signing config — this repo doesn't include one, since a keystore is a secret you generate and keep yourself, never commit. Follow [Capacitor's own guide](https://capacitorjs.com/docs/android/deploying-to-google-play) (the signing steps apply whether or not you ever publish to Google Play) or [Android Studio's Generate Signed Bundle/APK wizard](https://developer.android.com/studio/publish/app-signing) directly.
+
 **Honest caveat: the native build has not been compiled or run.** This environment has no Android SDK or emulator, so `android/` is a real, generated Capacitor project and `native-location.js` is written directly against the plugin's documented API, but none of it has been verified on an actual device. Treat it as a first draft to test, not a working implementation, before relying on it.
 
 Also worth knowing: `@capacitor-community/background-geolocation`'s notification text is set once when tracking starts and can't be updated live afterward (its API has no "update" call) — so the persistent Android notification can say "Navigating to Gateway of India" but not a live-updating "next: turn left in 200m". [`@transistorsoft/capacitor-background-geolocation`](https://github.com/transistorsoft/capacitor-background-geolocation) supports live notification updates if that matters more to you than avoiding a commercial/licensed dependency — swapping it in only requires changing `native-location.js`.
+
+## Troubleshooting
+
+- **Google Maps link resolution fails on one device but not another** (e.g. works on desktop Chrome, fails on a phone on mobile data): turn on the on-screen resolver debug log — open the app with `?debug=resolver` appended to the URL (e.g. `https://your-worker.workers.dev/?debug=resolver`; it persists across reloads via `localStorage` until you visit with `?debug=off`) — then retry the resolve. It's off by default because the trace includes exact GPS coordinates and place names, more than should sit on screen unasked for an address-book-adjacent feature; console.log output is always there regardless, for a connected remote-debugger session. Once it's showing, the failure usually falls into one of two buckets:
+  - **A quoted HTTP status plus a snippet of HTML instead of JSON**: something in front of the Worker (Cloudflare's Bot Fight Mode/Super Bot Fight Mode, a WAF managed ruleset, "I'm Under Attack Mode", or a carrier-side transparent proxy) is intercepting the request before it reaches `worker.js` — check the zone's Security settings in the Cloudflare dashboard. Mobile-carrier IPs (shared/CGNAT) get flagged by bot heuristics far more often than home broadband IPs, and a query string that itself contains an embedded `https://` URL (`?url=https://maps.app.goo.gl/...`) can trip an SSRF/RFI-style WAF signature that a plain page load never would.
+  - **Google itself intercepts the redirect** with its own "unusual traffic from your computer network" page (`google.com/sorry/index?continue=...`) — Cloudflare Workers' egress IPs are shared across many customers, so Google's abuse detection flags them more readily than a residential IP, and heavy repeat-testing against the same link makes it more likely, not less. This is already self-healed automatically (the interstitial's own `continue` param still carries the real destination), so it should recover on its own — the debug log will show a `Plus Code decoded`/`Coordinates recovered` line either way once it does.
+- **The PWA looks blank or obviously stale after you deploy an update**: bump `SHELL_CACHE_NAME` in `sw.js` (see [Deploying](#deploying)) — this is almost always a stale service-worker cache serving the old files. If bumping it doesn't help, manually unregister the service worker and clear the site's storage from your browser's DevTools (Application tab), then reload.
+- **A new `share_target` registration (Android "Share" sheet) doesn't show up after updating the app**: an already-installed PWA generally needs removing and re-adding to the home screen once before Android picks up a manifest change to `share_target` — a plain reload isn't enough.
+- **Search returns nothing, or wrong-country results, right after self-hosting**: see the `GEOCODE_COUNTRY_CODES` callout in [Configuring your own services](#configuring-your-own-services) — the default is India-only.
 
 ## Known limitations
 
@@ -95,3 +141,11 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server `VALHALLA_URL` points at (confirmed working on the public demo server) — if a self-hosted instance has it disabled, the walking route itself still works fine, just without the chart.
 - **Android shell** — see above; unverified on a real device.
 - **The idle location marker's compass wedge** needs the device's own magnetometer (`deviceorientationabsolute`, or `deviceorientation` with `webkitCompassHeading` on iOS) — on a device/browser without one, or if that permission is denied, it just falls back to GPS-derived heading (meaningful only once you're actually moving), same as the nav puck already does.
+
+## Contributing
+
+Bug reports and pull requests are welcome via [GitHub Issues/PRs](https://github.com/siddharth2798/osm-navigator) — see [CONTRIBUTING.md](CONTRIBUTING.md) for scope, expectations, and what's explicitly out of scope for this project before opening a PR that adds it.
+
+## License
+
+[MIT](LICENSE) — do whatever you want with it, including running your own fork with your own services configured; no attribution required beyond keeping the license notice, though it's always appreciated.

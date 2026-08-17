@@ -7,7 +7,7 @@
     "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js style.css manifest.json sw.js www/ && cp -r icons www/icons && cp -r vendor www/vendor",
     "cap:sync": "npm run cap:copy && cap sync android"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "@capacitor-community/background-geolocation": "^1.2.26",
     "@capacitor/android": "^8.5.0",
