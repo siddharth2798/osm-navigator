@@ -264,23 +264,6 @@
       </div>
     </div>
 
-    <!-- ============ "Where should this pinned place go?" prompt — shown
-         when a long-press pin is dropped while both a source and
-         destination are already set (see usePinnedPlace in app.js). ============ -->
-    <div id="pinned-place-prompt" class="hidden">
-      <div id="pinned-place-name" class="list-name-prompt-title"></div>
-      <div class="pinned-place-options">
-        <button id="pinned-place-use-from" type="button">Set as starting point</button>
-        <button id="pinned-place-use-to" type="button">Set as destination</button>
-        <button id="pinned-place-use-stop" type="button">Add as a stop</button>
-      </div>
-      <div class="favorite-prompt-actions">
-        <button id="pinned-place-cancel" class="icon-btn" type="button" aria-label="Cancel">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
-        </button>
-      </div>
-    </div>
-
     <!-- ============ Floating "next turn" card ============ -->
     <div id="nav-banner" class="hidden">
       <div id="nav-banner-icon" aria-hidden="true"></div>
@@ -404,6 +387,20 @@
       <span class="handle-bar" aria-hidden="true"></span>
       <div id="sheet-summary">—</div>
     </button>
+    <!-- Alternate route cards — only populated (and only takes any space) when
+         Get Directions found 2+ meaningfully different options. Placed right
+         after the summary and before the action buttons — the peek state's
+         height accounts for both this (when present) and sheet-actions below,
+         so a route with alternates is never scrolled past to reach Start. -->
+    <div id="route-options" class="hidden"></div>
+
+    <!-- Walk-mode only: ascent/descent summary + a hand-drawn elevation
+         chart, computed once (static, no live position tracking) after the
+         route itself has already rendered. Content is fully JS-generated
+         (see renderElevationProfile in app.js) — this is just the mount
+         point, placed like #route-options right after the summary. -->
+    <div id="elevation-profile" class="hidden"></div>
+
     <div id="sheet-actions">
       <button id="share-route-btn" class="icon-btn hidden" type="button" aria-label="Share this route">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -412,23 +409,9 @@
         </svg>
       </button>
       <button id="cancel-route-btn" class="secondary hidden" type="button">Cancel</button>
-      <button id="start-nav-btn" class="hidden" type="button">Start navigation</button>
+      <button id="start-nav-btn" class="hidden" type="button">Start</button>
       <button id="end-nav-btn" class="hidden danger" type="button">End</button>
     </div>
-
-    <!-- Alternate route cards — only populated (and only takes any space) when
-         Get Directions found 2+ meaningfully different options. Deliberately
-         placed after sheet-actions, not before: the peek/collapsed height only
-         has room for the handle+summary+buttons, so Start/Cancel always stay
-         reachable without expanding, same as before this feature existed. -->
-    <div id="route-options" class="hidden"></div>
-
-    <!-- Walk-mode only: ascent/descent summary + a hand-drawn elevation
-         chart, computed once (static, no live position tracking) after the
-         route itself has already rendered. Content is fully JS-generated
-         (see renderElevationProfile in app.js) — this is just the mount
-         point, placed like #route-options right after sheet-actions. -->
-    <div id="elevation-profile" class="hidden"></div>
 
     <div id="poi-results-header" class="hidden">
       <button id="poi-back-btn" class="icon-btn" type="button" aria-label="Back to route">
@@ -592,7 +575,7 @@
         <details class="docs-item">
           <summary>Pinning a place on the map<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body">
-            <p>Press and hold anywhere on the map (about 2 seconds) to drop a pin there. What happens with it depends on what's already in the from/to fields: if neither is set, it shows up in the search box like any other result; if exactly one is set, it fills in whichever is still empty; if both are already set, you're asked whether to use it as the start, the destination, or an extra stop.</p>
+            <p>Press and hold anywhere on the map (about 4 seconds — long enough that a pinch-to-zoom never triggers it) to drop a pin there. What happens with it depends on what's already in the from/to fields: if neither is set, it shows up in the search box like any other result; otherwise it's set as the destination straight away, no extra prompt.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -600,6 +583,7 @@
           <div class="docs-item-body">
             <p>Set these once from the bookmark icon's Saved panel — tapping &#8220;Add Home&#8221; or &#8220;Add Work&#8221; arms the next place you search for. After that, they're always the first option when you tap an empty from/to field.</p>
             <p>You can also just type &#8220;Home&#8221; or &#8220;Work&#8221; straight into a search box, or as either half of the &#8220;X to Y&#8221; shortcut — each resolves to a fresh GPS fix if that's what was used to set it, not the location from whenever you saved it.</p>
+            <p>&#8220;Me&#8221; or &#8220;my location&#8221; works the same way anywhere you'd type a place — including as either half of &#8220;X to Y&#8221; — and always resolves to a fresh GPS fix, never a stale one from earlier in the day.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -627,12 +611,12 @@
       <div class="docs-group">
         <details class="docs-item">
           <summary>Turn-by-turn navigation<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
-          <div class="docs-item-body"><p>Tap &#8220;Start navigation&#8221; once a route looks right. A bold arrow marks your live position, the part of the route you've already driven dulls to gray, a live speed readout sits above the next-turn card, and the screen stays awake for the whole drive. Navigation ends itself and announces &#8220;You have arrived&#8221; once you're within 10 metres of the destination &#8212; no need to tap &#8220;End&#8221; yourself.</p></div>
+          <div class="docs-item-body"><p>Tap &#8220;Start&#8221; once a route looks right. A bold arrow marks your live position, the part of the route you've already driven dulls to gray, a live speed readout sits above the next-turn card, and the screen stays awake for the whole drive (reacquired automatically if the platform ever revokes it mid-drive). Navigation ends itself and announces &#8220;You have arrived&#8221; once you're within 10 metres of the destination &#8212; no need to tap &#8220;End&#8221; yourself. If the browser ever reloads mid-drive, navigation picks back up right where it left off instead of dropping you back to the planning screen.</p></div>
         </details>
         <details class="docs-item">
           <summary>Voice guidance &amp; alerts<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body">
-            <p>You'll hear an early &#8220;in 150 meters, turn right&#8221; heads-up (rounded down to the nearest 10 metres, so it reads as a clean approximation), then a short plain reminder right before the turn. A slight turn is called &#8220;Slight left/right&#8221;, and a maneuver leading onto a flyover is called out explicitly. Going off route plays a distinct alert tone (not a voice prompt) while the app recalculates.</p>
+            <p>You'll hear an early &#8220;in 220 meters, turn right&#8221; heads-up (rounded down to the nearest 10 metres, so it reads as a clean approximation), then a short plain reminder around 80 metres before the turn. A slight turn is called &#8220;Slight left/right&#8221;, a roundabout says &#8220;Take the 2nd exit&#8221; (built from Valhalla's own exit-count data), and a maneuver leading onto a flyover is called out explicitly. A long straight stretch gets its own &#8220;Continue straight for X km&#8221; call-out once, including right at the start of a route that opens with one. Going off route plays a distinct alert tone (not a voice prompt) while the app recalculates.</p>
             <p>The speaker button above the weather badge cycles full voice, important alerts only, and fully muted — the same three-way choice Google Maps offers.</p>
           </div>
         </details>

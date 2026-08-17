@@ -56,12 +56,6 @@ const el = {
   saveToListNewBtn: document.getElementById('save-to-list-new-btn'),
   saveToListCancel: document.getElementById('save-to-list-cancel'),
   saveToListSave: document.getElementById('save-to-list-save'),
-  pinnedPlacePrompt: document.getElementById('pinned-place-prompt'),
-  pinnedPlaceName: document.getElementById('pinned-place-name'),
-  pinnedPlaceUseFrom: document.getElementById('pinned-place-use-from'),
-  pinnedPlaceUseTo: document.getElementById('pinned-place-use-to'),
-  pinnedPlaceUseStop: document.getElementById('pinned-place-use-stop'),
-  pinnedPlaceCancel: document.getElementById('pinned-place-cancel'),
   searchDirections: document.getElementById('search-directions'),
   directionsSummaryRow: document.getElementById('directions-summary-row'),
   directionsBackBtn: document.getElementById('directions-back-btn'),
@@ -75,6 +69,7 @@ const el = {
   planBtn: document.getElementById('plan-route-btn'),
   bottomSheet: document.getElementById('bottom-sheet'),
   sheetHandle: document.getElementById('sheet-handle'),
+  sheetActions: document.getElementById('sheet-actions'),
   sheetSummary: document.getElementById('sheet-summary'),
   shareRouteBtn: document.getElementById('share-route-btn'),
   cancelRouteBtn: document.getElementById('cancel-route-btn'),
@@ -161,7 +156,8 @@ const state = {
   currentLegIndex: 0,  // which leg of a multi-stop trip we're currently on — see updateActiveManeuver
   traveledM: null,     // distance travelled along state.route so far — see onPositionUpdate, used to scope "search along route" to what's still ahead once navigating
   puckMarker: null,
-  myLocationMarker: null, // one-shot "you are here" dot shown by the locate button before navigation starts
+  myLocationMarker: null, // live "you are here" arrow shown by the locate button before navigation starts
+  idleLocationWatchId: null, // navigator.geolocation.watchPosition id backing myLocationMarker — null when not sharing
   navigating: false,
   watchId: null,
   // Indices of maneuvers already spoken aloud, tracked separately per prompt
@@ -169,6 +165,7 @@ const state = {
   // and near ("turn right") reminder exactly once.
   spokenFar: new Set(),
   spokenNear: new Set(),
+  spokenContinue: new Set(), // "Continue straight for X km" — spoken once per long straight maneuver, on becoming current rather than approaching
   voiceMode: 'all', // 'all' | 'important' | 'off' — see the voice-mode toggle button
   arrivedAnnounced: false,
   lastFix: null,       // {lng, lat, t} of the previous GPS fix, for bearing fallback
@@ -382,13 +379,22 @@ const DOT_PATH = '<circle cx="12" cy="12" r="5" fill="currentColor" stroke="none
 const MANEUVER_ICONS = {
   1: { path: DOT_PATH }, 2: { path: DOT_PATH }, 3: { path: DOT_PATH },       // start
   4: { path: FLAG_PATH }, 5: { path: FLAG_PATH }, 6: { path: FLAG_PATH },    // destination
+  8: {},                                                                    // continue straight (kContinue) — plain arrow, the table's own default
   9: { rotate: 30 }, 10: { rotate: 90 }, 11: { rotate: 120 },                // (slight/-/sharp) right
   12: { path: UTURN_PATH, flip: true }, 13: { path: UTURN_PATH },            // u-turns
   14: { rotate: -120 }, 15: { rotate: -90 }, 16: { rotate: -30 },            // sharp/-/slight left
   18: { rotate: 45 }, 19: { rotate: -45 }, 20: { rotate: 45 }, 21: { rotate: -45 }, // ramps/exits
+  22: {},                                                                   // stay straight (kStayStraight) — plain arrow
   23: { rotate: 20 }, 24: { rotate: -20 },                                   // stay right/left
   26: { path: ROUNDABOUT_PATH }, 27: { path: ROUNDABOUT_PATH },              // roundabout
 };
+
+// "Continue straight for X km" is spoken once per occurrence of either of
+// these Valhalla maneuver types, but only when the straight leg is long
+// enough to be worth calling out — a plain straight-through at a minor
+// intersection every few hundred metres would otherwise narrate constantly.
+const CONTINUE_STRAIGHT_TYPES = new Set([8, 22]);
+const CONTINUE_STRAIGHT_MIN_LENGTH_M = 1000;
 
 function maneuverIcon(type) {
   const cfg = MANEUVER_ICONS[type] || {};
@@ -484,6 +490,25 @@ function rewordInstruction(instruction) {
   return instruction.replace(/\bbear\b/gi, (match) => (match[0] === 'B' ? 'Slight' : 'slight'));
 }
 
+function ordinal(n) {
+  const suffixes = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (suffixes[(v - 20) % 10] || suffixes[v] || suffixes[0]);
+}
+
+/** Valhalla's own roundabout-exit phrasing varies by version/locale —
+ * building it explicitly here guarantees the "Take the 2nd exit" wording
+ * Google Maps uses, rather than depending on whatever Valhalla's own
+ * template happens to say. `roundabout_exit_count` (documented directly on
+ * the exit maneuver, type 27/kRoundaboutExit) is the exit number counting
+ * from the entry point — the 1st exit is the first spoke you pass, not
+ * necessarily "straight across". */
+function applyRoundaboutPhrasing(instruction, m) {
+  if (m.type !== 27 || !m.roundabout_exit_count) return instruction;
+  const streetPart = m.street_names && m.street_names.length ? ` onto ${m.street_names[0]}` : '';
+  return `Take the ${ordinal(m.roundabout_exit_count)} exit at the roundabout${streetPart}.`;
+}
+
 function buildRouteState(trip, stops = []) {
   const coords = decodeTripCoords(trip);
   const maneuvers = [];
@@ -494,7 +519,7 @@ function buildRouteState(trip, stops = []) {
 
     legManeuvers.forEach((m, mIdx) => {
       const lengthM = (m.length || 0) * 1000; // requested units: kilometers
-      let instruction = rewordInstruction(m.instruction || 'Continue');
+      let instruction = applyRoundaboutPhrasing(rewordInstruction(m.instruction || 'Continue'), m);
 
       const isArrivalType = m.type >= 4 && m.type <= 6;
 
@@ -806,25 +831,84 @@ function createPuckElement() {
   return div;
 }
 
+/** The idle (non-navigating) "you are here" marker — a round dot with a
+ * small directional wedge in front, the same idea as Google Maps' own
+ * stationary location marker. Smaller than the full nav puck (createPuckElement
+ * above) so it doesn't look like navigation is active when it isn't. */
 function createLocationDotElement() {
   const div = document.createElement('div');
   div.className = 'puck-marker';
   div.setAttribute('aria-label', 'Your location');
-  div.innerHTML = `<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="11" cy="11" r="9" fill="#3d8bfd" fill-opacity="0.25"/>
-    <circle cx="11" cy="11" r="5" fill="#3d8bfd" stroke="#fff" stroke-width="2"/>
+  div.innerHTML = `<svg width="26" height="26" viewBox="0 0 26 26" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="13" cy="13" r="11" fill="#3d8bfd" fill-opacity="0.20"/>
+    <path d="M13 1 L18 10 L13 7.5 L8 10 Z" fill="#3d8bfd" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="13" cy="13" r="6" fill="#3d8bfd" stroke="#fff" stroke-width="2"/>
   </svg>`;
   return div;
 }
 
-/** One-shot "you are here" dot shown when the locate button is tapped
- * outside of navigation (no heading, unlike the nav puck). */
-function updateMyLocationMarker(lngLat) {
+/** Live "you are here" marker shown when the locate button is tapped
+ * outside of navigation — unlike the old one-shot dot, this keeps updating
+ * (see the locate button's own watchPosition below) and rotates its wedge
+ * to match `headingDeg` when one is available (GPS course-over-ground while
+ * moving, device-compass heading while stationary — see
+ * handleDeviceOrientation) exactly like the nav puck does. `headingDeg` of
+ * `null` (no heading source available yet) just leaves the last rotation in
+ * place rather than snapping to 0/north. */
+function updateMyLocationMarker(lngLat, headingDeg) {
   if (!state.myLocationMarker) {
-    state.myLocationMarker = new maplibregl.Marker({ element: createLocationDotElement() }).setLngLat(lngLat).addTo(map);
+    state.myLocationMarker = new maplibregl.Marker({
+      element: createLocationDotElement(),
+      rotationAlignment: 'map',
+      pitchAlignment: 'map',
+    }).setLngLat(lngLat).addTo(map);
   } else {
     state.myLocationMarker.setLngLat(lngLat);
   }
+  if (headingDeg != null) state.myLocationMarker.setRotation(headingDeg);
+}
+
+/** Device-compass heading, kept fresh by handleDeviceOrientation below —
+ * the fallback for the idle location marker's rotation while stationary,
+ * when GPS course-over-ground (pos.coords.heading) is meaningless (it
+ * requires movement to mean anything, and is null/NaN at rest). Navigation
+ * mode doesn't use this — its puck is always moving, so GPS/fix-to-fix
+ * bearing alone (see onPositionUpdate) is already reliable there. */
+let compassHeadingDeg = null;
+function handleDeviceOrientation(event) {
+  // iOS Safari exposes a ready-to-use true-north compass heading directly
+  // via the non-standard `webkitCompassHeading`. Everywhere else, `alpha`
+  // from the *absolute* variant of this event is degrees counter-clockwise
+  // from north, so `360 - alpha` converts it to a standard clockwise compass
+  // bearing. A non-absolute event (no compass hardware, or the browser only
+  // ever fires the relative variant) has no fixed reference frame and is
+  // deliberately ignored rather than shown as a plausible-looking but wrong
+  // heading.
+  const heading = typeof event.webkitCompassHeading === 'number'
+    ? event.webkitCompassHeading
+    : (event.absolute && typeof event.alpha === 'number' ? (360 - event.alpha) % 360 : null);
+  if (heading != null) compassHeadingDeg = heading;
+}
+
+let deviceOrientationActive = false;
+/** iOS 13+ gates DeviceOrientationEvent behind an explicit permission
+ * prompt that can only be requested from within a real user-gesture
+ * handler — called from the locate button's own click handler for exactly
+ * that reason, not proactively on page load. A no-op everywhere else
+ * (Android/desktop Chrome never define `requestPermission` at all, and
+ * just start receiving orientation events once listened for). */
+async function enableDeviceOrientation() {
+  if (deviceOrientationActive) return;
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      if ((await DeviceOrientationEvent.requestPermission()) !== 'granted') return;
+    } catch {
+      return;
+    }
+  }
+  window.addEventListener('deviceorientationabsolute', handleDeviceOrientation);
+  window.addEventListener('deviceorientation', handleDeviceOrientation); // carries iOS's webkitCompassHeading instead of firing separately
+  deviceOrientationActive = true;
 }
 
 /** (Re)places the origin/destination pins to match state.from/state.to.
@@ -888,7 +972,7 @@ function updateLocateBtnState() {
   el.locateBtn.classList.toggle('active', state.navigating && !state.followMode);
 }
 
-el.locateBtn.addEventListener('click', () => {
+el.locateBtn.addEventListener('click', async () => {
   if (state.navigating) {
     state.followMode = true;
     updateLocateBtnState();
@@ -899,13 +983,32 @@ el.locateBtn.addEventListener('click', () => {
     showStatus('This browser does not support GPS location.', 'error');
     return;
   }
+  // A second tap while already sharing turns it back off, same as tapping
+  // any other toggled-on FAB a second time.
+  if (state.idleLocationWatchId != null) {
+    navigator.geolocation.clearWatch(state.idleLocationWatchId);
+    state.idleLocationWatchId = null;
+    if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
+    el.locateBtn.classList.remove('active');
+    return;
+  }
+  await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
   showStatus('Finding your location…', 'info');
-  navigator.geolocation.getCurrentPosition(
+  let flownToOnce = false;
+  state.idleLocationWatchId = navigator.geolocation.watchPosition(
     (pos) => {
       const lngLat = [pos.coords.longitude, pos.coords.latitude];
-      map.flyTo({ center: lngLat, zoom: Math.max(map.getZoom(), 14), duration: 800 });
-      updateMyLocationMarker(lngLat);
-      clearStatus();
+      if (!flownToOnce) {
+        flownToOnce = true;
+        map.flyTo({ center: lngLat, zoom: Math.max(map.getZoom(), 14), duration: 800 });
+        clearStatus();
+        el.locateBtn.classList.add('active');
+      }
+      // GPS course-over-ground while actually moving, the device compass
+      // while stationary (see handleDeviceOrientation) — the same
+      // preference order the nav puck already uses in onPositionUpdate.
+      const headingDeg = typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : compassHeadingDeg;
+      updateMyLocationMarker(lngLat, headingDeg);
     },
     () => showStatus('Could not get your location. Check location permissions.', 'error'),
     CONFIG.GEOLOCATION_OPTIONS,
@@ -1778,7 +1881,16 @@ function parseGoogleMapsUrl(text) {
  * A short link has no coordinates in the URL itself, so it needs one
  * server-side hop (see functions/api/resolve-maps-url.js) to follow the
  * redirect — a browser can't read a cross-origin redirect's target itself. */
+// Set right before a failed resolveGoogleMapsLink call returns null, so a
+// caller can show something more specific than a generic "couldn't
+// resolve" — and so a real failure (network/timeout/server error) is
+// distinguishable at a glance from "genuinely not a resolvable link",
+// without needing to attach a remote debugger to see what actually
+// happened. Cleared at the start of every call.
+let lastGoogleMapsResolveError = null;
+
 async function resolveGoogleMapsLink(text) {
+  lastGoogleMapsResolveError = null;
   let parsed = parseGoogleMapsUrl(text);
   if (!parsed) return null;
 
@@ -1788,10 +1900,15 @@ async function resolveGoogleMapsLink(text) {
       if (res.ok) {
         const { resolvedUrl } = await res.json();
         if (resolvedUrl) parsed = parseGoogleMapsUrl(resolvedUrl) || parsed;
+      } else {
+        lastGoogleMapsResolveError = `the link resolver returned HTTP ${res.status}`;
+        console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError);
       }
-    } catch {
-      // Network hiccup or the function unavailable — fall through to
-      // whatever `parsed` already had (a name, or nothing) below.
+    } catch (err) {
+      lastGoogleMapsResolveError = err.name === 'AbortError'
+        ? 'timed out reaching the link resolver'
+        : `network error reaching the link resolver (${err.message})`;
+      console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError, err);
     }
   }
 
@@ -2108,6 +2225,14 @@ async function resolveTextOrQuickPlace(text, opts) {
     const saved = await getQuickPlace(keyword).catch(() => null);
     if (saved) return [{ label: saved.label, lat: saved.lat, lon: saved.lon }];
   }
+  // Same GPS keyword set geocodeNear already recognizes for "X near me" —
+  // extending it here means typing/pasting "me"/"my location" into any
+  // plain text-entry field (not just the near-search shortcut) resolves to
+  // a live GPS fix instead of being sent to Nominatim as literal free text,
+  // where no place is ever actually named "my location".
+  if (NEAR_ME_KEYWORDS.has(keyword)) {
+    return [await resolveCurrentLocationAnchor()]; // throws its own message on failure — same as a genuine geocoding failure
+  }
   return geocodeSearch(text, opts);
 }
 
@@ -2248,7 +2373,7 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
           onSelect(resolved);
           autoBookmarkGoogleMapsLink(resolved);
         } else {
-          showStatus("Couldn't resolve that Google Maps link.", 'error');
+          showStatus(lastGoogleMapsResolveError ? `Couldn't resolve that Google Maps link — ${lastGoogleMapsResolveError}.` : "Couldn't resolve that Google Maps link.", 'error');
         }
         return;
       }
@@ -2408,7 +2533,13 @@ async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
   if (isStale()) return;
 
   hideSuggestionList(el.placeSuggestions);
-  el.placeInput.value = '';
+  // A side that resolved to live GPS gets a clearer label than the raw
+  // "me"/"my location" the user typed — same sentinel useCurrentLocationFor
+  // already relabels a single field to, just phrased for this combined
+  // "X to Y" context instead of standing alone in one field.
+  const fromDisplay = fromResults[0]?.label === CURRENT_LOCATION_LABEL ? 'My current GPS location' : fromText;
+  const toDisplay = toResults[0]?.label === CURRENT_LOCATION_LABEL ? 'My current GPS location' : toText;
+  el.placeInput.value = (fromResults.length || toResults.length) ? `${fromDisplay} to ${toDisplay}` : '';
   // Start from a clean slate rather than relying on goToDirections' own
   // "only touch state.from/to if given a truthy value" behaviour, which
   // would otherwise leave a stale value from an unrelated earlier search
@@ -2981,8 +3112,8 @@ function cancelLongPress() {
 
 map.on('mousedown', (e) => startLongPress(e, false));
 map.on('touchstart', (e) => startLongPress(e, true));
-map.on('mousemove', (e) => moveLongPress(e));
-map.on('touchmove', (e) => moveLongPress(e));
+map.on('mousemove', (e) => moveLongPress(e, false));
+map.on('touchmove', (e) => moveLongPress(e, true));
 map.on('mouseup', cancelLongPress);
 map.on('touchend', cancelLongPress);
 map.on('dragstart', cancelLongPress);
@@ -2990,6 +3121,7 @@ map.on('dragstart', cancelLongPress);
 function startLongPress(e, isTouch) {
   if (state.navigating) return; // don't let a bump while driving pop up a location lookup
   if (isTouch) {
+    if (e.originalEvent.touches.length > 1) return; // a second finger already down — this is a pinch/rotate gesture, not a held tap
     suppressMouseUntil = Date.now() + 1000;
   } else if (Date.now() < suppressMouseUntil) {
     return; // this "mousedown" is just the browser's synthetic echo of the touch above
@@ -2998,10 +3130,15 @@ function startLongPress(e, isTouch) {
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     handleLongPress(e.lngLat);
-  }, 2000); // long enough that an ordinary tap-and-hold to inspect the map never accidentally drops a pin
+  }, 4000); // long enough that an ordinary tap-and-hold to inspect the map never accidentally drops a pin
 }
-function moveLongPress(e) {
+function moveLongPress(e, isTouch) {
   if (!longPressTimer || !longPressStartPoint) return;
+  // A second finger landing mid-hold (e.g. a pinch-zoom starting after the
+  // first finger was already down) fires touchmove continuously, so this is
+  // the reliable place to catch it even when startLongPress only ever saw
+  // the first touch point.
+  if (isTouch && e.originalEvent.touches.length > 1) { cancelLongPress(); return; }
   const dx = e.point.x - longPressStartPoint.x;
   const dy = e.point.y - longPressStartPoint.y;
   if (Math.hypot(dx, dy) > 10) cancelLongPress(); // a real drag/pan, not a held tap
@@ -3039,81 +3176,26 @@ async function handleLongPress(lngLat) {
 }
 
 /** What a dropped pin actually does depends on what's already in the
- * from/to fields — three cases, each matching the one obviously useful
- * thing to do with a place you just pointed at on the map:
+ * from/to fields — two cases, each matching the one obviously useful thing
+ * to do with a place you just pointed at on the map:
  *   - neither set: it's your first pick, so treat it exactly like picking a
  *     plain search result (shows the place card, "Get directions" etc.).
- *   - exactly one set: fill in whichever field is still empty — the other
- *     obvious next step.
- *   - both already set: ambiguous on purpose (start? destination? a stop
- *     along the way?), so ask via a small prompt instead of guessing. */
+ *   - one or both already set: set it as the destination — the most common
+ *     "I just found where I actually need to go" case, with no prompt to
+ *     dismiss first. Overwrites an existing destination on purpose. */
 function usePinnedPlace(picked) {
-  const hasFrom = !!state.from;
-  const hasTo = !!state.to;
-
-  if (!hasFrom && !hasTo) {
+  if (!state.from && !state.to) {
     el.placeInput.value = splitPlaceLabel(picked.label).primary;
     selectPlace(picked);
     return;
   }
 
-  if (hasFrom !== hasTo) {
-    if (!hasFrom) {
-      state.from = picked;
-      el.fromInput.value = shortLabel(picked);
-    } else {
-      state.to = picked;
-      el.toInput.value = shortLabel(picked);
-    }
-    updatePlanningMarkers();
-    el.planBtn.classList.remove('hidden');
-    showStatus(`${shortLabel(picked)} added.`, 'success');
-    return;
-  }
-
-  openPinnedPlacePrompt(picked);
-}
-
-let pinnedPlaceForPrompt = null;
-function openPinnedPlacePrompt(picked) {
-  pinnedPlaceForPrompt = picked;
-  el.pinnedPlaceName.textContent = shortLabel(picked);
-  if (el.pinnedPlacePrompt.classList.contains('hidden')) pushBackLayer(closePinnedPlacePrompt);
-  el.pinnedPlacePrompt.classList.remove('hidden');
-}
-function closePinnedPlacePrompt() {
-  el.pinnedPlacePrompt.classList.add('hidden');
-  pinnedPlaceForPrompt = null;
-}
-el.pinnedPlaceCancel.addEventListener('click', goBackInApp);
-el.pinnedPlaceUseFrom.addEventListener('click', () => {
-  const picked = pinnedPlaceForPrompt;
-  goBackInApp();
-  state.from = picked;
-  el.fromInput.value = shortLabel(picked);
-  updatePlanningMarkers();
-  el.planBtn.classList.remove('hidden');
-  showStatus(`Starting point set to ${shortLabel(picked)}.`, 'success');
-});
-el.pinnedPlaceUseTo.addEventListener('click', () => {
-  const picked = pinnedPlaceForPrompt;
-  goBackInApp();
   state.to = picked;
   el.toInput.value = shortLabel(picked);
   updatePlanningMarkers();
   el.planBtn.classList.remove('hidden');
   showStatus(`Destination set to ${shortLabel(picked)}.`, 'success');
-});
-el.pinnedPlaceUseStop.addEventListener('click', () => {
-  const picked = pinnedPlaceForPrompt;
-  goBackInApp();
-  const countBefore = el.stopsContainer.querySelectorAll('.stop-row').length;
-  addStopRow(picked); // shows its own error status and no-ops if MAX_STOPS is already reached
-  if (el.stopsContainer.querySelectorAll('.stop-row').length > countBefore) {
-    el.planBtn.classList.remove('hidden');
-    showStatus(`${shortLabel(picked)} added as a stop.`, 'success');
-  }
-});
+}
 
 // ============================================================================
 // Saved places — a real, browsable "Saved" screen (opened via the bookmark
@@ -3810,7 +3892,14 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
 
   await valhallaLimiter();
   const body = {
-    locations: [from, ...stops, to].map((p) => ({ lat: p.lat, lon: p.lon })),
+    // heading/heading_tolerance pass through when a location carries them
+    // (see triggerReroute) — Valhalla uses this to snap to the road edge
+    // facing the direction of travel; without it, a moving vehicle's
+    // reroute origin can snap to the wrong-facing edge and Valhalla's first
+    // maneuver becomes a U-turn just to correct that, not a real turn.
+    locations: [from, ...stops, to].map((p) => (
+      p.heading != null ? { lat: p.lat, lon: p.lon, heading: p.heading, heading_tolerance: p.heading_tolerance } : { lat: p.lat, lon: p.lon }
+    )),
     costing,
     units: 'kilometers',
   };
@@ -4184,6 +4273,7 @@ async function renderRouteOptions() {
   el.routeOptionsRow.innerHTML = '';
   if (state.routeOptions.length < 2) {
     el.routeOptionsRow.classList.add('hidden');
+    updateSheetPeekHeight();
     await awaitMapLoad();
     map.getSource('route-alternates').setData(emptyFeatureCollection());
     return;
@@ -4193,13 +4283,18 @@ async function renderRouteOptions() {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'route-option-card' + (i === state.selectedRouteIndex ? ' active' : '');
-    card.innerHTML = `<div class="route-option-time">${formatDuration(trip.summary.time)}</div>
-      <div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
+    // Distance, not Valhalla's time estimate, is the headline number here —
+    // that estimate is derived from road speed limits/class alone, with no
+    // live-traffic signal behind it at all (this app has none configured,
+    // by design — see README), so a "31 min" claim on the option cards
+    // would read as far more precise/reliable than it actually is.
+    card.innerHTML = `<div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
       ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}`;
     card.addEventListener('click', () => selectRouteOption(i));
     el.routeOptionsRow.appendChild(card);
   });
   el.routeOptionsRow.classList.remove('hidden');
+  updateSheetPeekHeight();
   updateAlternateRouteLines();
 }
 
@@ -4231,6 +4326,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.route = built;
   state.spokenFar = new Set();
   state.spokenNear = new Set();
+  state.spokenContinue = new Set();
   state.arrivedAnnounced = false;
 
   await awaitMapLoad();
@@ -4249,6 +4345,12 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   if (!state.navigating) renderRouteSummary(built.totalDistM, built.totalTimeS);
   el.bottomSheet.classList.remove('hidden');
   el.mapControls.classList.add('raised');
+  // Re-measure now that the sheet is actually visible — on first render of
+  // a trip, renderRouteOptions() (which also calls this) runs BEFORE this
+  // line, while the sheet (and everything inside it) still has zero height
+  // under display:none, which would otherwise leave the peek height stuck
+  // at the 136px floor even when route options are shown.
+  updateSheetPeekHeight();
 
   if (state.travelMode === 'walk') updateElevationProfileForRoute();
   else hideElevationProfile();
@@ -4258,7 +4360,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   // working from in-memory state either way, this only affects whether it
   // survives a reload.
   try {
-    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode });
+    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: false });
   } catch (err) {
     showStatus('Could not save trip progress locally: ' + err.message, 'error');
   }
@@ -4448,6 +4550,7 @@ el.planBtn.addEventListener('click', async () => {
       el.startNavBtn.classList.add('hidden'); // no live transit navigation — see scope note above
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
+      updateSheetPeekHeight(); // see the same call in the drive/walk branch below for why this needs to happen after the buttons above are actually visible
       hideRouteSearchFeature(); // along-route search is drive-only (see scope note above addStopFromPoi)
       hideRouteChipsInline();
       clearStatus();
@@ -4464,6 +4567,12 @@ el.planBtn.addEventListener('click', async () => {
       el.startNavBtn.classList.remove('hidden');
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
+      // renderRoute's own peek-height measurement (above) runs before these
+      // buttons become visible — a hidden button contributes zero to its
+      // parent's height, so re-measuring now (once all of #sheet-actions'
+      // real content for this state is actually visible) is what makes the
+      // peek height account for the buttons' true height correctly.
+      updateSheetPeekHeight();
       showRouteChipsInline(); // not navigating yet — see #route-chips-inline vs the FAB in startNavigation
       const warning = checkRoutePlausibility(trip, state.from, state.to, stops.length > 0);
       if (warning) showStatus(warning, 'error'); else clearStatus();
@@ -4500,12 +4609,28 @@ el.planBtn.addEventListener('click', async () => {
 // Pointer Events (not separate mouse/touch listeners) since this is a plain
 // DOM button outside the map canvas — no risk of the touch/synthetic-mouse
 // double-fire that the map's own long-press handling has to guard against.
-const SHEET_PEEK_PX = 136; // keep in sync with #bottom-sheet's base max-height in style.css
+let sheetPeekPx = 136; // updated by updateSheetPeekHeight() below — 136 is only the pre-first-measurement fallback, matching style.css's own fallback
 function sheetHalfPx() { return window.innerHeight * 0.42; } // keep in sync with .half's 42vh — the middle stop, so a full drag-up doesn't have to mean "barely any map left"
 function sheetExpandedPx() { return window.innerHeight * 0.72; } // keep in sync with .expanded's 72vh
 
+/** The sheet's default "peek" landing state needs to fit the handle/summary,
+ * route options (only present with 2+ meaningfully different routes), and
+ * the action buttons all at once with no scrolling — a fixed guess clips
+ * whichever of those is present but wasn't accounted for, so this measures
+ * the real rendered height instead. Call whenever that content's presence
+ * or size could have changed (route rendered, alternates shown/hidden). */
+function updateSheetPeekHeight() {
+  const routeOptionsHeight = el.routeOptionsRow.classList.contains('hidden') ? 0 : el.routeOptionsRow.offsetHeight;
+  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + el.sheetActions.offsetHeight);
+  // Only actually apply it as the live inline max-height while at rest in
+  // the peek state — .half/.expanded's own CSS max-height must stay in
+  // charge otherwise, and an active drag is already driving this same
+  // inline property itself (see endSheetDrag).
+  if (!sheetDragging && currentSheetState() === 'peek') el.bottomSheet.style.maxHeight = `${sheetPeekPx}px`;
+}
+
 const SHEET_STOPS = [
-  { state: 'peek', px: () => SHEET_PEEK_PX },
+  { state: 'peek', px: () => sheetPeekPx },
   { state: 'half', px: sheetHalfPx },
   { state: 'expanded', px: sheetExpandedPx },
 ];
@@ -4515,9 +4640,27 @@ function currentSheetState() {
   return 'peek';
 }
 function setSheetState(targetState) {
+  // .sheet-animate (style.css) is what actually makes this change animate —
+  // deliberately not a permanent part of #bottom-sheet's own rule, since a
+  // transition active at the same time updateSheetPeekHeight writes a plain
+  // measurement (route render, resize, ...) is what caused the height to
+  // get stuck instead of ever reaching the real target. Only ever present
+  // for the duration of a deliberate state change like this one.
+  el.bottomSheet.classList.add('sheet-animate');
   el.bottomSheet.classList.toggle('half', targetState === 'half');
   el.bottomSheet.classList.toggle('expanded', targetState === 'expanded');
+  // .half/.expanded's own CSS max-height takes over once either class is
+  // set (endSheetDrag already cleared any inline override before calling
+  // this) — landing back on peek needs its inline height reapplied,
+  // since CSS alone only knows the static 136px fallback, not the
+  // measured sheetPeekPx.
+  if (targetState === 'peek') el.bottomSheet.style.maxHeight = `${sheetPeekPx}px`;
+  setTimeout(() => el.bottomSheet.classList.remove('sheet-animate'), 300);
 }
+// A rotation/viewport resize can change how the route-option cards or
+// action buttons wrap onto lines, which changes their real height —
+// re-measure rather than let the peek state go stale until the next route.
+window.addEventListener('resize', () => { if (!el.bottomSheet.classList.contains('hidden')) updateSheetPeekHeight(); });
 
 let sheetDragStartY = null;
 let sheetDragStartHeight = null;
@@ -4537,7 +4680,7 @@ el.sheetHandle.addEventListener('pointermove', (e) => {
   if (!sheetDragging) return;
   const dy = sheetDragStartY - e.clientY; // positive while dragging upward
   sheetDragDistance = Math.max(sheetDragDistance, Math.abs(dy));
-  const height = Math.min(sheetExpandedPx(), Math.max(SHEET_PEEK_PX, sheetDragStartHeight + dy));
+  const height = Math.min(sheetExpandedPx(), Math.max(sheetPeekPx, sheetDragStartHeight + dy));
   el.bottomSheet.style.maxHeight = `${height}px`;
 });
 
@@ -4556,7 +4699,7 @@ function endSheetDrag(e) {
     return;
   }
   const dy = sheetDragStartY - e.clientY;
-  const finalHeight = Math.min(sheetExpandedPx(), Math.max(SHEET_PEEK_PX, sheetDragStartHeight + dy));
+  const finalHeight = Math.min(sheetExpandedPx(), Math.max(sheetPeekPx, sheetDragStartHeight + dy));
   // Snaps to whichever of the three stops the drag ended nearest to, rather
   // than a binary "past the midpoint or not" — dragging up from peek can now
   // land on the half stop instead of always jumping all the way to expanded.
@@ -4714,7 +4857,7 @@ async function handleSharedGoogleMapsLink(text) {
     selectPlace(resolved);
     autoBookmarkGoogleMapsLink(resolved);
   } else {
-    showStatus("That shared link couldn't be resolved to a place.", 'error');
+    showStatus(lastGoogleMapsResolveError ? `That shared link couldn't be resolved — ${lastGoogleMapsResolveError}.` : "That shared link couldn't be resolved to a place.", 'error');
   }
 }
 
@@ -4887,6 +5030,19 @@ function updateActiveManeuver(traveledM) {
     return; // navigation just ended — nothing below is still meaningful
   }
 
+  // "Continue straight for X km" — spoken once, the moment a sufficiently
+  // long straight-through maneuver (Valhalla type 8 kContinue / 22
+  // kStayStraight) BECOMES current, not as an approach cue like the turn
+  // prompts below. This is also what covers maneuver 0 on a route that
+  // starts with a long straight leg: currentIdx is 0 from the very first
+  // fix, so it's included here same as any later straight segment — the
+  // upcoming-maneuver voice cues below never speak the current maneuver.
+  const current = maneuvers[currentIdx];
+  if (CONTINUE_STRAIGHT_TYPES.has(current.type) && current.lengthM >= CONTINUE_STRAIGHT_MIN_LENGTH_M && !state.spokenContinue.has(currentIdx)) {
+    state.spokenContinue.add(currentIdx);
+    speak(`Continue straight for ${formatDistanceForSpeech(current.lengthM)}.`);
+  }
+
   if (nextIdx !== null) {
     const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
     highlightManeuver(nextIdx);
@@ -4938,7 +5094,12 @@ function checkDeviation(offsetM, currentLngLat) {
     if (Date.now() - state.offRouteSince > CONFIG.DEVIATION_DURATION_MS) {
       triggerReroute(currentLngLat);
     }
-  } else {
+  } else if (offsetM <= CONFIG.DEVIATION_CLEAR_THRESHOLD_M) {
+    // Only clear once meaningfully back under the trip threshold (see
+    // DEVIATION_CLEAR_THRESHOLD_M) — a bare dip just below it would
+    // otherwise flap the timer indefinitely on a road that runs close to
+    // the original route without ever accumulating enough continuous
+    // deviation to actually reroute.
     state.offRouteSince = null;
   }
 }
@@ -4967,7 +5128,15 @@ async function triggerReroute(currentLngLat) {
 
   showStatus('Off route — recalculating…', 'info', { sticky: true });
   try {
+    // A heading hint (when we have a real one — see state.lastHeading in
+    // onPositionUpdate) tells Valhalla which direction of the road edge to
+    // snap the new route's start to, so it doesn't emit a U-turn just to
+    // reorient onto an edge facing the wrong way.
     const from = { lat: currentLngLat[1], lon: currentLngLat[0] };
+    if (typeof state.lastHeading === 'number' && !Number.isNaN(state.lastHeading)) {
+      from.heading = Math.round(state.lastHeading);
+      from.heading_tolerance = 45;
+    }
     // Only route through stops still ahead — currentLegIndex tracks how many
     // have already been visited, so a stop you've already been to is never
     // routed back through on a reroute. Sliced from state.route.stops (the
@@ -5028,7 +5197,11 @@ function onPositionUpdate(pos) {
     headingDeg = heading;
   } else if (state.lastFix) {
     const movedM = turf.distance([state.lastFix.lng, state.lastFix.lat], lngLat, { units: 'meters' });
-    if (movedM > 2) { // ignore GPS jitter when barely moving
+    // Low enough to still track a slow turn (a 2m gate meant the map could
+    // stay pointed the pre-turn direction for a couple of fixes right after
+    // turning at low speed) while high enough that plain GPS jitter at rest
+    // (sub-metre) still doesn't spin the heading around at random.
+    if (movedM > 0.5) {
       headingDeg = (turf.bearing([state.lastFix.lng, state.lastFix.lat], lngLat) + 360) % 360;
     }
   }
@@ -5052,6 +5225,24 @@ function onPositionUpdate(pos) {
 
   updateActiveManeuver(traveledM);
   checkDeviation(offsetM, lngLat);
+  resaveNavigatingTripThrottled();
+}
+
+let lastTripResaveAt = 0;
+/** Keeps the persisted "currently navigating" trip record (see
+ * startNavigation) reflecting the route actually being driven right now —
+ * a reroute swaps state.route for a new one mid-drive, so without this the
+ * resume-on-reload path could restart navigation on a route that's since
+ * been superseded. Throttled to well below GPS fix cadence purely to avoid
+ * hammering IndexedDB on every tick; losing a few seconds of "how far
+ * along" precision on the rare reload-mid-drive doesn't matter since a
+ * fresh GPS fix re-snaps position immediately either way. */
+function resaveNavigatingTripThrottled() {
+  const now = Date.now();
+  if (now - lastTripResaveAt < 15000) return;
+  lastTripResaveAt = now;
+  saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+    .catch(() => { /* non-fatal — see startNavigation's own save for the same reasoning */ });
 }
 
 function onPositionError(err) {
@@ -5085,13 +5276,28 @@ function navigatingBackGuard() {
 // ============================================================================
 let wakeLockSentinel = null;
 
-async function acquireWakeLock() {
+async function acquireWakeLock(isRetry = false) {
   if (!('wakeLock' in navigator)) return; // unsupported browser — quietly do nothing
   try {
     wakeLockSentinel = await navigator.wakeLock.request('screen');
-    wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+    wakeLockSentinel.addEventListener('release', () => {
+      wakeLockSentinel = null;
+      // The lock can be revoked by the platform (e.g. a low-battery-mode
+      // policy change) while the tab stays visible the whole time — nothing
+      // else would ever notice and re-request it in that case, since
+      // visibilitychange only fires on an actual hide/show transition.
+      if (state.navigating) acquireWakeLock();
+    });
   } catch (err) {
-    wakeLockSentinel = null; // e.g. denied, low battery mode, tab not visible yet — never blocks navigation
+    wakeLockSentinel = null;
+    // Some Android Chrome versions can spuriously reject a request made
+    // right at the instant a tab becomes visible again, before the tab is
+    // *quite* fully "active" from the Wake Lock API's own perspective —
+    // one retry shortly after covers that without retrying forever if the
+    // rejection is for a real, sustained reason (denied, battery saver).
+    if (state.navigating && !isRetry) {
+      setTimeout(() => { if (state.navigating && !wakeLockSentinel) acquireWakeLock(true); }, 1000);
+    }
   }
 }
 
@@ -5115,6 +5321,18 @@ async function startNavigation() {
     showStatus('This browser does not support GPS location, so live navigation is not available.', 'error');
     return;
   }
+  // Every source this function touches below (route-alternates, puck) is
+  // only ever added inside mapLoad's own .then() — normally guaranteed by
+  // the time a real "Start navigation" tap is even possible (renderRoute
+  // already awaited this earlier in that flow), but the resume-on-reload
+  // path (see the startup IIFE) can reach here as the very first thing to
+  // touch the map at all, before that's necessarily settled.
+  try {
+    await awaitMapLoad();
+  } catch (err) {
+    showStatus(err.message, 'error');
+    return;
+  }
 
   state.navigating = true;
   state.followMode = true;
@@ -5123,9 +5341,18 @@ async function startNavigation() {
   state.pendingRerouteFrom = null;
   state.spokenFar = new Set();
   state.spokenNear = new Set();
+  state.spokenContinue = new Set();
   state.arrivedAnnounced = false;
   state.lastFix = null;
   acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
+
+  // Marks the persisted trip as actively navigating (not just planned), so
+  // if Android discards this tab under memory pressure and reloads it, the
+  // startup resume path (below) restarts live navigation instead of
+  // dropping back to the "tap Start again" planning screen — see
+  // onPositionUpdate for the periodic re-save that keeps this current.
+  saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+    .catch(() => { /* non-fatal: worst case a reload lands on the planning screen instead of resuming live */ });
 
   forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
   resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
@@ -5153,9 +5380,12 @@ async function startNavigation() {
   el.endNavBtn.classList.remove('hidden');
   updateLocateBtnState();
 
-  // The live puck takes over as the "where am I" marker.
+  // The live puck takes over as the "where am I" marker — stop the idle
+  // (non-navigating) location watch entirely rather than leaving it running
+  // redundantly alongside navigation's own watch.
   if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
   if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
+  if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; }
 
   showStatus('Getting your location…', 'info');
   try {
@@ -5263,16 +5493,30 @@ if (shareTargetText) {
         renderRouteSummary(state.route.totalDistM, state.route.totalTimeS);
         el.bottomSheet.classList.remove('hidden');
         el.mapControls.classList.add('raised');
-        el.startNavBtn.classList.remove('hidden');
-        el.cancelRouteBtn.classList.remove('hidden');
-        el.shareRouteBtn.classList.remove('hidden');
-        showRouteChipsInline(); // currentTrip only ever persists a drive/walk route not yet navigating (transit has none, and navigating never restores)
-        if (state.travelMode === 'walk') updateElevationProfileForRoute();
         goToDirections({ from: state.from, to: state.to }); // also clears stops — repopulate after
-        replaceTopBackLayer(cancelPlannedRoute); // a route is already active here, not just the bare directions form
         (saved.stops || []).forEach((stop) => addStopRow(stop));
         updatePlanningMarkers();
-        showStatus('Restored your in-progress route.', 'info');
+        replaceTopBackLayer(cancelPlannedRoute); // a route is already active here, not just the bare directions form
+
+        if (saved.navigating) {
+          // The tab was actively navigating, not just planned, when this
+          // reload happened — most likely Android discarding a backgrounded
+          // tab under memory pressure (a real OS constraint no web app can
+          // prevent, only work around like this). Resume straight back into
+          // live navigation — GPS watch, wake lock, voice guidance — instead
+          // of dropping to the "tap Start again" planning screen, which is
+          // what used to make it feel like navigation had simply stopped.
+          showStatus('Resuming your drive…', 'info');
+          startNavigation();
+        } else {
+          el.startNavBtn.classList.remove('hidden');
+          el.cancelRouteBtn.classList.remove('hidden');
+          el.shareRouteBtn.classList.remove('hidden');
+          updateSheetPeekHeight(); // see the drive/walk plan-handler branch for why this needs to run after the buttons above are visible, not before
+          showRouteChipsInline();
+          if (state.travelMode === 'walk') updateElevationProfileForRoute();
+          showStatus('Restored your in-progress route.', 'info');
+        }
       }
     } catch (err) {
       // Non-fatal: just start fresh at the planning screen.

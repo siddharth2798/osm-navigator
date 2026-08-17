@@ -66,7 +66,7 @@ export async function startLocationWatch(onPosition, onError, geoOptions, notifi
       backgroundMessage: notification.message || 'Tracking your location for turn-by-turn guidance.',
       requestPermissions: true,
       stale: false,
-      distanceFilter: 5, // metres; filters GPS noise at the native layer before it ever reaches JS
+      distanceFilter: 2, // metres; filters GPS noise at the native layer before it ever reaches JS — low enough that a slow turn still delivers fixes promptly
     },
     (location, error) => {
       if (error) { onError(error); return; }

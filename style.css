@@ -479,7 +479,7 @@ button {
    document's flow. No dimming backdrop, though, consistent with every
    other prompt here. */
 
-#save-to-list-prompt, #list-name-prompt, #pinned-place-prompt {
+#save-to-list-prompt, #list-name-prompt {
   position: fixed;
   left: 50%;
   top: 50%;
@@ -494,19 +494,7 @@ button {
   box-shadow: var(--shadow);
   padding: 12px 14px;
 }
-#save-to-list-prompt.hidden, #list-name-prompt.hidden, #pinned-place-prompt.hidden { display: none; }
-
-.pinned-place-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
-.pinned-place-options button {
-  width: 100%;
-  padding: 11px;
-  font-size: 14px;
-  font-weight: 600;
-  text-align: left;
-  background: var(--panel-2);
-  color: var(--text);
-}
-.pinned-place-options button:active { background: var(--accent); color: #fff; }
+#save-to-list-prompt.hidden, #list-name-prompt.hidden { display: none; }
 
 .save-to-list-place-name { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
 .list-name-prompt-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
@@ -777,12 +765,26 @@ button {
   background: var(--panel);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -8px 30px rgba(0,0,0,0.5);
+  /* Overridden per-render from JS as an inline style (see
+     updateSheetPeekHeight in app.js) to the actual measured height of the
+     handle + route options (when shown) + action buttons, so all of that is
+     always visible with no scrolling in this default landing state — this
+     136px is only the fallback for the brief moment before JS first runs. */
   max-height: 136px;
   overflow: hidden;
-  transition: max-height 0.25s ease;
   display: flex;
   flex-direction: column;
 }
+/* Deliberately NOT a permanent part of #bottom-sheet's own rule — a
+   transition on max-height driven by the same JS that ALSO writes
+   max-height as a plain measurement (updateSheetPeekHeight) confuses
+   Chrome's transition machinery (confirmed directly: the computed height
+   can get stuck on a stale or partway value indefinitely instead of ever
+   reaching the real target). Applied only for the moment a drag/tap
+   actually changes state (see setSheetState) so that still animates
+   smoothly, while every other max-height write (peek re-measurement on
+   route render, resize, etc.) stays instant and reliable. */
+.sheet-animate { transition: max-height 0.25s ease; }
 /* vh alone can be taller than what's actually visible while the mobile
    browser's own address bar is showing (it doesn't shrink when the chrome
    does) — bottom:0-anchored content sized off it can grow tall enough to
@@ -825,13 +827,13 @@ button {
 #sheet-actions {
   display: flex;
   flex-shrink: 0;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 16px 10px;
 }
 #sheet-actions button {
   flex: 1;
-  padding: 13px;
-  font-size: 15px;
+  padding: 9px;
+  font-size: 13px;
   font-weight: 600;
 }
 #start-nav-btn { background: var(--accent-2); color: #06240f; }
@@ -864,8 +866,7 @@ button {
   text-align: left;
 }
 .route-option-card.active { border-color: var(--accent); background: rgba(61,139,253,0.14); }
-.route-option-time { font-size: 15px; font-weight: 700; }
-.route-option-dist { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+.route-option-dist { font-size: 15px; font-weight: 700; }
 .route-option-tag { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 3px; }
 
 /* Walk-mode elevation profile — static chart, computed once per route. */

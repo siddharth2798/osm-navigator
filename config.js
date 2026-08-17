@@ -70,8 +70,8 @@ export const CONFIG = {
   // metres of the upcoming maneuver ("in X meters, turn right" — see speak()
   // call sites in app.js). Below VOICE_NEAR_DISTANCE_M, a second, shorter
   // reminder is spoken with no distance prefix ("turn right").
-  VOICE_PROMPT_DISTANCE_M: 200,
-  VOICE_NEAR_DISTANCE_M: 30,
+  VOICE_PROMPT_DISTANCE_M: 220,
+  VOICE_NEAR_DISTANCE_M: 80,
 
   // Once the live position is within this many metres of the destination,
   // navigation ends automatically (same as tapping "End") and "You have
@@ -88,6 +88,16 @@ export const CONFIG = {
   // app automatically requests a new route. Lowered from the original 5000ms
   // alongside DEVIATION_THRESHOLD_M, for the same reason.
   DEVIATION_DURATION_MS: 3000,
+
+  // Deliberately lower than DEVIATION_THRESHOLD_M (hysteresis): a road that
+  // runs close to/parallel with the original route for a stretch can have
+  // the driver's offset drift back and forth right around the trip
+  // threshold, resetting the off-route timer on every dip below it and
+  // never accumulating DEVIATION_DURATION_MS of continuous deviation — so a
+  // real move onto a different road never actually triggers a reroute. Only
+  // clearing the timer once offset drops meaningfully lower (not just
+  // barely back under the trip line) avoids that flapping.
+  DEVIATION_CLEAR_THRESHOLD_M: 20,
 
   // Camera behaviour while auto-following during navigation.
   NAV_ZOOM: 17,
