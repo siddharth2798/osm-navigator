@@ -31,6 +31,7 @@ const el = {
   resolverDebugLogEl: document.getElementById('resolver-debug-log'),
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
+  debugModeToggle: document.getElementById('debug-mode-toggle'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
   placeInput: document.getElementById('place-input'),
@@ -508,14 +509,30 @@ function ordinal(n) {
 /** Valhalla's own roundabout-exit phrasing varies by version/locale —
  * building it explicitly here guarantees the "Take the 2nd exit" wording
  * Google Maps uses, rather than depending on whatever Valhalla's own
- * template happens to say. `roundabout_exit_count` (documented directly on
- * the exit maneuver, type 27/kRoundaboutExit) is the exit number counting
- * from the entry point — the 1st exit is the first spoke you pass, not
- * necessarily "straight across". */
-function applyRoundaboutPhrasing(instruction, m) {
-  if (m.type !== 27 || !m.roundabout_exit_count) return instruction;
-  const streetPart = m.street_names && m.street_names.length ? ` onto ${m.street_names[0]}` : '';
-  return `Take the ${ordinal(m.roundabout_exit_count)} exit at the roundabout${streetPart}.`;
+ * template happens to say. `roundabout_exit_count` is the exit number
+ * counting from the entry point — the 1st exit is the first spoke you pass,
+ * not necessarily "straight across".
+ *
+ * Verified live against the public Valhalla server (Place Charles de
+ * Gaulle, Paris): `roundabout_exit_count` actually arrives on the
+ * kRoundaboutEnter maneuver (type 26), not kRoundaboutExit (type 27) as the
+ * API docs describe — the exit maneuver had no such field at all. Checking
+ * only type 27 (the original shape of this function) meant this phrasing
+ * silently never fired for a real roundabout; both types are checked here
+ * so it works regardless of which one actually carries the count. On the
+ * enter maneuver, `street_names` is the roundabout's own name, not the road
+ * being exited onto — that's on `nextM`, the exit maneuver that always
+ * immediately follows. */
+function applyRoundaboutPhrasing(instruction, m, nextM) {
+  const isEnter = m.type === 26;
+  const isExit = m.type === 27;
+  if (!isEnter && !isExit) return instruction;
+  const exitCount = m.roundabout_exit_count || (isEnter && nextM && nextM.roundabout_exit_count);
+  if (!exitCount) return instruction;
+  const exitStreetSource = isEnter ? nextM : m;
+  const streetPart = exitStreetSource && exitStreetSource.street_names && exitStreetSource.street_names.length
+    ? ` onto ${exitStreetSource.street_names[0]}` : '';
+  return `Take the ${ordinal(exitCount)} exit at the roundabout${streetPart}.`;
 }
 
 function buildRouteState(trip, stops = []) {
@@ -528,7 +545,7 @@ function buildRouteState(trip, stops = []) {
 
     legManeuvers.forEach((m, mIdx) => {
       const lengthM = (m.length || 0) * 1000; // requested units: kilometers
-      let instruction = applyRoundaboutPhrasing(rewordInstruction(m.instruction || 'Continue'), m);
+      let instruction = applyRoundaboutPhrasing(rewordInstruction(m.instruction || 'Continue'), m, legManeuvers[mIdx + 1]);
 
       const isArrivalType = m.type >= 4 && m.type <= 6;
 
@@ -1879,16 +1896,29 @@ const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com'
 // (and, on a failure, a raw snippet of the server's response), which is more
 // than a personal address-book app should put on screen unasked — a
 // screenshot taken to report an unrelated bug, or someone glancing at the
-// phone mid-paste, would otherwise see it every single time. Opt in with
-// ?debug=resolver (persists across reloads via localStorage so a
-// troubleshooting session doesn't need the query param on every launch);
-// ?debug=off turns it back off. console.log stays unconditional either way,
-// so a connected remote-debugger session always sees the trace regardless.
+// phone mid-paste, would otherwise see it every single time. Two ways to
+// turn it on, both backed by the same localStorage flag so either sticks
+// across reloads: the "Debug mode" toggle in the docs panel's Developer
+// tools section (see below), or ?debug=resolver in the address bar
+// (?debug=off turns it back off). console.log stays unconditional either
+// way, so a connected remote-debugger session always sees the trace
+// regardless of whether the on-screen panel is enabled.
 const RESOLVER_DEBUG_STORAGE_KEY = 'resolverDebugEnabled';
 const debugParam = new URLSearchParams(location.search).get('debug');
 if (debugParam === 'resolver') localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
 else if (debugParam === 'off') localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
-const resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
+let resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
+if (el.debugModeToggle) {
+  el.debugModeToggle.classList.toggle('active', resolverDebugEnabled);
+  el.debugModeToggle.setAttribute('aria-checked', String(resolverDebugEnabled));
+  el.debugModeToggle.addEventListener('click', () => {
+    resolverDebugEnabled = !resolverDebugEnabled;
+    if (resolverDebugEnabled) localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
+    else localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
+    el.debugModeToggle.classList.toggle('active', resolverDebugEnabled);
+    el.debugModeToggle.setAttribute('aria-checked', String(resolverDebugEnabled));
+  });
+}
 
 let resolverDebugStartTs = null;
 function resolverDebugReset() {
@@ -4813,7 +4843,13 @@ function sheetExpandedPx() { return window.innerHeight * 0.72; } // keep in sync
  * or size could have changed (route rendered, alternates shown/hidden). */
 function updateSheetPeekHeight() {
   const routeOptionsHeight = el.routeOptionsRow.classList.contains('hidden') ? 0 : el.routeOptionsRow.offsetHeight;
-  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + el.sheetActions.offsetHeight);
+  // #maneuver-list has no .hidden toggle of its own (unlike #poi-results-list)
+  // — it stays in normal flow even with zero <li> items, and its own
+  // padding-bottom (style.css) still gives it real height even then. Live
+  // testing confirmed this: the sum below without this term consistently
+  // undercounted the sheet's actual scrollHeight by exactly that padding,
+  // clipping the bottom of the peek state by a few pixels.
+  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
   // Only actually apply it as the live inline max-height while at rest in
   // the peek state — .half/.expanded's own CSS max-height must stay in
   // charge otherwise, and an active drag is already driving this same
@@ -5728,7 +5764,13 @@ if (shareTargetText) {
         }
       }
     } catch (err) {
-      // Non-fatal: just start fresh at the planning screen.
+      // Non-fatal: fall back to a fresh planning screen rather than a stuck
+      // page — but silently, this left no trace of why an in-progress trip
+      // didn't come back (confirmed live: a slow map load on resume throws
+      // exactly this way, with nothing shown to the user beyond "the app
+      // just forgot my trip"). A plain-language status at least explains it.
+      console.error('Failed to restore in-progress trip:', err);
+      showStatus("Couldn't restore your in-progress trip — starting fresh.", 'error');
     }
   })();
 }
