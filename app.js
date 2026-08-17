@@ -8,6 +8,7 @@ import {
   setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch } from './native-location.js';
+import { OpenLocationCode } from './vendor/open-location-code.js';
 
 // maplibregl and turf are loaded as plain <script> globals in index.html.
 if (typeof maplibregl === 'undefined' || typeof turf === 'undefined') {
@@ -1983,6 +1984,44 @@ async function resolveGoogleMapsLink(text) {
     return { label: parsed.name || 'Pinned location', lat: parsed.lat, lon: parsed.lon, sourceUrl: parsed.matchedUrl };
   }
   if (parsed.name) {
+    // Places with no formal street address (a sea wall, an unnamed junction,
+    // a plot of land) get a name that leads with a Plus Code — Google's own
+    // open, offline-decodable encoding of the approximate location — instead
+    // of a resolvable address, e.g. "R72F+2J Chellanam Sea Wall, Chellanam,
+    // Kerala 682008". Decoding it directly recovers the actual pin instead
+    // of falling back to a same-named search that OSM has no chance of
+    // matching (that's the whole reason this feature exists — the place
+    // isn't in OSM's data at all). Needs an approximate reference point to
+    // anchor the code (a short code like this one is only unambiguous within
+    // ~1 degree), which the locality text right after the code supplies.
+    const plusCodeMatch = parsed.name.match(/^([23456789CFGHJMPQRVWX]{2,8}\+[23456789CFGHJMPQRVWX]{2,7})(?:[\s,]+(.*))?$/i);
+    if (plusCodeMatch) {
+      const plusCode = plusCodeMatch[1].toUpperCase();
+      const remainder = (plusCodeMatch[2] || '').trim();
+      // Prefer the text after the first comma (locality/state/pincode) over
+      // the full remainder, which usually leads with a landmark name Nominatim
+      // has no chance of geocoding either — the locality alone is plenty
+      // precise enough to anchor a short code.
+      const commaIdx = remainder.indexOf(',');
+      const referenceQuery = commaIdx >= 0 ? remainder.slice(commaIdx + 1).trim() : remainder;
+      if (referenceQuery) {
+        resolverDebugLog(`Name starts with Plus Code "${plusCode}" — geocoding "${referenceQuery}" as a reference point…`);
+        try {
+          const refResults = await geocodeSearch(referenceQuery, {});
+          if (refResults && refResults[0]) {
+            const olc = new OpenLocationCode();
+            const fullCode = olc.recoverNearest(plusCode, refResults[0].lat, refResults[0].lon);
+            const area = olc.decode(fullCode);
+            resolverDebugLog(`Done: Plus Code decoded (anchored at ${refResults[0].lat}, ${refResults[0].lon}) to ${area.latitudeCenter}, ${area.longitudeCenter}`, 'success');
+            return { label: parsed.name, lat: area.latitudeCenter, lon: area.longitudeCenter, sourceUrl: parsed.matchedUrl };
+          }
+          resolverDebugLog(`No geocode result for "${referenceQuery}" — can't anchor the Plus Code, falling back to a plain search.`, 'error');
+        } catch (err) {
+          resolverDebugLog(`Plus Code decode failed (${err.message || err}) — falling back to a plain search.`, 'error');
+        }
+      }
+    }
+
     resolverDebugLog(`Falling back to a Nominatim search for "${parsed.name}"…`);
     try {
       const results = await geocodeSearch(parsed.name, {});
