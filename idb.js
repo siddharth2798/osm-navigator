@@ -17,8 +17,19 @@ import { CONFIG } from './config.js';
 const DB_NAME = 'navigator-db';
 const DB_VERSION = 3;
 
+// A fresh indexedDB.open() per call (the original shape here) never closes
+// the connection it creates, so every single read/write — including the
+// getFavorites()/getRecentTrips() pair fired on every focus of a search
+// field, and the saveCurrentTrip() fired every 15s throughout a drive —
+// permanently leaked one more open IDB connection for the rest of the tab's
+// lifetime. Caching the one open connection and reusing it is the standard
+// pattern; onversionchange (another tab loading a newer DB_VERSION) closes
+// it and clears the cache so the next call reopens cleanly instead of
+// hanging against a connection this tab is now blocking an upgrade on.
+let dbPromise = null;
 function openDb() {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -48,9 +59,14 @@ function openDb() {
         db.createObjectStore('quickPlaces', { keyPath: 'id' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('Could not open the local database.'));
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
+    req.onerror = () => { dbPromise = null; reject(req.error || new Error('Could not open the local database.')); };
   });
+  return dbPromise;
 }
 
 function reqToPromise(req) {
