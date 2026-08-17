@@ -8,7 +8,11 @@ import {
   setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch } from './native-location.js';
-import { OpenLocationCode } from './vendor/open-location-code.js';
+// Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
+// below) rather than statically here — it's a ~28KB module only ever
+// exercised by the rare case of a Google Maps place with no street address,
+// so there's no reason to make every single page load fetch/parse/evaluate
+// it up front.
 
 // maplibregl and turf are loaded as plain <script> globals in index.html.
 if (typeof maplibregl === 'undefined' || typeof turf === 'undefined') {
@@ -916,6 +920,21 @@ async function enableDeviceOrientation() {
   deviceOrientationActive = true;
 }
 
+/** The only consumer of these listeners is the idle "my location" marker
+ * (compassHeadingDeg is read nowhere else — active navigation always has a
+ * real GPS heading and never calls enableDeviceOrientation at all), so once
+ * that's turned off there's no reason left to keep the device's
+ * orientation/compass sensor hardware active and the JS engine processing a
+ * steady stream of events (tens of Hz is common) for the rest of the tab's
+ * lifetime. Called everywhere state.idleLocationWatchId is cleared. */
+function disableDeviceOrientation() {
+  if (!deviceOrientationActive) return;
+  window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation);
+  window.removeEventListener('deviceorientation', handleDeviceOrientation);
+  deviceOrientationActive = false;
+  compassHeadingDeg = null;
+}
+
 /** (Re)places the origin/destination pins to match state.from/state.to.
  * Called whenever a suggestion is picked, and again after navigation ends. */
 /** Reads the picked place for every stop row currently in the DOM, in visit
@@ -995,6 +1014,7 @@ el.locateBtn.addEventListener('click', async () => {
     state.idleLocationWatchId = null;
     if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
     el.locateBtn.classList.remove('active');
+    disableDeviceOrientation();
     return;
   }
   await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
@@ -1015,7 +1035,17 @@ el.locateBtn.addEventListener('click', async () => {
       const headingDeg = typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : compassHeadingDeg;
       updateMyLocationMarker(lngLat, headingDeg);
     },
-    () => showStatus('Could not get your location. Check location permissions.', 'error'),
+    () => {
+      // Without this reset, the very next tap hits the "already sharing,
+      // turn it off" branch above (state.idleLocationWatchId is still a
+      // non-null, dead id) and silently no-ops — the user has to tap twice
+      // to actually retry after e.g. granting a permission they'd denied.
+      navigator.geolocation.clearWatch(state.idleLocationWatchId);
+      state.idleLocationWatchId = null;
+      el.locateBtn.classList.remove('active');
+      disableDeviceOrientation();
+      showStatus('Could not get your location. Check location permissions.', 'error');
+    },
     CONFIG.GEOLOCATION_OPTIONS,
   );
 });
@@ -1845,15 +1875,30 @@ const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com'
 // attempt so the panel always shows exactly one run's trace, never a mix of
 // several. resolverDebugLog() timestamps each line relative to that reset
 // and un-hides the panel, so it appears the moment there's anything to show.
+// Off by default: the log includes exact GPS coordinates and place names
+// (and, on a failure, a raw snippet of the server's response), which is more
+// than a personal address-book app should put on screen unasked — a
+// screenshot taken to report an unrelated bug, or someone glancing at the
+// phone mid-paste, would otherwise see it every single time. Opt in with
+// ?debug=resolver (persists across reloads via localStorage so a
+// troubleshooting session doesn't need the query param on every launch);
+// ?debug=off turns it back off. console.log stays unconditional either way,
+// so a connected remote-debugger session always sees the trace regardless.
+const RESOLVER_DEBUG_STORAGE_KEY = 'resolverDebugEnabled';
+const debugParam = new URLSearchParams(location.search).get('debug');
+if (debugParam === 'resolver') localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
+else if (debugParam === 'off') localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
+const resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
+
 let resolverDebugStartTs = null;
 function resolverDebugReset() {
   resolverDebugStartTs = Date.now();
-  if (el.resolverDebugLogEl) el.resolverDebugLogEl.innerHTML = '';
+  if (resolverDebugEnabled && el.resolverDebugLogEl) el.resolverDebugLogEl.innerHTML = '';
 }
 function resolverDebugLog(message, kind = '') {
   if (resolverDebugStartTs == null) resolverDebugStartTs = Date.now();
   console.log('[resolver]', message);
-  if (!el.resolverDebugLogEl) return;
+  if (!resolverDebugEnabled || !el.resolverDebugLogEl) return;
   const line = document.createElement('div');
   line.className = kind ? `resolver-debug-line ${kind}` : 'resolver-debug-line';
   line.textContent = `[+${Date.now() - resolverDebugStartTs}ms] ${message}`;
@@ -1929,16 +1974,21 @@ function parseGoogleMapsUrl(text) {
 // distinguishable at a glance from "genuinely not a resolvable link",
 // without needing to attach a remote debugger to see what actually
 // happened. Cleared at the start of every call.
-let lastGoogleMapsResolveError = null;
-
+/** Resolves to `{ label, lat, lon, sourceUrl }` on success, or `{ error }`
+ * on failure (never a bare `null`) — the error lives on the returned value
+ * itself rather than a shared module variable, so two resolveGoogleMapsLink
+ * calls running concurrently (e.g. the Android share-target path and a
+ * search-box paste happening at the same time) can never read back a
+ * message that actually belongs to the other call. `resolved.lat != null`
+ * is the reliable success check; a failure object never has a `lat`. */
 async function resolveGoogleMapsLink(text) {
   resolverDebugReset();
   resolverDebugLog(`Input: "${text.length > 100 ? `${text.slice(0, 100)}…` : text}"`);
-  lastGoogleMapsResolveError = null;
+  let resolveError = null;
   let parsed = parseGoogleMapsUrl(text);
   if (!parsed) {
     resolverDebugLog('Not a Google Maps link — bailing out.', 'error');
-    return null;
+    return { error: 'not a Google Maps link' };
   }
   resolverDebugLog(`Parsed: matchedUrl="${parsed.matchedUrl}"${parsed.name ? `, name="${parsed.name}"` : ''}${parsed.lat != null ? `, coords already in URL (${parsed.lat}, ${parsed.lon})` : ', no coords in URL yet'}`);
 
@@ -1962,16 +2012,16 @@ async function resolveGoogleMapsLink(text) {
         resolverDebugLog(parsed.lat != null ? `Coordinates recovered: ${parsed.lat}, ${parsed.lon}` : 'No coordinates found in the resolved URL.', parsed.lat != null ? 'success' : 'error');
       } else {
         const snippet = (await res.text().catch(() => '')).slice(0, 120).replace(/\s+/g, ' ').trim();
-        lastGoogleMapsResolveError = `the link resolver returned HTTP ${res.status}${snippet ? ` — "${snippet}"` : ''}`;
-        resolverDebugLog(lastGoogleMapsResolveError, 'error');
-        console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError);
+        resolveError = `the link resolver returned HTTP ${res.status}${snippet ? ` — "${snippet}"` : ''}`;
+        resolverDebugLog(resolveError, 'error');
+        console.error('resolveGoogleMapsLink:', resolveError);
       }
     } catch (err) {
-      lastGoogleMapsResolveError = err.name === 'AbortError'
+      resolveError = err.name === 'AbortError'
         ? 'timed out reaching the link resolver'
         : `network error reaching the link resolver (${err.message})`;
-      resolverDebugLog(lastGoogleMapsResolveError, 'error');
-      console.error('resolveGoogleMapsLink:', lastGoogleMapsResolveError, err);
+      resolverDebugLog(resolveError, 'error');
+      console.error('resolveGoogleMapsLink:', resolveError, err);
     }
   }
 
@@ -1995,7 +2045,21 @@ async function resolveGoogleMapsLink(text) {
     // anchor the code (a short code like this one is only unambiguous within
     // ~1 degree), which the locality text right after the code supplies.
     const plusCodeMatch = parsed.name.match(/^([23456789CFGHJMPQRVWX]{2,8}\+[23456789CFGHJMPQRVWX]{2,7})(?:[\s,]+(.*))?$/i);
-    if (plusCodeMatch) {
+    // Dynamically imported: this ~28KB module is only ever needed for this
+    // rare no-street-address case, so a place name that doesn't even look
+    // like it might start with a Plus Code never pays for fetching/parsing
+    // it at all — let alone the common case of a name that isn't a Google
+    // Maps link in the first place.
+    const olc = plusCodeMatch ? new (await import('./vendor/open-location-code.js')).OpenLocationCode() : null;
+    // The regex above only checks character-set/shape; it can't tell a real
+    // Plus Code apart from a coincidentally similar-looking token (a
+    // shop/gate/serial code built from the same restricted alphabet plus a
+    // literal '+'). olc.isValid()/isShort() enforce the actual Open Location
+    // Code rules (separator parity/position, code-length constraints) that
+    // the regex doesn't fully replicate — still not a guarantee the string
+    // IS a Plus Code, but it rejects shapes the format itself disallows
+    // rather than trusting the regex's looser approximation of it.
+    if (plusCodeMatch && olc.isValid(plusCodeMatch[1].toUpperCase()) && olc.isShort(plusCodeMatch[1].toUpperCase())) {
       const plusCode = plusCodeMatch[1].toUpperCase();
       const remainder = (plusCodeMatch[2] || '').trim();
       // Prefer the text after the first comma (locality/state/pincode) over
@@ -2009,7 +2073,6 @@ async function resolveGoogleMapsLink(text) {
         try {
           const refResults = await geocodeSearch(referenceQuery, {});
           if (refResults && refResults[0]) {
-            const olc = new OpenLocationCode();
             const fullCode = olc.recoverNearest(plusCode, refResults[0].lat, refResults[0].lon);
             const area = olc.decode(fullCode);
             resolverDebugLog(`Done: Plus Code decoded (anchored at ${refResults[0].lat}, ${refResults[0].lon}) to ${area.latitudeCenter}, ${area.longitudeCenter}`, 'success');
@@ -2035,8 +2098,8 @@ async function resolveGoogleMapsLink(text) {
       // Nominatim also drew a blank — nothing more to try.
     }
   }
-  resolverDebugLog('Giving up — returning null.', 'error');
-  return null;
+  resolverDebugLog('Giving up.', 'error');
+  return { error: resolveError || "couldn't find coordinates for that link" };
 }
 
 /** Every place resolved from a pasted Google Maps link is, by definition,
@@ -2294,9 +2357,16 @@ async function geocodeFuzzyFallback(query, shouldAbort) {
 async function geocodeSearch(query, opts = {}) {
   const trimmed = query.trim();
   const cacheKey = trimmed.toLowerCase();
-  if (nominatimCache.has(cacheKey)) return nominatimCache.get(cacheKey);
-
   const nearMatch = trimmed.match(NEAR_QUERY_PATTERN);
+  // A GPS-anchored "near me"/"near here" query resolves against wherever the
+  // device currently is — caching it by literal text alone (like every other
+  // query) would serve today's results to the exact same phrase typed again
+  // from a completely different location. "Near <a fixed place>" doesn't
+  // have this problem (the place always resolves to the same anchor), so it
+  // stays cached as normal.
+  const isNearMe = !!nearMatch && NEAR_ME_KEYWORDS.has(nearMatch[2].trim().toLowerCase());
+  if (!isNearMe && nominatimCache.has(cacheKey)) return nominatimCache.get(cacheKey);
+
   let results = nearMatch
     ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
     : await nominatimSearch(trimmed);
@@ -2315,7 +2385,7 @@ async function geocodeSearch(query, opts = {}) {
   // irrelevant, not because Nominatim was actually asked and came up empty.
   // Caching it as [] here would let a later, real search for this exact
   // string be wrongly answered from cache instead of actually trying.
-  if (!aborted) nominatimCache.set(cacheKey, results);
+  if (!aborted && !isNearMe) nominatimCache.set(cacheKey, results);
   return results;
 }
 
@@ -2477,12 +2547,12 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
         const resolved = await resolveGoogleMapsLink(query);
         if (isStale()) return;
         hideSuggestionList(listEl);
-        if (resolved) {
+        if (resolved.lat != null) {
           inputEl.value = resolved.label;
           onSelect(resolved);
           autoBookmarkGoogleMapsLink(resolved);
         } else {
-          showStatus(lastGoogleMapsResolveError ? `Couldn't resolve that Google Maps link — ${lastGoogleMapsResolveError}.` : "Couldn't resolve that Google Maps link.", 'error');
+          showStatus(`Couldn't resolve that Google Maps link — ${resolved.error}.`, 'error');
         }
         return;
       }
@@ -2523,9 +2593,21 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
     }, CONFIG.NOMINATIM_DEBOUNCE_MS);
   });
 
-  document.addEventListener('click', (e) => {
+  // A stop row's own input/suggestions elements are captured in this
+  // closure — for the place/from/to fields (which live for the whole app
+  // session) that's harmless, but addStopRow() can call setupAutocomplete()
+  // repeatedly across a session (add stop, remove it, add another, up to
+  // CONFIG.MAX_STOPS times and unboundedly over the session), and a plain
+  // permanent document-level listener here would leak one more of these
+  // (plus the entire detached DOM subtree it closes over) every single time
+  // a stop row is removed. Returning a teardown function lets the caller
+  // that actually owns the row's lifecycle (addStopRow's remove handler)
+  // clean this up when the row goes away.
+  const outsideClickHandler = (e) => {
     if (e.target !== inputEl && !listEl.contains(e.target)) hideSuggestionList(listEl);
-  });
+  };
+  document.addEventListener('click', outsideClickHandler);
+  return () => document.removeEventListener('click', outsideClickHandler);
 }
 
 function showPlaceCard({ label, lat, lon }) {
@@ -3799,18 +3881,19 @@ function addStopRow(prefill) {
   unit.appendChild(row);
   unit.appendChild(divider);
 
+  const teardownAutocomplete = setupAutocomplete(input, suggestions, (picked) => {
+    input._stopPlace = picked || null;
+    updatePlanningMarkers();
+  });
+
   removeBtn.addEventListener('click', () => {
+    teardownAutocomplete();
     unit.remove();
     updatePlanningMarkers();
   });
   dragHandle.addEventListener('pointerdown', (e) => startStopDrag(unit, e));
 
   el.stopsContainer.appendChild(unit);
-
-  setupAutocomplete(input, suggestions, (picked) => {
-    input._stopPlace = picked || null;
-    updatePlanningMarkers();
-  });
 
   if (prefill) {
     input.value = shortLabel(prefill);
@@ -4961,12 +5044,12 @@ function parseShareTargetParam() {
 async function handleSharedGoogleMapsLink(text) {
   showStatus('Resolving shared Google Maps link…', 'info');
   const resolved = await resolveGoogleMapsLink(text);
-  if (resolved) {
+  if (resolved.lat != null) {
     el.placeInput.value = resolved.label;
     selectPlace(resolved);
     autoBookmarkGoogleMapsLink(resolved);
   } else {
-    showStatus(lastGoogleMapsResolveError ? `That shared link couldn't be resolved — ${lastGoogleMapsResolveError}.` : "That shared link couldn't be resolved to a place.", 'error');
+    showStatus(`That shared link couldn't be resolved — ${resolved.error}.`, 'error');
   }
 }
 
@@ -5351,6 +5434,18 @@ function resaveNavigatingTripThrottled() {
   if (now - lastTripResaveAt < 15000) return;
   lastTripResaveAt = now;
   saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+    .then(() => {
+      // endNavigation()'s own clearCurrentTrip() call and this save each
+      // independently open their own IndexedDB connection, with no ordering
+      // guarantee between them — if "End" was tapped while this save was
+      // still in flight, the delete could easily have already lost the race
+      // to this now-stale put. Re-checking state.navigating once the save
+      // actually resolves and immediately re-clearing closes that gap
+      // regardless of which transaction the browser happened to commit
+      // first — otherwise a resurrected "navigating: true" record would
+      // silently restart turn-by-turn guidance on a trip the user ended.
+      if (!state.navigating) clearCurrentTrip().catch(() => {});
+    })
     .catch(() => { /* non-fatal — see startNavigation's own save for the same reasoning */ });
 }
 
@@ -5425,11 +5520,16 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function startNavigation() {
-  if (!state.route) return;
+  if (!state.route || state.navigating) return;
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location, so live navigation is not available.', 'error');
     return;
   }
+  // Claimed immediately (before the await below) so a second tap landing
+  // while this call is still waiting on the map — the resume-on-reload path
+  // can genuinely be slow here, see the comment below — can't re-enter and
+  // start a second GPS watch + wake lock that orphans the first one.
+  state.navigating = true;
   // Every source this function touches below (route-alternates, puck) is
   // only ever added inside mapLoad's own .then() — normally guaranteed by
   // the time a real "Start navigation" tap is even possible (renderRoute
@@ -5439,11 +5539,11 @@ async function startNavigation() {
   try {
     await awaitMapLoad();
   } catch (err) {
+    state.navigating = false;
     showStatus(err.message, 'error');
     return;
   }
 
-  state.navigating = true;
   state.followMode = true;
   state.offRouteSince = null;
   state.isRerouting = false;
@@ -5494,7 +5594,7 @@ async function startNavigation() {
   // redundantly alongside navigation's own watch.
   if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
   if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
-  if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; }
+  if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; disableDeviceOrientation(); }
 
   showStatus('Getting your location…', 'info');
   try {
