@@ -3,6 +3,8 @@
 node_modules/
 www/
 android/app/build/
+android/app/debug/
+android/app/release/
 android/build/
 android/.gradle/
 android/local.properties
