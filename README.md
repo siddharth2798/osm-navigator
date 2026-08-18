@@ -114,6 +114,12 @@ npm run cap:sync             # copies the web app into www/, syncs the android/ 
 npx cap open android         # opens the project in Android Studio
 ```
 
+**Don't want to build it yourself?** A pre-built APK is available at **[github.com/siddharth2798/osm-navigator/releases/latest/download/osm-navigator.apk](https://github.com/siddharth2798/osm-navigator/releases/latest/download/osm-navigator.apk)** — always the most recently published build. A few things worth knowing before installing it:
+
+- It isn't distributed through the Google Play Store, so Android will ask you to allow installing from this source the first time — that's Android's normal, correct behavior for any APK from outside the Play Store, not a warning specific to this app. Only enable it for a source you trust.
+- Since it's built and signed by one person rather than reviewed by Google Play, the honest trust model here is the same as any other GitHub-distributed open-source APK: you're trusting the linked source code (this repo) and the person publishing the binary, not a third-party review process. Building it yourself from source (above) avoids needing to make that trust call at all.
+- Each published release is signed with the maintainer's own release keystore (see "Producing a release build" a little further down) — not a shared debug key, which would offer no real authenticity guarantee at all.
+
 **Build requirements** (as currently checked into `android/`): Android Gradle Plugin `8.13.0` / Gradle `8.14.3`, which need **JDK 17** — install a recent [Android Studio](https://developer.android.com/studio) release and it'll offer to manage this for you. `android/variables.gradle` sets `minSdkVersion 24` / `compileSdkVersion`/`targetSdkVersion 36` — Android Studio will prompt to install SDK Platform 36 the first time you open the project if you don't already have it.
 
 **Permissions**: `@capacitor-community/background-geolocation` declares everything it needs (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, `POST_NOTIFICATIONS`) in its own manifest, which Capacitor's build automatically merges into the app — no manual `AndroidManifest.xml` edits needed for that. Android 13+ separately requires *requesting* the `POST_NOTIFICATIONS` runtime permission (for the persistent "tracking your location" notification) — see the [plugin's own README](https://github.com/capacitor-community/background-geolocation#readme) for the recommended way to prompt for it.
