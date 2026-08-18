@@ -25,12 +25,15 @@
 // browser timer — this is the "hook the plugin's callback directly" the
 // spec asked for, and it falls out naturally from reusing one function.
 //
-// NOT VERIFIED ON DEVICE: this environment has no Android SDK/emulator, so
-// none of the native-path code below has been run. It's written directly
-// against the plugin's documented API (github.com/capacitor-community/
-// background-geolocation) and Capacitor's documented no-bundler
-// registerPlugin() pattern, but treat it as a first draft to test on a real
-// phone, not a verified-working implementation.
+// registerPlugin() is imported from vendor/capacitor-core.js, not read off
+// window.Capacitor — the native Android side only injects a minimal stub
+// (isNativePlatform/getPlatform), NOT the full @capacitor/core JS runtime
+// that actually defines registerPlugin. This app has no build step, so
+// nothing else ever pulls that runtime in either; importing the vendored
+// copy is what makes window.Capacitor.registerPlugin (and this import)
+// actually work at all. Confirmed live: without it, startLocationWatch()
+// failed with "window.Capacitor.registerPlugin is not a function" on a
+// real Android build.
 //
 // KNOWN LIMITATION: this plugin's notification text is set once, when the
 // watch starts, and cannot be updated live afterwards (its API has no
@@ -42,6 +45,8 @@
 // swap to it here if that live-updating notification matters more than
 // avoiding a paid dependency.
 // ============================================================================
+
+import { registerPlugin } from './vendor/capacitor-core.js';
 
 function isNativePlatform() {
   return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -59,7 +64,7 @@ export async function startLocationWatch(onPosition, onError, geoOptions, notifi
     return { isNative: false, id };
   }
 
-  const BackgroundGeolocation = window.Capacitor.registerPlugin('BackgroundGeolocation');
+  const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
   const id = await BackgroundGeolocation.addWatcher(
     {
       backgroundTitle: notification.title || 'Navigating',
@@ -91,6 +96,6 @@ export async function stopLocationWatch(handle) {
     navigator.geolocation.clearWatch(handle.id);
     return;
   }
-  const BackgroundGeolocation = window.Capacitor.registerPlugin('BackgroundGeolocation');
+  const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
   await BackgroundGeolocation.removeWatcher({ id: handle.id });
 }
