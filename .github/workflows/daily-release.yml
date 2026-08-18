@@ -1,0 +1,51 @@
+name: Daily Release
+
+on:
+  schedule:
+    # GitHub Actions uses UTC. 
+    # If you want 5:00 PM IST: '30 11 * * *'
+    - cron: '30 11 * * *'
+  workflow_dispatch: # Allows you to trigger it manually for testing
+
+jobs:
+  create-daily-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for GitHub Actions to create a release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required to fetch git history so we can check past commits
+
+      - name: Check for commits in the last 24 hours
+        id: check_commits
+        run: |
+          # Look for commits in the last 24 hours
+          COMMITS=$(git log --since="24 hours ago" --oneline)
+          
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits in the last 24 hours. Skipping release."
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found new commits:"
+            echo "$COMMITS"
+            echo "has_commits=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate Tag Name
+        if: steps.check_commits.outputs.has_commits == 'true'
+        id: tag
+        run: |
+          # Creates a tag like "v2023-10-25"
+          echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.check_commits.outputs.has_commits == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.tag.outputs.date }}" \
+            --title "Daily Release ${{ steps.tag.outputs.date }}" \
+            --generate-notes
