@@ -1936,6 +1936,25 @@ function resolverDebugLog(message, kind = '') {
   el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
   el.resolverDebugPanel.classList.remove('hidden');
 }
+// This panel started out resolver-specific but is the only on-screen trace
+// this app has anywhere, so it's the obvious place to also surface an
+// otherwise-invisible crash — an uncaught exception or a rejected promise
+// nobody awaited (e.g. startNavigation() is called fire-and-forget from its
+// button's click handler) normally leaves zero on-screen sign that anything
+// went wrong at all, which is exactly what "the button did nothing" reports
+// look like. Only actually appends to the on-screen panel when Debug mode
+// is on, same as every other resolverDebugLog call — the browser's own
+// console always shows uncaught errors regardless, for a connected
+// remote-debugger session.
+window.addEventListener('error', (e) => {
+  resolverDebugLog(`Uncaught error: ${e.message} (${e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : 'unknown location'})`, 'error');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  const detail = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+  resolverDebugLog(`Unhandled promise rejection: ${detail}`, 'error');
+});
+
 if (el.resolverDebugCloseBtn) {
   el.resolverDebugCloseBtn.addEventListener('click', () => el.resolverDebugPanel.classList.add('hidden'));
 }
@@ -5556,8 +5575,13 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function startNavigation() {
-  if (!state.route || state.navigating) return;
+  resolverDebugLog(`startNavigation() called (route: ${!!state.route}, already navigating: ${state.navigating})`);
+  if (!state.route || state.navigating) {
+    resolverDebugLog('Bailing out — no route planned, or already navigating.', 'error');
+    return;
+  }
   if (!('geolocation' in navigator)) {
+    resolverDebugLog('No geolocation support in this browser/WebView.', 'error');
     showStatus('This browser does not support GPS location, so live navigation is not available.', 'error');
     return;
   }
@@ -5572,9 +5596,12 @@ async function startNavigation() {
   // already awaited this earlier in that flow), but the resume-on-reload
   // path (see the startup IIFE) can reach here as the very first thing to
   // touch the map at all, before that's necessarily settled.
+  resolverDebugLog('Awaiting map load…');
   try {
     await awaitMapLoad();
+    resolverDebugLog('Map loaded.', 'success');
   } catch (err) {
+    resolverDebugLog(`Map load failed: ${err.message}`, 'error');
     state.navigating = false;
     showStatus(err.message, 'error');
     return;
@@ -5633,6 +5660,7 @@ async function startNavigation() {
   if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; disableDeviceOrientation(); }
 
   showStatus('Getting your location…', 'info');
+  resolverDebugLog('Calling startLocationWatch() — on the Android shell this requests the background-geolocation permission and can pause here waiting on that native dialog…');
   try {
     // On a plain web deployment this is navigator.geolocation.watchPosition
     // under the hood. Inside the optional Capacitor Android shell, it
@@ -5644,7 +5672,9 @@ async function startNavigation() {
       title: 'Navigating to ' + state.to.label,
       message: 'Tracking your location for turn-by-turn guidance.',
     });
+    resolverDebugLog(`Location watch started (id: ${JSON.stringify(state.watchId)}).`, 'success');
   } catch (err) {
+    resolverDebugLog(`startLocationWatch() failed: ${err.message}`, 'error');
     showStatus('Could not start location tracking: ' + err.message, 'error');
     endNavigation();
   }
