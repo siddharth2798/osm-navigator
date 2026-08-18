@@ -109,7 +109,18 @@ jobs:
             echo "::warning::No signed APK produced (ANDROID_KEYSTORE_BASE64 secret not set, or the build failed) — this release will be source-only."
           fi
 
-          gh release create "v${{ steps.tag.outputs.date }}" \
-            --title "Daily Release ${{ steps.tag.outputs.date }}" \
-            --generate-notes \
-            "${ASSETS[@]}"
+          TAG="v${{ steps.tag.outputs.date }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running workflow_dispatch on a day the cron already ran
+            # (or a retry after a failed attempt) would otherwise collide
+            # on the date-based tag — update the existing release's asset
+            # instead of failing.
+            if [ ${#ASSETS[@]} -gt 0 ]; then
+              gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            fi
+          else
+            gh release create "$TAG" \
+              --title "Daily Release ${{ steps.tag.outputs.date }}" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
