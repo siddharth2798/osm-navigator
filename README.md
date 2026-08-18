@@ -50,6 +50,7 @@ Every URL and tunable lives at the top of **`config.js`**, each commented with w
 - `VALHALLA_URL` — the public default is a [shared demo server](https://valhalla.github.io/demos/routing/), not an SLA-backed API. Self-hosting means building a routing graph from an OSM extract.
 - `MAPILLARY_ACCESS_TOKEN`, `OTP2_URL` — both optional; leave empty to disable street-level imagery / transit mode respectively.
 - `WEATHER_ENABLED` — set `false` to disable the weather badge (no Open-Meteo calls at all).
+- `RESOLVE_MAPS_URL_BASE` — only matters for the [Android shell](#the-optional-android-shell): point it at your own deployment's origin before `npm run cap:sync`. Ignored on the web (always same-origin there).
 
 If you change `MAP_STYLE_URL` to a self-hosted tile server, also update `TILE_HOSTS` at the top of `sw.js` — the service worker can't import `config.js`.
 

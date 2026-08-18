@@ -65,6 +65,25 @@ export const CONFIG = {
   // --- Map tiles: OpenFreeMap (no API key needed) -----------------------------
   MAP_STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
 
+  // --- Google Maps link resolver -----------------------------------------------
+  // Only ever used inside the Android shell (Capacitor) — a normal web
+  // deployment always calls /api/resolve-maps-url as a relative, same-origin
+  // path instead (see the call site in app.js), regardless of what this is
+  // set to, so changing it can never affect or break a plain web deployment.
+  //
+  // The Android shell needs this because its own origin is a local
+  // asset-serving scheme with no backend of its own — a relative path there
+  // silently resolves to nothing and falls back to being served index.html
+  // instead (HTTP 200, content-type text/html, no JSON). This exact failure
+  // was found live via the on-screen debug log: the trace showed the
+  // "response" was literally the app's own <title>Navigator</title> page,
+  // not a network error.
+  //
+  // If you're building the Android shell against your own self-hosted
+  // Worker/Pages deployment, set this to its absolute origin (e.g.
+  // 'https://your-worker.workers.dev') before running `npm run cap:sync`.
+  RESOLVE_MAPS_URL_BASE: 'https://osm-navigator.siddharthshiv2798.workers.dev',
+
   // --- Navigation / voice guidance behaviour ----------------------------------
   // Speak the next instruction once the live position is within this many
   // metres of the upcoming maneuver ("in X meters, turn right" — see speak()

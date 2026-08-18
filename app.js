@@ -2042,9 +2042,18 @@ async function resolveGoogleMapsLink(text) {
   resolverDebugLog(`Parsed: matchedUrl="${parsed.matchedUrl}"${parsed.name ? `, name="${parsed.name}"` : ''}${parsed.lat != null ? `, coords already in URL (${parsed.lat}, ${parsed.lon})` : ', no coords in URL yet'}`);
 
   if (parsed.lat == null) {
-    resolverDebugLog('Calling /api/resolve-maps-url to follow the short link…');
+    resolverDebugLog(`Calling ${isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '(same origin)'}/api/resolve-maps-url to follow the short link…`);
     try {
-      const res = await fetchWithTimeout(`/api/resolve-maps-url?url=${encodeURIComponent(parsed.matchedUrl)}`);
+      // Relative on the web — always correct there regardless of what
+      // domain a self-hoster deploys to, same-origin, no CORS to worry
+      // about. Only the Android shell needs the absolute override: its own
+      // origin is a local asset-serving scheme with no backend of its own
+      // (see CONFIG.RESOLVE_MAPS_URL_BASE's own comment for the exact
+      // failure this fixes), so ignoring the config value here on a plain
+      // web deployment means it can never accidentally break someone
+      // else's self-hosted instance via a cross-origin/CORS mismatch.
+      const resolveBase = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+      const res = await fetchWithTimeout(`${resolveBase}/api/resolve-maps-url?url=${encodeURIComponent(parsed.matchedUrl)}`);
       const contentType = res.headers.get('content-type') || '';
       resolverDebugLog(`Response: HTTP ${res.status}, content-type "${contentType || '(none)'}"`);
       // A non-JSON body here (even on a 200) is never something this app's
