@@ -1593,6 +1593,42 @@ function categorySearchCacheKey(tag, lat, lon) {
   return `${tag}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
 }
 
+/** Nominatim's per-tag search frequently returns the SAME real-world
+ * amenity twice — once as the OSM way (a mapped building/canopy footprint)
+ * and once as a separate node (the actual pump/point), each carrying an
+ * identical name but centered tens of metres apart (the way's polygon
+ * centroid vs. the node's own point). Confirmed live against Nominatim: a
+ * "Bharat Petroleum" fuel station near Kochi comes back as both a `way` at
+ * one point and a `node` ~40m away, same name, both passing straight
+ * through as separate results. Fuel stations in India are frequently
+ * double-mapped like this; EV charging points are almost always a single
+ * node, which is why this bug reads as "petrol pump markers jump around"
+ * while EV charging looked fine — it isn't category-specific, it's just
+ * that fuel data happens to trigger it far more often. Left undeduped, the
+ * same-named result appears twice in the list and as two separate map
+ * markers a stone's throw apart, so tapping "the" result for that name can
+ * land on either one depending on which of the two nearly-identical
+ * entries the sort happened to put first — reading as the pin "randomly"
+ * moving. Collapses any two results with the same primary name (the part
+ * before the first comma in the label — see splitPlaceLabel) within
+ * DUPLICATE_DISTANCE_M of each other down to just the first one seen; safe
+ * to key on name alone at this range since two genuinely different real
+ * places sharing an identical name (e.g. two separate "HP" pumps) are never
+ * actually mapped this close together. */
+const DUPLICATE_DISTANCE_M = 120;
+function dedupeSameNamedNearbyResults(results) {
+  const kept = [];
+  for (const r of results) {
+    const name = splitPlaceLabel(r.label).primary.toLowerCase();
+    const isDuplicate = kept.some((k) => (
+      splitPlaceLabel(k.label).primary.toLowerCase() === name
+      && turf.distance([k.lon, k.lat], [r.lon, r.lat], { units: 'meters' }) < DUPLICATE_DISTANCE_M
+    ));
+    if (!isDuplicate) kept.push(r);
+  }
+  return kept;
+}
+
 /** Nominatim's bracket syntax (`q=[amenity=fuel]`) searches by OSM tag
  * rather than by name — this is what makes "petrol pumps near me" work at
  * all, since petrol pumps mostly aren't individually named in OSM. Tries
@@ -1603,8 +1639,9 @@ async function categorySearchNear(tag, lat, lon) {
   const cacheKey = categorySearchCacheKey(tag, lat, lon);
   if (categorySearchCache.has(cacheKey)) return categorySearchCache.get(cacheKey);
   for (const radiusDeg of [CONFIG.GEOCODE_NEAR_RADIUS_DEG_DEFAULT, CONFIG.GEOCODE_NEAR_RADIUS_DEG_WIDE]) {
-    const results = await nominatimSearch(`[${tag}]`, viewboxParam(lat, lon, radiusDeg) + '&extratags=1');
-    if (results.length) {
+    const rawResults = await nominatimSearch(`[${tag}]`, viewboxParam(lat, lon, radiusDeg) + '&extratags=1');
+    if (rawResults.length) {
+      const results = dedupeSameNamedNearbyResults(rawResults);
       categorySearchCache.set(cacheKey, results);
       return results;
     }
