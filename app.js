@@ -7,7 +7,7 @@ import {
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
   setQuickPlace, getQuickPlace,
 } from './idb.js';
-import { startLocationWatch, stopLocationWatch } from './native-location.js';
+import { startLocationWatch, stopLocationWatch, isNativePlatform } from './native-location.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -5719,10 +5719,36 @@ el.endNavBtn.addEventListener('click', endNavigation);
 // ============================================================================
 // PWA installability
 // ============================================================================
+// Skipped entirely inside the Capacitor Android shell — the app's assets
+// are already bundled locally into the APK there, so a service worker's
+// caching layer has no offline-support benefit and is pure downside: it's
+// exactly what caused a real bug found live on-device (the Android WebView
+// keeps Cache Storage/SW registrations across app rebuilds — an installed
+// SW from before a code fix kept serving the OLD, pre-fix native-location.js
+// out of its own cache, making the fix look like it hadn't taken effect at
+// all, even after a clean rebuild). Any SW already registered from before
+// this check existed is actively unregistered here so a device that hit
+// that exact bug self-heals on the next launch, without needing anyone to
+// manually clear the app's storage.
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => { /* non-fatal: app still works */ });
-  });
+  if (isNativePlatform()) {
+    navigator.serviceWorker.getRegistrations()
+      .then((regs) => regs.forEach((reg) => reg.unregister()))
+      .catch(() => { /* non-fatal */ });
+    if ('caches' in window) {
+      // Only the SW's own app-shell cache(s) — offline-tiles/incidental-tiles
+      // are app.js's own downloaded-map-data caches, used on native too, and
+      // must NOT be swept up here or this would silently delete a user's
+      // already-downloaded offline maps.
+      caches.keys()
+        .then((keys) => keys.filter((k) => k.startsWith('navigator-shell-')).forEach((k) => caches.delete(k)))
+        .catch(() => { /* non-fatal */ });
+    }
+  } else {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* non-fatal: app still works */ });
+    });
+  }
 }
 
 // ============================================================================

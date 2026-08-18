@@ -48,7 +48,7 @@
 
 import { registerPlugin } from './vendor/capacitor-core.js';
 
-function isNativePlatform() {
+export function isNativePlatform() {
   return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 }
 
