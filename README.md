@@ -98,7 +98,7 @@ npx cap open android         # opens the project in Android Studio
 
 **Don't want to build it yourself?** A pre-built APK: **[github.com/siddharth2798/osm-navigator/releases/latest/download/osm-navigator.apk](https://github.com/siddharth2798/osm-navigator/releases/latest/download/osm-navigator.apk)** — always the most recent release. It isn't distributed through Google Play, so Android will ask permission to install from this source the first time; only allow that for a source you trust, or build it yourself from source instead to avoid needing to make that call at all.
 
-**Build requirements** (as checked into `android/`): Android Gradle Plugin `8.13.0` / Gradle `8.14.3`, needing **JDK 17** — a recent [Android Studio](https://developer.android.com/studio) manages this for you, and will prompt to install SDK Platform 36 if needed.
+**Build requirements** (as checked into `android/`): Android Gradle Plugin `8.13.0` / Gradle `8.14.3`, needing **JDK 21** (`@capacitor/android` 8.x's own `build.gradle` sets Java 21 source/target compatibility) — a recent [Android Studio](https://developer.android.com/studio) bundles its own JDK that already satisfies this and will prompt to install SDK Platform 36 if needed.
 
 **Permissions**: `@capacitor-community/background-geolocation` declares what it needs in its own manifest, merged in automatically — no manual `AndroidManifest.xml` edits. Android 13+ separately needs the `POST_NOTIFICATIONS` runtime permission requested for the persistent tracking notification — see the [plugin's README](https://github.com/capacitor-community/background-geolocation#readme).
 

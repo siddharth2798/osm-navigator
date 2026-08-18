@@ -55,12 +55,12 @@ jobs:
         if: steps.check_commits.outputs.has_commits == 'true'
         run: npm run cap:sync
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         if: steps.check_commits.outputs.has_commits == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21' # @capacitor/android 8.x's own build.gradle requires Java 21 source/target compatibility
 
       - name: Set up Android SDK
         if: steps.check_commits.outputs.has_commits == 'true'
