@@ -6,11 +6,13 @@
 // before this fetch handler ever runs, per the default `run_worker_first:
 // false`, so nothing here can shadow a real static file).
 import { resolveMapsUrl } from './lib/resolve-maps-url.js';
+import { openChargePoi } from './lib/opencharge-poi.js';
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/resolve-maps-url') return resolveMapsUrl(url);
+    if (url.pathname === '/api/opencharge-poi') return openChargePoi(url, env);
     return env.ASSETS.fetch(request);
   },
 };

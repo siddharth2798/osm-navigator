@@ -216,13 +216,26 @@ export const CONFIG = {
   MAPILLARY_SEARCH_RADIUS_M: 60,   // how far from a tapped/picked point to look for the nearest image
 
   // --- EV charging details: Open Charge Map ------------------------------------
-  // Get a free API key at https://openchargemap.org/site/develop/api (sign in,
-  // then "Request an API Key"). Leave this empty to disable the feature
-  // entirely — the EV charging category chip (and EV results in "search
-  // along the route") fall back to today's plain OSM amenity=charging_station
-  // search, with no connector/power/operator/cost/status detail. There is no
-  // public shared demo key (Open Charge Map's API rejects unauthenticated
-  // requests outright — confirmed live), unlike Nominatim/Valhalla/OpenFreeMap.
+  // Off by default — the EV charging category chip (and EV results in
+  // "search along the route") fall back to plain OSM amenity=charging_station
+  // search, with no connector/power/operator/cost/status detail. Turning
+  // this on takes TWO steps, not one:
+  //   1. Set this to `true`.
+  //   2. Set OPENCHARGEMAP_API_KEY as a Cloudflare secret/variable on your
+  //      Worker or Pages deployment (free key: register at
+  //      https://openchargemap.org/site/develop/api) — NEVER put the key
+  //      here. This file is a plain static asset shipped to every visitor's
+  //      browser; a key here would be public. The client calls this
+  //      deployment's own /api/opencharge-poi (see lib/opencharge-poi.js,
+  //      worker.js, functions/api/opencharge-poi.js), which attaches the
+  //      real key server-side — the browser never sees it. For a plain
+  //      Worker: `wrangler secret put OPENCHARGEMAP_API_KEY`. For Cloudflare
+  //      Pages: dashboard → your project → Settings → Environment variables
+  //      → add it as a secret (encrypted) variable, not a plain one.
+  //   Only works on a Cloudflare Worker or Pages deployment (same
+  //   requirement as the Google Maps link resolver) — plain static hosting
+  //   (GitHub Pages) has no server-side hop to attach the key on, so this
+  //   silently stays off there even if set to `true`.
   //
   // Deliberately NOT a live "is this charger free right now" feature: Open
   // Charge Map's own StatusType is a community-maintained *operational* flag
@@ -233,8 +246,7 @@ export const CONFIG = {
   // this DOES get you: real connector type/power/operator/cost detail, plus
   // an honestly-labeled "last reported" status — see fetchNearbyChargingStations
   // in app.js.
-  OPENCHARGEMAP_API_KEY: '',
-  OPENCHARGEMAP_URL: 'https://api.openchargemap.io/v3',
+  OPENCHARGEMAP_ENABLED: true,
   OPENCHARGEMAP_MIN_INTERVAL_MS: 1000,
   OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
 

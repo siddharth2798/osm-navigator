@@ -1780,7 +1780,7 @@ function dedupeSameNamedNearbyResults(results) {
 }
 
 // ============================================================================
-// EV charging details: Open Charge Map (see CONFIG.OPENCHARGEMAP_API_KEY for
+// EV charging details: Open Charge Map (see CONFIG.OPENCHARGEMAP_ENABLED for
 // why this exists, and why it's never a live "is this charger free right
 // now" feature). Only ever called when a key is configured — see the branch
 // inside categorySearchNear just below, the single dispatch point every EV
@@ -1805,7 +1805,7 @@ const OCM_STATUS_KEY_BY_TITLE = {
  * Map's DateLastStatusUpdate. That field matters more here than a typical
  * "last updated" timestamp would: OCM's status is community-maintained and
  * confirmed often stale, so a bare status word with no age reads as far
- * more trustworthy than it should — see the OPENCHARGEMAP_API_KEY comment
+ * more trustworthy than it should — see the OPENCHARGEMAP_ENABLED comment
  * in config.js. Returns null for a missing/unparseable date so callers can
  * say "check-in date unknown" rather than showing a wrong one. */
 function formatRelativeAge(isoDate) {
@@ -1858,14 +1858,28 @@ function normalizeChargingStation(poi) {
 
 /** Open Charge Map-backed EV charging search — see the branch inside
  * categorySearchNear just below for how this and the plain-OSM path
- * coexist. Throws the same way nominatimSearch/requestRoute do (a plain
- * Error with a user-facing message) so it fits the existing
- * try/catch-and-showStatus handling at every call site unchanged. */
+ * coexist. Calls this deployment's own /api/opencharge-poi (see
+ * lib/opencharge-poi.js, worker.js, functions/api/opencharge-poi.js)
+ * rather than Open Charge Map directly — the real API key is a Cloudflare
+ * secret attached server-side, never something the client sends (see
+ * CONFIG.OPENCHARGEMAP_ENABLED's comment in config.js for why). Same
+ * native-base-URL handling as resolveGoogleMapsLink's call to
+ * /api/resolve-maps-url: the Android shell's own origin has no server of
+ * its own to route this to.
+ *
+ * Returns `null` (not an error) when this deployment has
+ * OPENCHARGEMAP_ENABLED set but never finished configuring the
+ * OPENCHARGEMAP_API_KEY secret server-side — categorySearchNear treats
+ * that as "fall back to the OSM search" rather than showing an error for
+ * what's really a one-time setup gap. Any other failure still throws, the
+ * same way nominatimSearch/requestRoute do (a plain Error with a
+ * user-facing message), so it fits the existing try/catch-and-showStatus
+ * handling at every call site unchanged. */
 async function fetchNearbyChargingStations(lat, lon) {
   await openChargeMapLimiter();
-  const url = `${CONFIG.OPENCHARGEMAP_URL}/poi?latitude=${lat}&longitude=${lon}`
-    + `&distance=${CONFIG.OPENCHARGEMAP_SEARCH_RADIUS_KM}&distanceunit=km&maxresults=25`
-    + `&key=${encodeURIComponent(CONFIG.OPENCHARGEMAP_API_KEY)}`;
+  const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+  const url = `${base}/api/opencharge-poi?latitude=${lat}&longitude=${lon}`
+    + `&distance=${CONFIG.OPENCHARGEMAP_SEARCH_RADIUS_KM}&maxresults=25`;
   let res;
   try {
     res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
@@ -1874,7 +1888,8 @@ async function fetchNearbyChargingStations(lat, lon) {
       ? 'Open Charge Map is taking too long to respond. Try again in a moment.'
       : 'Could not reach Open Charge Map. Check your connection.');
   }
-  if (!res.ok) throw new Error(`Open Charge Map returned an error (HTTP ${res.status}) — check OPENCHARGEMAP_API_KEY in config.js.`);
+  if (res.status === 501) return null; // OPENCHARGEMAP_API_KEY not set server-side yet — see the comment above
+  if (!res.ok) throw new Error(`Open Charge Map returned an error (HTTP ${res.status}).`);
   const data = await res.json();
   return data
     .map(normalizeChargingStation)
@@ -1890,16 +1905,20 @@ async function fetchNearbyChargingStations(lat, lon) {
 async function categorySearchNear(tag, lat, lon) {
   const cacheKey = categorySearchCacheKey(tag, lat, lon);
   if (categorySearchCache.has(cacheKey)) return categorySearchCache.get(cacheKey);
-  // Open Charge Map, when a key is configured, replaces the OSM path
-  // specifically for EV charging — every caller of categorySearchNear
-  // (the category chip, "search along the route", "EV charging near X")
-  // funnels through here, so this one branch is the whole integration
-  // point. No key configured: falls through to the exact OSM search below,
-  // unchanged from before this feature existed.
-  if (tag === EV_CHARGING_TAG && CONFIG.OPENCHARGEMAP_API_KEY) {
+  // Open Charge Map, when enabled, replaces the OSM path specifically for
+  // EV charging — every caller of categorySearchNear (the category chip,
+  // "search along the route", "EV charging near X") funnels through here,
+  // so this one branch is the whole integration point. Not enabled, or
+  // enabled but the server-side API key isn't actually configured yet
+  // (fetchNearbyChargingStations returns null for that case — see its own
+  // comment): falls through to the exact OSM search below, unchanged from
+  // before this feature existed.
+  if (tag === EV_CHARGING_TAG && CONFIG.OPENCHARGEMAP_ENABLED) {
     const results = await fetchNearbyChargingStations(lat, lon);
-    categorySearchCache.set(cacheKey, results);
-    return results;
+    if (results) {
+      categorySearchCache.set(cacheKey, results);
+      return results;
+    }
   }
   for (const radiusDeg of [CONFIG.GEOCODE_NEAR_RADIUS_DEG_DEFAULT, CONFIG.GEOCODE_NEAR_RADIUS_DEG_WIDE]) {
     const rawResults = await nominatimSearch(`[${tag}]`, viewboxParam(lat, lon, radiusDeg) + '&extratags=1');
@@ -3028,7 +3047,7 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
  * has no `evDetails` at all, so this just hides the block. The status line
  * is always framed with recency (see formatRelativeAge) — never as a bare
  * status word — because Open Charge Map's own status field is community-
- * maintained and often stale (see CONFIG.OPENCHARGEMAP_API_KEY); showing
+ * maintained and often stale (see CONFIG.OPENCHARGEMAP_ENABLED); showing
  * it without an age would read as far more current/trustworthy than it is. */
 function renderEvDetailsCard(evDetails) {
   if (!evDetails) {
