@@ -3856,12 +3856,6 @@ el.docsBtn.addEventListener('click', () => {
 });
 el.docsCloseBtn.addEventListener('click', goBackInApp);
 
-// #map-controls-left mirrors #map-controls' own "raised clear of the bottom
-// sheet" state via observer rather than threading a call through that
-// button's own four raise/lower call sites.
-new MutationObserver(() => {
-  el.mapControlsLeft.classList.toggle('raised', el.mapControls.classList.contains('raised'));
-}).observe(el.mapControls, { attributes: true, attributeFilter: ['class'] });
 el.placeCardSaveBtn.addEventListener('click', async () => {
   if (!state.to) return;
   const { label, lat, lon, sourceUrl } = state.to;
@@ -4631,7 +4625,6 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   renderManeuverList(built.maneuvers);
   if (!state.navigating) renderRouteSummary(built.totalDistM, built.totalTimeS);
   el.bottomSheet.classList.remove('hidden');
-  el.mapControls.classList.add('raised');
   // Re-measure now that the sheet is actually visible — on first render of
   // a trip, renderRouteOptions() (which also calls this) runs BEFORE this
   // line, while the sheet (and everything inside it) still has zero height
@@ -4814,7 +4807,6 @@ async function renderTransitRoute(itinerary) {
   const totalDistM = itinerary.legs.reduce((sum, l) => sum + (l.distance || 0), 0);
   el.sheetSummary.textContent = `${formatDistance(totalDistM)} · about ${formatDuration(itinerary.duration)}`;
   el.bottomSheet.classList.remove('hidden');
-  el.mapControls.classList.add('raised');
 }
 
 el.planBtn.addEventListener('click', async () => {
@@ -4900,6 +4892,24 @@ let sheetPeekPx = 136; // updated by updateSheetPeekHeight() below — 136 is on
 function sheetHalfPx() { return window.innerHeight * 0.42; } // keep in sync with .half's 42vh — the middle stop, so a full drag-up doesn't have to mean "barely any map left"
 function sheetExpandedPx() { return window.innerHeight * 0.72; } // keep in sync with .expanded's 72vh
 
+// Keeps #map-controls/#map-controls-left clear of the bottom sheet no
+// matter its current state — a single hardcoded "raised" offset (the old
+// approach) only ever matched the sheet's default peek height, so dragging
+// it to the half/expanded stop buried these buttons underneath it (both
+// live at the same z-index, and #bottom-sheet comes later in the DOM).
+// ResizeObserver reacts to every way the sheet's rendered height can
+// change — peek re-measurement, a half/expanded snap, a live drag, or the
+// hidden<->visible toggle itself — in one place, rather than threading a
+// manual sync call through each of those call sites individually.
+const MAP_CONTROLS_CLEARANCE_GAP_PX = 14;
+function syncMapControlsClearance() {
+  const visible = !el.bottomSheet.classList.contains('hidden');
+  const bottom = visible ? Math.ceil(el.bottomSheet.getBoundingClientRect().height) + MAP_CONTROLS_CLEARANCE_GAP_PX : 24;
+  el.mapControls.style.bottom = `${bottom}px`;
+  el.mapControlsLeft.style.bottom = `${bottom}px`;
+}
+new ResizeObserver(syncMapControlsClearance).observe(el.bottomSheet);
+
 /** The sheet's default "peek" landing state needs to fit the handle/summary,
  * route options (only present with 2+ meaningfully different routes), and
  * the action buttons all at once with no scrolling — a fixed guess clips
@@ -4966,6 +4976,12 @@ el.sheetHandle.addEventListener('pointerdown', (e) => {
   sheetDragStartY = e.clientY;
   sheetDragStartHeight = el.bottomSheet.getBoundingClientRect().height;
   el.bottomSheet.classList.add('dragging');
+  // Same reason #bottom-sheet.dragging turns its own transition off — the
+  // ResizeObserver-driven clearance (syncMapControlsClearance) updates on
+  // every pointermove frame, and the eased transition would otherwise lag
+  // a beat behind the sheet's actual edge the whole way up/down.
+  el.mapControls.classList.add('no-transition');
+  el.mapControlsLeft.classList.add('no-transition');
   el.sheetHandle.setPointerCapture(e.pointerId);
 });
 
@@ -4981,6 +4997,8 @@ function endSheetDrag(e) {
   if (!sheetDragging) return;
   sheetDragging = false;
   el.bottomSheet.classList.remove('dragging');
+  el.mapControls.classList.remove('no-transition');
+  el.mapControlsLeft.classList.remove('no-transition');
   el.bottomSheet.style.maxHeight = ''; // hand control back to the CSS class
   if (sheetDragDistance < 10) {
     // Barely moved — treat it as a plain tap on the handle: step to the next
@@ -5030,7 +5048,6 @@ function cancelPlannedRoute() {
   hideRouteSearchFeature();
   hideRouteChipsInline();
   hideElevationProfile();
-  el.mapControls.classList.remove('raised');
 
   el.fromInput.value = '';
   el.toInput.value = '';
@@ -5839,7 +5856,6 @@ if (shareTargetText) {
         renderManeuverList(state.route.maneuvers);
         renderRouteSummary(state.route.totalDistM, state.route.totalTimeS);
         el.bottomSheet.classList.remove('hidden');
-        el.mapControls.classList.add('raised');
         goToDirections({ from: state.from, to: state.to }); // also clears stops — repopulate after
         (saved.stops || []).forEach((stop) => addStopRow(stop));
         updatePlanningMarkers();

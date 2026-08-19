@@ -661,7 +661,13 @@ button {
 /* ---------------------------------------------------------------- floating buttons */
 
 /* Google-Maps-style control stack: zoom +/- above a "my location" button,
-   pinned bottom-right and raised clear of the bottom sheet once it appears. */
+   pinned bottom-right. `bottom` is written inline by syncMapControlsClearance
+   (app.js) rather than a fixed CSS value — a single hardcoded offset only
+   ever matched the sheet's default "peek" height, so dragging it to the
+   half/expanded stop buried these buttons underneath it (same z-index,
+   #bottom-sheet later in the DOM). Kept in a ResizeObserver so it tracks
+   every way the sheet's rendered height can change in one place: peek
+   re-measurement, half/expanded snap, or a live drag. */
 #map-controls {
   position: fixed;
   right: 14px;
@@ -673,12 +679,16 @@ button {
   gap: 10px;
   transition: bottom 0.25s ease;
 }
-#map-controls.raised { bottom: 148px; }
+/* Suppressed during an active sheet drag (app.js toggles this alongside
+   #bottom-sheet.dragging) — the eased transition would otherwise lag a
+   frame behind the sheet's edge the whole way, same reason
+   #bottom-sheet.dragging itself turns its own transition off. */
+#map-controls.no-transition { transition: none; }
 
-/* Mirror of #map-controls on the left, currently just the help/docs
-   button — kept as its own stack (not merged into #map-controls) in case
-   anything else lands here later. Raises in sync via a MutationObserver in
-   app.js rather than duplicating #map-controls' own raise/lower calls. */
+/* Mirror of #map-controls on the left, currently just the voice-mode and
+   satellite-view toggles — kept as its own stack (not merged into
+   #map-controls) in case anything else lands here later. Clearance is kept
+   in sync with #map-controls by the same syncMapControlsClearance call. */
 #map-controls-left {
   position: fixed;
   left: 14px;
@@ -690,7 +700,7 @@ button {
   gap: 10px;
   transition: bottom 0.25s ease;
 }
-#map-controls-left.raised { bottom: 148px; }
+#map-controls-left.no-transition { transition: none; }
 
 /* Weather badge — round like the .fab family, tap to force-refresh (see
    handleWeatherBadgeRefresh in app.js), so it's its own class rather than a
