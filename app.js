@@ -2274,6 +2274,7 @@ if (el.selfHostedValhallaToggle) {
     localStorage.setItem(SELF_HOSTED_VALHALLA_STORAGE_KEY, useSelfHostedValhalla ? '1' : '0');
     el.selfHostedValhallaToggle.classList.toggle('active', useSelfHostedValhalla);
     el.selfHostedValhallaToggle.setAttribute('aria-checked', String(useSelfHostedValhalla));
+    resolverDebugLog(`Valhalla: self-hosted routing turned ${useSelfHostedValhalla ? 'on' : 'off'} via the Developer tools toggle.`);
   });
 }
 
@@ -4464,36 +4465,73 @@ const valhallaLimiter = createLimiter(CONFIG.VALHALLA_MIN_INTERVAL_MS);
 const selfHostedValhallaLimiter = createLimiter(CONFIG.SELF_HOSTED_VALHALLA_MIN_INTERVAL_MS);
 
 /** Picks which Valhalla instance a request should use, and enforces that
- * instance's rate limiter before returning — every caller just awaits this
- * once instead of separately picking a URL and awaiting a limiter. A no-op
- * to VALHALLA_URL/valhallaLimiter (today's exact behaviour) whenever
- * USE_SELF_HOSTED_VALHALLA is off — this whole dispatcher only matters for
- * testing/running a self-hosted instance (see config.js). `points` is any
+ * instance's rate limiter before returning. A no-op to VALHALLA_URL (today's
+ * exact behaviour) whenever USE_SELF_HOSTED_VALHALLA is off. `points` is any
  * array of {lat, lon}-shaped objects; ALL of them must fall inside
- * SELF_HOSTED_VALHALLA_COVERAGE_BBOX for the self-hosted server to be used,
+ * SELF_HOSTED_VALHALLA_COVERAGE_BBOX for the self-hosted server to be tried,
  * since Valhalla can't route one trip across two separate graphs — a
  * request with even one waypoint outside the self-hosted graph's coverage
  * has no route data for that waypoint at all, so the whole request goes to
- * VALHALLA_URL instead. */
+ * VALHALLA_URL instead.
+ *
+ * When self-hosted routing IS attempted, this deliberately returns this
+ * deployment's own /api/valhalla-* proxy path rather than a real hostname —
+ * the self-hosted server's actual address is a Cloudflare secret
+ * (SELF_HOSTED_VALHALLA_URL) the client is never told, see
+ * lib/valhalla-proxy.js. `selfHosted: true` tells fetchValhalla to treat a
+ * 501 response (nothing configured on this deployment) as a signal to fall
+ * back to VALHALLA_URL, instead of surfacing it as a real error. */
 async function valhallaTarget(points) {
   if (!useSelfHostedValhalla) {
     await valhallaLimiter();
-    return CONFIG.VALHALLA_URL;
+    return { base: CONFIG.VALHALLA_URL, selfHosted: false };
   }
   const box = CONFIG.SELF_HOSTED_VALHALLA_COVERAGE_BBOX;
   const allInside = !box || points.every((p) => p.lon >= box.minLon && p.lon <= box.maxLon && p.lat >= box.minLat && p.lat <= box.maxLat);
   if (allInside) {
-    // The only reliable way to confirm the self-hosted instance actually
-    // served a given trip, rather than silently falling back — visible in
-    // the on-screen Debug mode panel, not just the browser's own devtools
-    // console, so it's checkable from a phone too.
-    resolverDebugLog(`Valhalla: using self-hosted server (${new URL(CONFIG.SELF_HOSTED_VALHALLA_URL).hostname}) — all ${points.length} waypoint(s) inside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`, 'success');
     await selfHostedValhallaLimiter();
-    return CONFIG.SELF_HOSTED_VALHALLA_URL;
+    const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+    return { base, selfHosted: true };
   }
-  resolverDebugLog(`Valhalla: using public fallback (${new URL(CONFIG.VALHALLA_URL).hostname}) — at least one waypoint falls outside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`, 'warn');
+  resolverDebugLog(`Valhalla: using the public server (${new URL(CONFIG.VALHALLA_URL).hostname}) — at least one waypoint falls outside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`, 'warn');
   await valhallaLimiter();
-  return CONFIG.VALHALLA_URL;
+  return { base: CONFIG.VALHALLA_URL, selfHosted: false };
+}
+
+/** POSTs `body` to Valhalla's `action` endpoint (`route` or `height`),
+ * through valhallaTarget's self-hosted/public choice. When the self-hosted
+ * proxy comes back 501 (SELF_HOSTED_VALHALLA_URL not set on this
+ * deployment), transparently retries against the public server instead of
+ * surfacing an error — mirrors fetchNearbyChargingStations' handling of
+ * Open Charge Map's missing-key case. Any OTHER failure from an actually
+ * self-hosted request (unreachable, timeout, non-501 error) is NOT
+ * retried — that's a real problem worth surfacing, not silently masking
+ * (confirmed live: a self-hosted instance that's simply down should fail
+ * outright, not quietly fall back). */
+async function fetchValhalla(action, points, body) {
+  const target = await valhallaTarget(points);
+  const doFetch = (url) => fetchWithTimeout(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(body),
+  });
+  if (target.selfHosted) resolverDebugLog(`Valhalla: attempting self-hosted routing (${action}) for ${points.length} waypoint(s) inside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`);
+  let res;
+  try {
+    res = await doFetch(target.selfHosted ? `${target.base}/api/valhalla-${action}` : `${target.base}/${action}`);
+  } catch (err) {
+    if (!target.selfHosted) throw err;
+    resolverDebugLog(`Valhalla: could not reach the self-hosted routing proxy (${err.message || err}).`, 'error');
+    throw err;
+  }
+  if (target.selfHosted && res.status === 501) {
+    resolverDebugLog('Valhalla: self-hosted routing is on but SELF_HOSTED_VALHALLA_URL is not set on this deployment — falling back to the public server.', 'warn');
+    await valhallaLimiter();
+    res = await doFetch(`${CONFIG.VALHALLA_URL}/${action}`);
+  } else if (target.selfHosted) {
+    resolverDebugLog(res.ok ? `Valhalla: routed via the self-hosted server for ${points.length} waypoint(s).` : `Valhalla: self-hosted server returned HTTP ${res.status}.`, res.ok ? 'success' : 'error');
+  }
+  return res;
 }
 
 /** `stops` (optional) are intermediate waypoints visited in order between
@@ -4613,7 +4651,6 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   if (valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
 
   const waypoints = [from, ...stops, to];
-  const valhallaBase = await valhallaTarget(waypoints);
   const body = {
     // heading/heading_tolerance pass through when a location carries them
     // (see triggerReroute) — Valhalla uses this to snap to the road edge
@@ -4636,25 +4673,22 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   if (wantAlternates > 0) body.alternates = wantAlternates;
   let res;
   try {
-    res = await fetchWithTimeout(`${valhallaBase}/route`, {
-      method: 'POST',
-      // text/plain, not application/json: Valhalla parses the body as JSON
-      // regardless of the declared content-type (confirmed live), but
-      // application/json is NOT one of the three CORS-safelisted content
-      // types (text/plain, application/x-www-form-urlencoded,
-      // multipart/form-data) — a browser sends a CORS preflight (OPTIONS)
-      // for anything else. valhalla_service's own built-in HTTP server
-      // doesn't implement OPTIONS at all (confirmed live: HTTP 405), so a
-      // self-hosted instance with no reverse proxy in front (nginx, which
-      // is what actually makes the public demo server's CORS work) fails
-      // outright with a bare "Failed to fetch" the moment this is called
-      // cross-origin — same-origin deployments never notice since a
-      // preflight is only needed for cross-origin requests in the first
-      // place. text/plain sidesteps the problem entirely, for every
-      // deployment, not just self-hosted ones.
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(body),
-    });
+    // text/plain, not application/json: Valhalla parses the body as JSON
+    // regardless of the declared content-type (confirmed live), but
+    // application/json is NOT one of the three CORS-safelisted content
+    // types (text/plain, application/x-www-form-urlencoded,
+    // multipart/form-data) — a browser sends a CORS preflight (OPTIONS)
+    // for anything else. valhalla_service's own built-in HTTP server
+    // doesn't implement OPTIONS at all (confirmed live: HTTP 405), so a
+    // self-hosted instance with no reverse proxy in front (nginx, which
+    // is what actually makes the public demo server's CORS work) fails
+    // outright with a bare "Failed to fetch" the moment this is called
+    // cross-origin — same-origin deployments never notice since a
+    // preflight is only needed for cross-origin requests in the first
+    // place. text/plain sidesteps the problem entirely, for every
+    // deployment, not just self-hosted ones. (fetchValhalla applies this
+    // uniformly, including to the /api/valhalla-route proxy hop.)
+    res = await fetchValhalla('route', waypoints, body);
   } catch (err) {
     throw new Error(err.name === 'AbortError'
       ? 'The routing service is taking too long to respond. Try again in a moment.'
@@ -4702,15 +4736,7 @@ function sampleCoordsForHeight(coords, maxPoints) {
  * callers must treat that as "no chart", never a user-facing error. */
 async function fetchElevationProfile(coords) {
   const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
-  const valhallaBase = await valhallaTarget(shape);
-  const res = await fetchWithTimeout(`${valhallaBase}/height`, {
-    method: 'POST',
-    // text/plain — see the matching comment on the /route call in
-    // requestRoute for why (avoids a CORS preflight that a self-hosted,
-    // reverse-proxy-less Valhalla instance can't answer).
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify({ range: true, shape }),
-  });
+  const res = await fetchValhalla('height', shape, { range: true, shape });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
   const data = await res.json();
   if (!data.range_height || !data.range_height.length) throw new Error('No elevation data returned.');

@@ -7,12 +7,15 @@
 // false`, so nothing here can shadow a real static file).
 import { resolveMapsUrl } from './lib/resolve-maps-url.js';
 import { openChargePoi } from './lib/opencharge-poi.js';
+import { valhallaProxy } from './lib/valhalla-proxy.js';
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/resolve-maps-url') return resolveMapsUrl(url);
     if (url.pathname === '/api/opencharge-poi') return openChargePoi(url, env);
+    if (url.pathname === '/api/valhalla-route') return valhallaProxy('route', request, env);
+    if (url.pathname === '/api/valhalla-height') return valhallaProxy('height', request, env);
     return env.ASSETS.fetch(request);
   },
 };

@@ -57,23 +57,56 @@ export const CONFIG = {
   VALHALLA_URL: 'https://valhalla1.openstreetmap.de',
   VALHALLA_MIN_INTERVAL_MS: 1100,
 
-  // Optional second Valhalla instance, tried before the one above — handy
-  // for testing a self-hosted setup without permanently switching the whole
-  // app over to it: flip USE_SELF_HOSTED_VALHALLA on/off and everything else
-  // below stays configured. SELF_HOSTED_VALHALLA_COVERAGE_BBOX matters when
-  // your self-hosted graph only covers part of the world (e.g. a single
-  // BBBike/Geofabrik extract, not a full-planet build): a request with any
-  // waypoint outside the box has no route data available there at all — set
-  // it to your extract's bounds, or leave it `null` if your instance covers
-  // everywhere you'll ever route. Anything outside the box falls back to
-  // VALHALLA_URL above automatically — but this is a coverage check only,
-  // not a health check: if the self-hosted instance is unreachable for a
-  // waypoint that IS inside the box, that request fails outright rather
-  // than silently retrying against VALHALLA_URL (confirmed live).
-  USE_SELF_HOSTED_VALHALLA: false,
-  SELF_HOSTED_VALHALLA_URL: 'https://valhalla.example.com',
+  // Optional second Valhalla instance, tried before the one above. True by
+  // default — but like OPENCHARGEMAP_ENABLED below, this flag alone does
+  // nothing sensitive; the real gate is SELF_HOSTED_VALHALLA_URL, which
+  // lives ONLY as a Cloudflare secret/variable on your Worker or Pages
+  // deployment, never in this file (this file is a plain static asset
+  // shipped to every visitor's browser — a personal server's real address
+  // doesn't belong here). The client calls this deployment's own
+  // /api/valhalla-route and /api/valhalla-height (see lib/valhalla-proxy.js,
+  // worker.js, functions/api/valhalla-route.js, functions/api/valhalla-height.js),
+  // which attach the real address server-side. For a plain Worker:
+  // `wrangler secret put SELF_HOSTED_VALHALLA_URL`. For Cloudflare Pages:
+  // dashboard → your project → Settings → Environment variables → add it as
+  // a secret (encrypted) variable, not a plain one.
+  //   If it isn't set on a given deployment, /api/valhalla-route and
+  //   /api/valhalla-height return 501 and the app falls back to the public
+  //   VALHALLA_URL above for that request — see fetchValhalla in app.js.
+  //   That costs one extra same-edge round trip per route/elevation request
+  //   on a deployment with nothing self-hosted configured; set this to
+  //   `false` to skip it entirely and always go straight to VALHALLA_URL.
+  //
+  // The "Self-hosted Valhalla" toggle in Developer tools overrides this at
+  // runtime per device (see useSelfHostedValhalla in app.js) — turning it
+  // off there always goes straight to VALHALLA_URL, bypassing the proxy
+  // attempt regardless of this default.
+  //
+  // SELF_HOSTED_VALHALLA_COVERAGE_BBOX matters when your self-hosted graph
+  // only covers part of the world (e.g. a single BBBike/Geofabrik extract,
+  // not a full-planet build): a request with any waypoint outside the box
+  // has no route data available there at all — set it to your extract's
+  // bounds, or leave it `null` if your instance covers everywhere you'll
+  // ever route (or if nothing is self-hosted on this deployment at all).
+  // Anything outside the box goes straight to VALHALLA_URL, no proxy
+  // attempt — but this is a coverage check only, not a health check: if the
+  // self-hosted instance is unreachable for a waypoint that IS inside the
+  // box, that request fails outright rather than silently retrying against
+  // VALHALLA_URL (confirmed live; unlike the 501/not-configured case above,
+  // this is a real error worth surfacing, not silently masking).
+  //
+  // **If you're deploying your own copy of this app, change (or null out)
+  // the bounds below** — they're this project's maintainer's own self-hosted
+  // extract coverage (greater Kochi + surrounding highways), not a generic
+  // default. Left as-is, waypoints outside that area on YOUR deployment just
+  // go straight to VALHALLA_URL (harmless), but your own self-hosted
+  // instance — if you set one up at a different location — would never
+  // actually get tried, since none of your waypoints would fall inside
+  // someone else's bounding box. Same category of thing as
+  // GEOCODE_COUNTRY_CODES above defaulting to India.
+  USE_SELF_HOSTED_VALHALLA: true,
   SELF_HOSTED_VALHALLA_MIN_INTERVAL_MS: 200,
-  SELF_HOSTED_VALHALLA_COVERAGE_BBOX: null, // e.g. { minLon: 76.127, minLat: 9.563, maxLon: 77.037, maxLat: 10.268 }
+  SELF_HOSTED_VALHALLA_COVERAGE_BBOX: { minLon: 76.127, minLat: 9.563, maxLon: 77.037, maxLat: 10.268 },
 
   // Caps how many shape points get sent to Valhalla's /height action when
   // building a walking route's elevation profile — keeps that request body
@@ -216,26 +249,25 @@ export const CONFIG = {
   MAPILLARY_SEARCH_RADIUS_M: 60,   // how far from a tapped/picked point to look for the nearest image
 
   // --- EV charging details: Open Charge Map ------------------------------------
-  // Off by default — the EV charging category chip (and EV results in
-  // "search along the route") fall back to plain OSM amenity=charging_station
-  // search, with no connector/power/operator/cost/status detail. Turning
-  // this on takes TWO steps, not one:
-  //   1. Set this to `true`.
-  //   2. Set OPENCHARGEMAP_API_KEY as a Cloudflare secret/variable on your
-  //      Worker or Pages deployment (free key: register at
-  //      https://openchargemap.org/site/develop/api) — NEVER put the key
-  //      here. This file is a plain static asset shipped to every visitor's
-  //      browser; a key here would be public. The client calls this
-  //      deployment's own /api/opencharge-poi (see lib/opencharge-poi.js,
-  //      worker.js, functions/api/opencharge-poi.js), which attaches the
-  //      real key server-side — the browser never sees it. For a plain
-  //      Worker: `wrangler secret put OPENCHARGEMAP_API_KEY`. For Cloudflare
-  //      Pages: dashboard → your project → Settings → Environment variables
-  //      → add it as a secret (encrypted) variable, not a plain one.
-  //   Only works on a Cloudflare Worker or Pages deployment (same
-  //   requirement as the Google Maps link resolver) — plain static hosting
-  //   (GitHub Pages) has no server-side hop to attach the key on, so this
-  //   silently stays off there even if set to `true`.
+  // True by default — but this flag alone does nothing sensitive. The real
+  // gate is OPENCHARGEMAP_API_KEY, which lives ONLY as a Cloudflare
+  // secret/variable on your Worker or Pages deployment (free key: register
+  // at https://openchargemap.org/site/develop/api), never in this file. This
+  // file is a plain static asset shipped to every visitor's browser; a key
+  // here would be public. The client calls this deployment's own
+  // /api/opencharge-poi (see lib/opencharge-poi.js, worker.js,
+  // functions/api/opencharge-poi.js), which attaches the real key
+  // server-side — the browser never sees it. For a plain Worker:
+  // `wrangler secret put OPENCHARGEMAP_API_KEY`. For Cloudflare Pages:
+  // dashboard → your project → Settings → Environment variables → add it as
+  // a secret (encrypted) variable, not a plain one.
+  //   If the key isn't set on a given deployment, /api/opencharge-poi
+  //   returns 501 and the app gracefully falls back to plain OSM
+  //   amenity=charging_station search — see fetchNearbyChargingStations in
+  //   app.js. Set this to `false` only if you want to skip that
+  //   /api/opencharge-poi round-trip entirely (e.g. on a plain static host
+  //   like GitHub Pages, which has no server-side hop to attach a key on
+  //   anyway) and go straight to OSM search.
   //
   // Deliberately NOT a live "is this charger free right now" feature: Open
   // Charge Map's own StatusType is a community-maintained *operational* flag
@@ -246,7 +278,7 @@ export const CONFIG = {
   // this DOES get you: real connector type/power/operator/cost detail, plus
   // an honestly-labeled "last reported" status — see fetchNearbyChargingStations
   // in app.js.
-  OPENCHARGEMAP_ENABLED: false,
+  OPENCHARGEMAP_ENABLED: true,
   OPENCHARGEMAP_MIN_INTERVAL_MS: 1000,
   OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
 
