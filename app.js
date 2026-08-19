@@ -49,6 +49,19 @@ const el = {
   evStatusDot: document.getElementById('ev-status-dot'),
   evStatusText: document.getElementById('ev-status-text'),
   evOperatorLink: document.getElementById('ev-operator-link'),
+  evViewDetailsBtn: document.getElementById('ev-view-details-btn'),
+  evDetailsPanel: document.getElementById('ev-details-panel'),
+  evDetailsPanelTitle: document.getElementById('ev-details-panel-title'),
+  evDetailsPanelCloseBtn: document.getElementById('ev-details-panel-close-btn'),
+  evDetailsPanelStatusDot: document.getElementById('ev-details-panel-status-dot'),
+  evDetailsPanelStatusText: document.getElementById('ev-details-panel-status-text'),
+  evDetailsPanelConnectors: document.getElementById('ev-details-panel-connectors'),
+  evDetailsPanelOperator: document.getElementById('ev-details-panel-operator'),
+  evDetailsPanelCost: document.getElementById('ev-details-panel-cost'),
+  evDetailsPanelAddressSection: document.getElementById('ev-details-panel-address-section'),
+  evDetailsPanelAddress: document.getElementById('ev-details-panel-address'),
+  evDetailsPanelCommentsSection: document.getElementById('ev-details-panel-comments-section'),
+  evDetailsPanelComments: document.getElementById('ev-details-panel-comments'),
   placeDirectionsBtn: document.getElementById('place-directions-btn'),
   placeCardSaveBtn: document.getElementById('place-card-save-btn'),
   placeClearBtn: document.getElementById('place-clear-btn'),
@@ -1855,6 +1868,7 @@ function normalizeChargingStation(poi) {
     currentType: (c.CurrentType && c.CurrentType.Title) || null,
   }));
   const statusTitle = (poi.StatusType && poi.StatusType.Title) || null;
+  const addressParts = [addr.AddressLine1, addr.Town, addr.StateOrProvince, addr.Postcode].filter(Boolean);
   return {
     label: addr.Title || 'Charging station',
     lat: addr.Latitude,
@@ -1862,6 +1876,7 @@ function normalizeChargingStation(poi) {
     evDetails: {
       connections,
       operatorName: (poi.OperatorInfo && poi.OperatorInfo.Title) || null,
+      operatorPhone: (poi.OperatorInfo && poi.OperatorInfo.PhonePrimaryContact) || null,
       operatorWebsite: (poi.OperatorInfo && poi.OperatorInfo.WebsiteURL) || null,
       usageType: (poi.UsageType && poi.UsageType.Title) || null,
       usageCost: poi.UsageCost || null,
@@ -1870,6 +1885,8 @@ function normalizeChargingStation(poi) {
       statusKey: statusTitle ? (OCM_STATUS_KEY_BY_TITLE[statusTitle] || 'unknown') : 'unknown',
       statusAge: formatRelativeAge(poi.DateLastStatusUpdate),
       comments: poi.GeneralComments || null,
+      address: addressParts.length ? addressParts.join(', ') : null,
+      accessComments: addr.AccessComments || null,
     },
   };
 }
@@ -3122,6 +3139,53 @@ function renderEvDetailsCard(evDetails) {
   el.evDetailsCard.classList.remove('hidden');
 }
 
+/** The full-screen "View full details" page opened from #ev-details-card —
+ * shows everything normalizeChargingStation captured from Open Charge Map
+ * for the current station (state.to), not just the short summary the
+ * inline card above has room for: every connector (not only the first),
+ * operator phone, address, and access/general comments. */
+function renderEvDetailsPanel(label, evDetails) {
+  const {
+    connections, operatorName, operatorPhone, operatorWebsite, usageType, usageCost,
+    numberOfPoints, statusLabel, statusKey, statusAge, address, accessComments, comments,
+  } = evDetails;
+
+  el.evDetailsPanelTitle.textContent = splitPlaceLabel(label).primary;
+
+  el.evDetailsPanelStatusDot.className = `ev-status-dot ${statusKey}`;
+  el.evDetailsPanelStatusText.textContent = statusLabel
+    ? `Reported ${statusLabel.toLowerCase()} · ${statusAge ? `checked ${statusAge}` : 'check-in date unknown'}`
+    : 'Status not recently reported';
+
+  el.evDetailsPanelConnectors.innerHTML = connections.length
+    ? connections.map((c) => {
+      const meta = [c.powerKW ? `${c.powerKW} kW` : null, c.currentType, c.quantity > 1 ? `${c.quantity} points` : null].filter(Boolean).join(' · ');
+      return `<div class="ev-panel-connector"><div class="ev-panel-connector-type">${escapeHtml(c.type)}</div>${meta ? `<div class="ev-panel-connector-meta">${escapeHtml(meta)}</div>` : ''}</div>`;
+    }).join('')
+    : '<div class="ev-panel-connector">Connector details not reported</div>';
+  if (numberOfPoints) {
+    el.evDetailsPanelConnectors.innerHTML += `<div class="ev-panel-connector-meta" style="padding: 0 2px;">${numberOfPoints} charging point${numberOfPoints === 1 ? '' : 's'} total at this station</div>`;
+  }
+
+  const operatorLines = [];
+  if (operatorName) operatorLines.push(escapeHtml(operatorName));
+  if (operatorPhone) operatorLines.push(escapeHtml(operatorPhone));
+  if (operatorWebsite) operatorLines.push(`<a href="${escapeHtml(operatorWebsite)}" target="_blank" rel="noopener">${escapeHtml(operatorWebsite)}</a>`);
+  el.evDetailsPanelOperator.innerHTML = operatorLines.length ? operatorLines.map((l) => `<div>${l}</div>`).join('') : '<div>Not reported</div>';
+
+  const costLines = [];
+  if (usageType) costLines.push(escapeHtml(usageType));
+  costLines.push(escapeHtml(usageCost || 'Cost not reported'));
+  if (accessComments) costLines.push(escapeHtml(accessComments));
+  el.evDetailsPanelCost.innerHTML = costLines.map((l) => `<div>${l}</div>`).join('');
+
+  el.evDetailsPanelAddressSection.classList.toggle('hidden', !address);
+  if (address) el.evDetailsPanelAddress.textContent = address;
+
+  el.evDetailsPanelCommentsSection.classList.toggle('hidden', !comments);
+  if (comments) el.evDetailsPanelComments.textContent = comments;
+}
+
 function showPlaceCard({ label, lat, lon, evDetails }) {
   const { primary, secondary } = splitPlaceLabel(label);
   el.placeCardPrimary.textContent = primary;
@@ -4274,6 +4338,14 @@ el.docsBtn.addEventListener('click', () => {
   el.docsPanel.classList.remove('hidden');
 });
 el.docsCloseBtn.addEventListener('click', goBackInApp);
+
+el.evViewDetailsBtn.addEventListener('click', () => {
+  if (!state.to || !state.to.evDetails) return;
+  renderEvDetailsPanel(state.to.label, state.to.evDetails);
+  pushBackLayer(() => el.evDetailsPanel.classList.add('hidden'));
+  el.evDetailsPanel.classList.remove('hidden');
+});
+el.evDetailsPanelCloseBtn.addEventListener('click', goBackInApp);
 
 el.placeCardSaveBtn.addEventListener('click', async () => {
   if (!state.to) return;

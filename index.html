@@ -239,6 +239,7 @@
       <div id="ev-operator-line" class="ev-detail-line"></div>
       <div id="ev-status-line" class="ev-detail-line"><span id="ev-status-dot" class="ev-status-dot"></span><span id="ev-status-text"></span></div>
       <a id="ev-operator-link" class="ev-detail-link hidden" href="#" target="_blank" rel="noopener">Operator website</a>
+      <button id="ev-view-details-btn" type="button" class="ev-detail-link">View full details</button>
     </div>
 
     <!-- ============ "Which list?" prompt — shared by every save-to-favorites
@@ -556,6 +557,44 @@
     </div>
   </div>
 
+  <!-- ============ EV charging station: full details ============
+       Everything normalizeChargingStation captured from Open Charge Map
+       for the currently-picked station, not just the short summary shown
+       inline in #ev-details-card — see renderEvDetailsPanel in app.js. -->
+  <div id="ev-details-panel" class="hidden">
+    <div class="panel-header">
+      <div id="ev-details-panel-title" class="panel-title">Charging station</div>
+      <button id="ev-details-panel-close-btn" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+    <div id="ev-details-panel-status" class="ev-panel-status">
+      <span id="ev-details-panel-status-dot" class="ev-status-dot"></span>
+      <span id="ev-details-panel-status-text"></span>
+    </div>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Connectors</h3>
+      <div id="ev-details-panel-connectors" class="ev-panel-connector-list"></div>
+    </section>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Operator</h3>
+      <div id="ev-details-panel-operator" class="ev-panel-lines"></div>
+    </section>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Cost &amp; access</h3>
+      <div id="ev-details-panel-cost" class="ev-panel-lines"></div>
+    </section>
+    <section id="ev-details-panel-address-section" class="ev-panel-section hidden">
+      <h3 class="ev-panel-section-title">Address</h3>
+      <div id="ev-details-panel-address" class="ev-panel-lines"></div>
+    </section>
+    <section id="ev-details-panel-comments-section" class="ev-panel-section hidden">
+      <h3 class="ev-panel-section-title">Notes</h3>
+      <p id="ev-details-panel-comments" class="ev-panel-comments"></p>
+    </section>
+    <p class="ev-panel-attribution">Data from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a>, a community-maintained database — details and status may be incomplete or out of date.</p>
+  </div>
+
   <!-- ============ Help & documentation ============
        A single scrollable page, no intra-panel navigation: each category is
        a plain-text section header + a flat grouped list of native
@@ -576,6 +615,13 @@
         <details class="docs-item">
           <summary>Searching for places<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body"><p>Type a place name into the search box at the top, or tap one of the category chips underneath it — Petrol, EV charging, Pharmacy, ATM, Hospital, Food, Parking, Hotels — to find the nearest one instantly.</p></div>
+        </details>
+        <details class="docs-item">
+          <summary>EV charging station details<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
+          <div class="docs-item-body">
+            <p>Picking an EV charging result (when Open Charge Map is configured for this deployment) shows a short summary right under the place card — connector type, operator, and a reported-status line. Tap <strong>View full details</strong> there for a full-screen page listing every connector, operator contact info, cost, address, and any access notes Open Charge Map has for that station.</p>
+            <p>The status line is always framed with an age ("checked 4 months ago") rather than a bare word — Open Charge Map's status is community-maintained and can be stale, never a live "in use right now" signal.</p>
+          </div>
         </details>
         <details class="docs-item">
           <summary>A place is missing?<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
