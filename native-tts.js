@@ -9,12 +9,16 @@
 import { TextToSpeech } from './vendor/capacitor-text-to-speech.js';
 
 // QueueStrategy.Flush (0) — stop whatever's currently speaking and speak
-// this instead, mirroring the web path's `speechSynthesis.cancel()` before
-// every prompt so turn instructions never queue up and play late/overlap.
+// this instead, mirroring the web path's `speechSynthesis.cancel()`.
+// QueueStrategy.Add (1) — let the in-flight utterance finish first, same
+// idea as the web path skipping `cancel()` when `queue: true` (see speak()
+// in app.js) — used for back-to-back turn-guidance prompts so the first
+// one isn't truncated mid-sentence by the next.
 const QUEUE_STRATEGY_FLUSH = 0;
+const QUEUE_STRATEGY_ADD = 1;
 
 /** Speaks `text` via the native TTS engine. Returns the plugin's promise
  * (rejects on failure) so callers can log/handle errors themselves. */
-export function speakNative(text) {
-  return TextToSpeech.speak({ text, queueStrategy: QUEUE_STRATEGY_FLUSH });
+export function speakNative(text, { queue = false } = {}) {
+  return TextToSpeech.speak({ text, queueStrategy: queue ? QUEUE_STRATEGY_ADD : QUEUE_STRATEGY_FLUSH });
 }

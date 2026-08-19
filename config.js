@@ -85,12 +85,33 @@ export const CONFIG = {
   RESOLVE_MAPS_URL_BASE: 'https://osm-navigator.siddharthshiv2798.workers.dev',
 
   // --- Navigation / voice guidance behaviour ----------------------------------
-  // Speak the next instruction once the live position is within this many
-  // metres of the upcoming maneuver ("in X meters, turn right" — see speak()
-  // call sites in app.js). Below VOICE_NEAR_DISTANCE_M, a second, shorter
-  // reminder is spoken with no distance prefix ("turn right").
-  VOICE_PROMPT_DISTANCE_M: 220,
-  VOICE_NEAR_DISTANCE_M: 80,
+  // The far/near callout distances are speed-scaled (see dynamicVoiceLeadM in
+  // app.js), not flat — matching Google Maps/Waze/TomTom convention of a
+  // target TIME-of-lead at current speed rather than a fixed distance (a
+  // flat 220m is ~27s of warning at 30km/h city driving but under 8s at
+  // 100km/h highway speed — neither is right for both). These four values
+  // are the *_LEAD_TIME_S target lead times and the *_MIN_M/*_MAX_M clamp
+  // bounds that result is kept within, so it never collapses to nothing
+  // while stopped or balloons unreasonably large at sustained high speed.
+  //
+  // Far callout ("in X meters, turn right"): ~10-20s lead is the commonly
+  // cited range; 14s is the midpoint.
+  VOICE_PROMPT_LEAD_TIME_S: 14,
+  VOICE_PROMPT_MIN_M: 120,
+  VOICE_PROMPT_MAX_M: 700,
+  // Near callout ("turn right", no distance prefix): a deliberately
+  // SHORTER lead time than the far callout (not just a smaller distance) —
+  // "near" is fundamentally about time-to-maneuver, e.g. announcing this at
+  // a fixed 80m out reads as ages away while crawling in traffic but
+  // dangerously last-second at highway speed.
+  VOICE_NEAR_LEAD_TIME_S: 5,
+  VOICE_NEAR_MIN_M: 20,
+  VOICE_NEAR_MAX_M: 140,
+  // Fallback used whenever pos.coords.speed is null/unreliable (a real,
+  // documented GPS quirk at low accuracy) — ~30km/h, a reasonable urban
+  // default so voice timing degrades to something sane rather than
+  // collapsing to *_MIN_M on every low-accuracy fix.
+  VOICE_DEFAULT_SPEED_MPS: 8.3,
 
   // Once the live position is within this many metres of the destination,
   // navigation ends automatically (same as tapping "End") and "You have
@@ -117,6 +138,23 @@ export const CONFIG = {
   // clearing the timer once offset drops meaningfully lower (not just
   // barely back under the trip line) avoids that flapping.
   DEVIATION_CLEAR_THRESHOLD_M: 20,
+
+  // Same hysteresis idea as DEVIATION_CLEAR_THRESHOLD_M above, applied to
+  // which maneuver is "current"/"next" instead of off-route detection.
+  // updateActiveManeuver picks the active maneuver by comparing live
+  // traveled-distance against each maneuver's cumulative start distance —
+  // recomputed on every GPS fix. Near a maneuver boundary, GPS jitter
+  // (commonly ±5-15m fix-to-fix) can straddle that exact boundary, flipping
+  // which maneuver is "next" back and forth every fix — this is what
+  // caused the nav banner to visibly flicker between two steps. Requiring
+  // the live position to clear a boundary by this margin before actually
+  // advancing (see updateActiveManeuver) absorbs that jitter. Deliberately
+  // smaller than DEVIATION_CLEAR_THRESHOLD_M's 20m: that one only needs to
+  // reject a sustained multi-second signal, this one only needs to survive
+  // one or two noisy ticks right at a boundary — a larger value here would
+  // stall advancement on real maneuver segments shorter than it (confirmed
+  // live: a 23m segment between two turns is a real case, not a rarity).
+  MANEUVER_ADVANCE_HYSTERESIS_M: 10,
 
   // Camera behaviour while auto-following during navigation.
   NAV_ZOOM: 17,

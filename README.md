@@ -26,7 +26,7 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, on or off navigation, toggled from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes.
 - **Turn-by-turn navigation** — live position arrow, traveled-route dulling, the screen stays awake for the whole drive, arrival is detected automatically. Survives a mid-drive browser reload (resumes exactly where it left off) and reroutes onto whatever road you actually took, not just "U-turn back."
-- **Voice guidance** — early ("~220m out") and near ("~80m") turn prompts, natural phrasing (roundabout exit counts, "slight" instead of "bear"), a mute/important-only/full toggle, a distinct alert tone on deviation, and a "continue straight for X km" call-out on long stretches.
+- **Voice guidance** — early and near turn prompts, both scaled to your actual driving speed (a fixed distance is early at highway speed and dangerously late in slow traffic) rather than a flat distance, natural phrasing (roundabout exit counts, "slight" instead of "bear"), a mute/important-only/full toggle, a distinct alert tone on deviation, a "continue straight for X km" call-out on long stretches, and combined single-prompt handling for two turns too close together to announce separately.
 - **Weather at a glance**, **search along the route**, **favorites & recent trips**, **offline map tiles**, **shareable route links** (no backend involved), **street-level imagery** via Mapillary when configured.
 - Works with the screen off via the [optional Android shell](#the-optional-android-shell).
 

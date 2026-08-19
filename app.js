@@ -165,6 +165,8 @@ const state = {
   poiMarkers: [],      // one per candidate in the current category/along-route search, cleared on next search or selection
   elevationHighlightMarker: null, // shows where a tapped elevation-chart point sits on the actual route, cleared with the chart itself
   currentLegIndex: 0,  // which leg of a multi-stop trip we're currently on — see updateActiveManeuver
+  currentManeuverIdx: 0, // ratcheted forward-only index into state.route.maneuvers — see updateActiveManeuver; reset to 0 alongside spokenFar/spokenNear/spokenContinue whenever state.route is replaced (renderRoute, startNavigation)
+  currentSpeedMps: null, // live GPS speed, or null when unavailable/unreliable — see onPositionUpdate and dynamicVoiceLeadM
   traveledM: null,     // distance travelled along state.route so far — see onPositionUpdate, used to scope "search along route" to what's still ahead once navigating
   puckMarker: null,
   myLocationMarker: null, // live "you are here" arrow shown by the locate button before navigation starts
@@ -338,6 +340,19 @@ function formatDistance(m) {
 function formatDistanceForSpeech(m) {
   if (m < 950) return `${Math.floor(m / 10) * 10} meters`;
   return `${(m / 1000).toFixed(1)} kilometers`;
+}
+
+/** Turns a target lead TIME into a lead DISTANCE at the current live speed,
+ * clamped to [minM, maxM] — see the CONFIG comment above VOICE_PROMPT_LEAD_TIME_S
+ * for why this is time-based rather than a flat distance (matches Google
+ * Maps/Waze/TomTom convention: the same fixed meter value is both too early
+ * in slow city traffic and dangerously late at highway speed). Falls back
+ * to CONFIG.VOICE_DEFAULT_SPEED_MPS whenever live speed isn't known yet or
+ * the GPS fix didn't report one (a real, documented low-accuracy quirk —
+ * see onPositionUpdate). */
+function dynamicVoiceLeadM(leadTimeS, minM, maxM) {
+  const speedMps = state.currentSpeedMps ?? CONFIG.VOICE_DEFAULT_SPEED_MPS;
+  return Math.min(maxM, Math.max(minM, speedMps * leadTimeS));
 }
 
 function formatDuration(s) {
@@ -577,6 +592,17 @@ function buildRouteState(trip, stops = []) {
         type: m.type,
         startDistM: cumM,
         legIndex: legIdx, // which origin→stop/stop→stop/stop→destination leg this belongs to
+        // Valhalla's own solution to "two turns too close together to speak
+        // both in full" — verbal_multi_cue is set on the maneuver right
+        // before a short segment, and verbal_pre_transition_instruction is
+        // already a natural combined phrase covering both maneuvers
+        // (confirmed live: a 23m segment produced "Drive southeast on MDR.
+        // Then Turn left onto Old NH 47."). See updateActiveManeuver's
+        // far-callout branch — speaking this instead of hand-building "In X
+        // meters, ${instruction}" is the whole fix, no client-side
+        // "are these two maneuvers close together" heuristic needed.
+        verbalMultiCue: !!m.verbal_multi_cue,
+        verbalPreTransition: m.verbal_pre_transition_instruction || null,
       });
       cumM += lengthM;
     });
@@ -4644,6 +4670,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.spokenContinue = new Set();
+  state.currentManeuverIdx = 0; // new maneuver array, entirely new startDistM boundaries — see updateActiveManeuver
   state.arrivedAnnounced = false;
 
   await awaitMapLoad();
@@ -5282,7 +5309,7 @@ function primeSpeechVoices() {
 }
 primeSpeechVoices();
 
-function speak(text, isImportant = false) {
+function speak(text, { isImportant = false, queue = false } = {}) {
   if (state.voiceMode === 'off') return;
   if (state.voiceMode === 'important' && !isImportant) return;
 
@@ -5293,8 +5320,8 @@ function speak(text, isImportant = false) {
     // the Web Speech Synthesis API at all. The web path below is
     // deliberately left untouched and web/PWA-only; the shell always uses
     // real native TTS instead (see native-tts.js).
-    resolverDebugLog(`speak() [native]: "${text}"`);
-    speakNative(text).catch((err) => resolverDebugLog(`speak() [native]: threw "${err.message}" for "${text}"`, 'error'));
+    resolverDebugLog(`speak() [native]: "${text}"${queue ? ' (queued)' : ''}`);
+    speakNative(text, { queue }).catch((err) => resolverDebugLog(`speak() [native]: threw "${err.message}" for "${text}"`, 'error'));
     return;
   }
 
@@ -5312,8 +5339,13 @@ function speak(text, isImportant = false) {
     // cancel() unconditionally right before speak() has been reported to
     // race the native TTS bridge on some Android WebView versions (the
     // cancel can land after the new utterance is already queued, silently
-    // killing it instead of the old one).
-    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) window.speechSynthesis.cancel();
+    // killing it instead of the old one). `queue: true` (turn-guidance
+    // call sites — see updateActiveManeuver) skips this entirely, letting
+    // speechSynthesis's own native queuing play the in-flight utterance
+    // out before starting the new one, so a driver always hears at least
+    // one complete instruction rather than having it truncated mid-
+    // sentence by the very next prompt (e.g. two closely-spaced turns).
+    if (!queue && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     // Explicitly resolving a voice (rather than leaving utterance.voice
     // unset) is the known fix for WebViews that silently no-op when asked
@@ -5409,14 +5441,45 @@ function clearTraveledRouteSegment() {
 
 /** Figures out which maneuver is "next" from how far the driver has
  * travelled along the route, updates the banner/list, and fires the voice
- * prompt once we're within VOICE_PROMPT_DISTANCE_M of it. */
+ * prompt once within a speed-scaled lead distance of it (see
+ * dynamicVoiceLeadM). state.currentManeuverIdx is a forward-only ratchet,
+ * not a fresh scan each call — see the hysteresis comment below. */
 function updateActiveManeuver(traveledM) {
   const maneuvers = state.route.maneuvers;
-  let currentIdx = 0;
+  // Raw, unfiltered read of "which maneuver does the live position fall
+  // under right now" — GPS jitter (commonly ±5-15m fix-to-fix) means this
+  // can flicker across a maneuver boundary from noise alone, especially
+  // when two maneuvers are close together (a short segment between them).
+  // This is deliberately NOT used directly below — see the ratchet.
+  let candidateIdx = 0;
   for (let i = 0; i < maneuvers.length; i++) {
-    if (maneuvers[i].startDistM <= traveledM) currentIdx = i;
+    if (maneuvers[i].startDistM <= traveledM) candidateIdx = i;
     else break;
   }
+  // Forward-only ratchet: state.currentManeuverIdx only ever advances, and
+  // only once traveledM clears the NEXT boundary by a real margin — same
+  // hysteresis idea as checkDeviation's DEVIATION_CLEAR_THRESHOLD_M below,
+  // applied here instead to stop the nav banner/voice prompts flickering
+  // between two maneuvers when GPS noise straddles their shared boundary
+  // (confirmed live: this is exactly what caused the reported "next step
+  // fluctuating between two different steps" bug).
+  //   - candidateIdx <= current: ignore (absorbs backward jitter).
+  //   - candidateIdx === current + 1: advance only once traveledM is
+  //     meaningfully past that boundary (CONFIG.MANEUVER_ADVANCE_HYSTERESIS_M)
+  //     — the single-step case where boundary-straddling jitter matters.
+  //   - candidateIdx > current + 1: advance immediately, no margin check —
+  //     GPS jitter of a few metres can never cross two whole maneuver
+  //     boundaries in one ~1s fix, so this is unambiguous real progress
+  //     (e.g. a stale fix after the tab was backgrounded, or several very
+  //     short maneuvers driven through between fixes) rather than noise.
+  if (candidateIdx === state.currentManeuverIdx + 1) {
+    if (traveledM >= maneuvers[candidateIdx].startDistM + CONFIG.MANEUVER_ADVANCE_HYSTERESIS_M) {
+      state.currentManeuverIdx = candidateIdx;
+    }
+  } else if (candidateIdx > state.currentManeuverIdx + 1) {
+    state.currentManeuverIdx = candidateIdx;
+  }
+  const currentIdx = state.currentManeuverIdx;
   // Which origin→stop/stop→stop/stop→destination leg we're currently on. A
   // reroute only needs to route through the stops still ahead — see
   // triggerReroute() — so this has to track live as the trip progresses.
@@ -5434,7 +5497,7 @@ function updateActiveManeuver(traveledM) {
   // at all on some real routes. Same action as tapping "End" yourself.
   if (!state.arrivedAnnounced && remainingM <= CONFIG.ARRIVAL_RADIUS_M) {
     state.arrivedAnnounced = true;
-    speak('You have arrived at your destination.', true); // important — still spoken in 'important' voice mode
+    speak('You have arrived at your destination.', { isImportant: true }); // important — still spoken in 'important' voice mode
     endNavigation(); // clears any status banner as part of its own cleanup — show the arrival message after, not before, so it isn't wiped
     showStatus('You have arrived at your destination.', 'success');
     return; // navigation just ended — nothing below is still meaningful
@@ -5450,7 +5513,7 @@ function updateActiveManeuver(traveledM) {
   const current = maneuvers[currentIdx];
   if (CONTINUE_STRAIGHT_TYPES.has(current.type) && current.lengthM >= CONTINUE_STRAIGHT_MIN_LENGTH_M && !state.spokenContinue.has(currentIdx)) {
     state.spokenContinue.add(currentIdx);
-    speak(`Continue straight for ${formatDistanceForSpeech(current.lengthM)}.`);
+    speak(`Continue straight for ${formatDistanceForSpeech(current.lengthM)}.`, { queue: true });
   }
 
   if (nextIdx !== null) {
@@ -5465,13 +5528,32 @@ function updateActiveManeuver(traveledM) {
     // plain "turn right" reminder right before it — same two-cue pattern
     // Google Maps uses, rather than one prompt that's either too early or
     // too abrupt on its own. Each stage fires at most once per maneuver
-    // (spokenFar/spokenNear), independently of the other.
-    if (distToNextM <= CONFIG.VOICE_PROMPT_DISTANCE_M && distToNextM > CONFIG.VOICE_NEAR_DISTANCE_M && !state.spokenFar.has(nextIdx)) {
-      speak(`In ${formatDistanceForSpeech(distToNextM)}, ${maneuvers[nextIdx].instruction}`);
+    // (spokenFar/spokenNear), independently of the other. Both thresholds
+    // are speed-scaled (dynamicVoiceLeadM), not flat distances — see the
+    // CONFIG comment above VOICE_PROMPT_LEAD_TIME_S.
+    const farLeadM = dynamicVoiceLeadM(CONFIG.VOICE_PROMPT_LEAD_TIME_S, CONFIG.VOICE_PROMPT_MIN_M, CONFIG.VOICE_PROMPT_MAX_M);
+    const nearLeadM = dynamicVoiceLeadM(CONFIG.VOICE_NEAR_LEAD_TIME_S, CONFIG.VOICE_NEAR_MIN_M, CONFIG.VOICE_NEAR_MAX_M);
+    if (distToNextM <= farLeadM && distToNextM > nearLeadM && !state.spokenFar.has(nextIdx)) {
+      const next = maneuvers[nextIdx];
+      if (next.verbalMultiCue && next.verbalPreTransition) {
+        // Valhalla already solved "two turns too close together to speak
+        // both in full" server-side — verbal_pre_transition_instruction is
+        // a complete, self-contained combined phrase covering both
+        // maneuvers (see buildRouteState). No "In X meters" prefix: it
+        // doesn't compose grammatically with an already-combined sentence,
+        // and Valhalla's own phrasing already carries its own framing.
+        // Marking spokenNear too means the near-callout below correctly
+        // never separately fires for this same maneuver — Valhalla's
+        // phrase already covers it.
+        speak(next.verbalPreTransition, { queue: true });
+        state.spokenNear.add(nextIdx);
+      } else {
+        speak(`In ${formatDistanceForSpeech(distToNextM)}, ${next.instruction}`, { queue: true });
+      }
       state.spokenFar.add(nextIdx);
     }
-    if (distToNextM <= CONFIG.VOICE_NEAR_DISTANCE_M && !state.spokenNear.has(nextIdx)) {
-      speak(maneuvers[nextIdx].instruction);
+    if (distToNextM <= nearLeadM && !state.spokenNear.has(nextIdx)) {
+      speak(maneuvers[nextIdx].instruction, { queue: true });
       state.spokenNear.add(nextIdx);
     }
   } else {
@@ -5598,6 +5680,10 @@ function onPositionUpdate(pos) {
   const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
   const lngLat = [lng, lat];
   updateSpeedText(speed);
+  // Stored as null (not defaulted here) whenever the fix didn't report a
+  // usable speed — the fallback default (CONFIG.VOICE_DEFAULT_SPEED_MPS) is
+  // applied once, at read time, in dynamicVoiceLeadM, not duplicated here.
+  state.currentSpeedMps = (typeof speed === 'number' && !Number.isNaN(speed) && speed >= 0) ? speed : null;
 
   // --- Heading: prefer the device's own compass/course-over-ground; fall
   // back to a bearing computed from the last two fixes when unavailable
@@ -5777,6 +5863,7 @@ async function startNavigation() {
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.spokenContinue = new Set();
+  state.currentManeuverIdx = 0; // covers the resume-after-reload path, which sets state.route directly without going through renderRoute
   state.arrivedAnnounced = false;
   state.lastFix = null;
   acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
