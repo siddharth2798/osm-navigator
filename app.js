@@ -477,6 +477,12 @@ let statusTimer = null;
  * "Couldn't restore your in-progress trip — starting fresh.". */
 function showStatus(message, type = 'info', opts = {}) {
   clearTimeout(statusTimer);
+  // Reset any leftover swipe-drag transform/opacity from a previous message
+  // — without this, a new message shown mid-gesture (e.g. right as a small,
+  // below-threshold drag was releasing) could inherit a half-dismissed
+  // look instead of appearing fully visible.
+  el.statusBanner.style.transform = '';
+  el.statusBanner.style.opacity = '';
   el.statusBanner.textContent = message;
   el.statusBanner.className = type;
   if (!opts.sticky) {
@@ -487,6 +493,55 @@ function clearStatus() {
   el.statusBanner.className = 'hidden';
   el.statusBanner.textContent = '';
 }
+
+// Swipe the status banner left or right to dismiss it immediately, instead
+// of waiting out its auto-dismiss timer (see showStatus) — same pointer-
+// event idiom as startStopDrag's list-reorder drag. Attached once, directly
+// on the banner element, since it's a single fixed element reused for every
+// message rather than one instance per message.
+(function setupStatusBannerSwipe() {
+  const DISMISS_THRESHOLD_PX = 60;
+  const FLING_DISTANCE_PX = 300; // how far off-screen the slide-out animates to, not a real distance check
+  let dragStartX = 0;
+  let dragX = 0;
+  let dragging = false;
+
+  el.statusBanner.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    dragStartX = e.clientX;
+    dragX = 0;
+    el.statusBanner.style.transition = 'none';
+    el.statusBanner.setPointerCapture(e.pointerId);
+  });
+  el.statusBanner.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    dragX = e.clientX - dragStartX;
+    el.statusBanner.style.transform = `translateX(${dragX}px)`;
+    el.statusBanner.style.opacity = String(Math.max(0, 1 - Math.abs(dragX) / 150));
+  });
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    el.statusBanner.style.transition = '';
+    if (Math.abs(dragX) > DISMISS_THRESHOLD_PX) {
+      const direction = dragX > 0 ? 1 : -1;
+      el.statusBanner.style.transform = `translateX(${direction * FLING_DISTANCE_PX}px)`;
+      el.statusBanner.style.opacity = '0';
+      clearTimeout(statusTimer);
+      // Lets the slide-out transition actually play before the element
+      // itself disappears (clearStatus sets display:none via the 'hidden'
+      // class, which would otherwise cut the animation off instantly).
+      setTimeout(clearStatus, 200);
+    } else {
+      // Below the threshold — snap back to fully visible rather than treating
+      // an accidental small nudge as a dismiss.
+      el.statusBanner.style.transform = '';
+      el.statusBanner.style.opacity = '';
+    }
+  }
+  el.statusBanner.addEventListener('pointerup', endDrag);
+  el.statusBanner.addEventListener('pointercancel', endDrag);
+})();
 
 // ============================================================================
 // Valhalla polyline decoding (precision 6 — different from the 1e5 precision
@@ -1070,29 +1125,26 @@ function updateLocateBtnState() {
   el.locateBtn.classList.toggle('active', state.navigating && !state.followMode);
 }
 
-el.locateBtn.addEventListener('click', async () => {
-  if (state.navigating) {
-    state.followMode = true;
-    updateLocateBtnState();
-    if (state.lastFix) followCamera([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
-    return;
-  }
+/** Starts the idle "where am I" GPS share backing state.myLocationMarker —
+ * shared by the locate button's click handler and the silent auto-start on
+ * app open (see the bottom of this file). `silent` (auto-start) skips
+ * everything that assumes a user just tapped something: enableDeviceOrientation
+ * (gesture-gated on iOS — there's no gesture to hang it off of at app open;
+ * GPS course-over-ground still covers heading while moving) and every
+ * showStatus call, success or failure — an unprompted permission ask
+ * shouldn't also unprompt-edly nag with an error banner if declined. The
+ * marker/map-flyTo behavior itself is identical either way. No-ops if a
+ * share is already running (defensive; the button's own click handler
+ * handles toggling an active share off separately, before this could ever
+ * be called while one's already active). */
+async function startIdleLocationShare({ silent = false } = {}) {
+  if (state.idleLocationWatchId != null) return;
   if (!('geolocation' in navigator)) {
-    showStatus('This browser does not support GPS location.', 'error');
+    if (!silent) showStatus('This browser does not support GPS location.', 'error');
     return;
   }
-  // A second tap while already sharing turns it back off, same as tapping
-  // any other toggled-on FAB a second time.
-  if (state.idleLocationWatchId != null) {
-    navigator.geolocation.clearWatch(state.idleLocationWatchId);
-    state.idleLocationWatchId = null;
-    if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
-    el.locateBtn.classList.remove('active');
-    disableDeviceOrientation();
-    return;
-  }
-  await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
-  showStatus('Finding your location…', 'info');
+  if (!silent) await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
+  if (!silent) showStatus('Finding your location…', 'info');
   let flownToOnce = false;
   state.idleLocationWatchId = navigator.geolocation.watchPosition(
     (pos) => {
@@ -1100,7 +1152,7 @@ el.locateBtn.addEventListener('click', async () => {
       if (!flownToOnce) {
         flownToOnce = true;
         map.flyTo({ center: lngLat, zoom: Math.max(map.getZoom(), 14), duration: 800 });
-        clearStatus();
+        if (!silent) clearStatus();
         el.locateBtn.classList.add('active');
       }
       // GPS course-over-ground while actually moving, the device compass
@@ -1110,18 +1162,47 @@ el.locateBtn.addEventListener('click', async () => {
       updateMyLocationMarker(lngLat, headingDeg);
     },
     () => {
-      // Without this reset, the very next tap hits the "already sharing,
-      // turn it off" branch above (state.idleLocationWatchId is still a
-      // non-null, dead id) and silently no-ops — the user has to tap twice
-      // to actually retry after e.g. granting a permission they'd denied.
+      // Without this reset, the very next tap hits stopIdleLocationShare's
+      // "already sharing, turn it off" case (state.idleLocationWatchId is
+      // still a non-null, dead id) and silently no-ops — the user has to
+      // tap twice to actually retry after e.g. granting a permission
+      // they'd denied.
       navigator.geolocation.clearWatch(state.idleLocationWatchId);
       state.idleLocationWatchId = null;
       el.locateBtn.classList.remove('active');
       disableDeviceOrientation();
-      showStatus('Could not get your location. Check location permissions.', 'error');
+      if (!silent) showStatus('Could not get your location. Check location permissions.', 'error');
     },
     CONFIG.GEOLOCATION_OPTIONS,
   );
+}
+
+/** Stops the idle share started above — a second tap on the locate button,
+ * or real navigation starting and taking over live tracking with its own
+ * watch (see startNavigation). */
+function stopIdleLocationShare() {
+  if (state.idleLocationWatchId == null) return;
+  navigator.geolocation.clearWatch(state.idleLocationWatchId);
+  state.idleLocationWatchId = null;
+  if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
+  el.locateBtn.classList.remove('active');
+  disableDeviceOrientation();
+}
+
+el.locateBtn.addEventListener('click', async () => {
+  if (state.navigating) {
+    state.followMode = true;
+    updateLocateBtnState();
+    if (state.lastFix) followCamera([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
+    return;
+  }
+  // A second tap while already sharing turns it back off, same as tapping
+  // any other toggled-on FAB a second time.
+  if (state.idleLocationWatchId != null) {
+    stopIdleLocationShare();
+    return;
+  }
+  await startIdleLocationShare();
 });
 
 // ============================================================================
@@ -5972,6 +6053,11 @@ async function startNavigation() {
   // can genuinely be slow here, see the comment below — can't re-enter and
   // start a second GPS watch + wake lock that orphans the first one.
   state.navigating = true;
+  // The idle "where am I" share (manual locate-button tap, or the silent
+  // auto-start on app open) uses a separate watchPosition + marker from
+  // real navigation's own tracking — stop it now so there's never two
+  // overlapping GPS watches or two markers once the nav puck takes over.
+  stopIdleLocationShare();
   // Every source this function touches below (route-alternates, puck) is
   // only ever added inside mapLoad's own .then() — normally guaranteed by
   // the time a real "Start navigation" tap is even possible (renderRoute
@@ -6139,6 +6225,17 @@ if ('serviceWorker' in navigator) {
 // restarted mid-drive. Favorites/recents need no startup work of
 // their own — they're loaded on demand when a search field is focused.
 // ============================================================================
+
+// Ask for GPS and show the live "you are here" dot the moment the app opens,
+// rather than waiting for an explicit locate-button tap — silent (see
+// startIdleLocationShare) so a first-run permission prompt or a previously-
+// denied one doesn't also pop an unprompted status banner. Safe to call
+// unconditionally even when the code below is about to auto-resume an
+// active in-progress drive: startNavigation() stops this same idle share
+// itself the moment it claims state.navigating, so there's never a moment
+// with two overlapping watches/markers.
+startIdleLocationShare({ silent: true });
+
 const shareTargetText = parseShareTargetParam();
 const sharedRoutePayload = shareTargetText ? null : parseShareParam();
 if (shareTargetText) {

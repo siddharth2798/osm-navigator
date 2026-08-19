@@ -85,6 +85,16 @@ button {
   text-align: center;
   background: var(--panel);
   box-shadow: var(--shadow);
+  /* Swipe-to-dismiss (see setupStatusBannerSwipe in app.js): touch-action
+     pan-y leaves vertical page gestures alone but stops the browser from
+     also trying to handle the horizontal drag itself, so our own pointer
+     handlers get exclusive control of it. The transition here is what
+     animates both the snap-back (below the dismiss threshold) and the
+     slide-out (past it) — dragging itself sets transition:none first so
+     the banner tracks the finger with zero lag. */
+  touch-action: pan-y;
+  cursor: grab;
+  transition: transform 0.2s ease, opacity 0.2s ease;
 }
 #status-banner.info    { background: #16324a; color: #cfe8ff; }
 #status-banner.success { background: #123a26; color: #bdf2d0; }
