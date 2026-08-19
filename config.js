@@ -57,6 +57,24 @@ export const CONFIG = {
   VALHALLA_URL: 'https://valhalla1.openstreetmap.de',
   VALHALLA_MIN_INTERVAL_MS: 1100,
 
+  // Optional second Valhalla instance, tried before the one above — handy
+  // for testing a self-hosted setup without permanently switching the whole
+  // app over to it: flip USE_SELF_HOSTED_VALHALLA on/off and everything else
+  // below stays configured. SELF_HOSTED_VALHALLA_COVERAGE_BBOX matters when
+  // your self-hosted graph only covers part of the world (e.g. a single
+  // BBBike/Geofabrik extract, not a full-planet build): a request with any
+  // waypoint outside the box has no route data available there at all — set
+  // it to your extract's bounds, or leave it `null` if your instance covers
+  // everywhere you'll ever route. Anything outside the box falls back to
+  // VALHALLA_URL above automatically — but this is a coverage check only,
+  // not a health check: if the self-hosted instance is unreachable for a
+  // waypoint that IS inside the box, that request fails outright rather
+  // than silently retrying against VALHALLA_URL (confirmed live).
+  USE_SELF_HOSTED_VALHALLA: false,
+  SELF_HOSTED_VALHALLA_URL: 'https://valhalla.example.com',
+  SELF_HOSTED_VALHALLA_MIN_INTERVAL_MS: 200,
+  SELF_HOSTED_VALHALLA_COVERAGE_BBOX: null, // e.g. { minLon: 76.127, minLat: 9.563, maxLon: 77.037, maxLat: 10.268 }
+
   // Caps how many shape points get sent to Valhalla's /height action when
   // building a walking route's elevation profile — keeps that request body
   // small on long routes. Only used for walk-mode routes.

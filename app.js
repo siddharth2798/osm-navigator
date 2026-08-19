@@ -4116,6 +4116,43 @@ function startStopDrag(unit, downEvent) {
 // Routing (Valhalla)
 // ============================================================================
 const valhallaLimiter = createLimiter(CONFIG.VALHALLA_MIN_INTERVAL_MS);
+// Only used when USE_SELF_HOSTED_VALHALLA is on — separate from
+// valhallaLimiter because a self-hosted instance typically has no shared
+// fair-use policy to respect, so it's tuned independently (see config.js).
+const selfHostedValhallaLimiter = createLimiter(CONFIG.SELF_HOSTED_VALHALLA_MIN_INTERVAL_MS);
+
+/** Picks which Valhalla instance a request should use, and enforces that
+ * instance's rate limiter before returning — every caller just awaits this
+ * once instead of separately picking a URL and awaiting a limiter. A no-op
+ * to VALHALLA_URL/valhallaLimiter (today's exact behaviour) whenever
+ * USE_SELF_HOSTED_VALHALLA is off — this whole dispatcher only matters for
+ * testing/running a self-hosted instance (see config.js). `points` is any
+ * array of {lat, lon}-shaped objects; ALL of them must fall inside
+ * SELF_HOSTED_VALHALLA_COVERAGE_BBOX for the self-hosted server to be used,
+ * since Valhalla can't route one trip across two separate graphs — a
+ * request with even one waypoint outside the self-hosted graph's coverage
+ * has no route data for that waypoint at all, so the whole request goes to
+ * VALHALLA_URL instead. */
+async function valhallaTarget(points) {
+  if (!CONFIG.USE_SELF_HOSTED_VALHALLA) {
+    await valhallaLimiter();
+    return CONFIG.VALHALLA_URL;
+  }
+  const box = CONFIG.SELF_HOSTED_VALHALLA_COVERAGE_BBOX;
+  const allInside = !box || points.every((p) => p.lon >= box.minLon && p.lon <= box.maxLon && p.lat >= box.minLat && p.lat <= box.maxLat);
+  if (allInside) {
+    // The only reliable way to confirm the self-hosted instance actually
+    // served a given trip, rather than silently falling back — visible in
+    // the on-screen Debug mode panel, not just the browser's own devtools
+    // console, so it's checkable from a phone too.
+    resolverDebugLog(`Valhalla: using self-hosted server (${new URL(CONFIG.SELF_HOSTED_VALHALLA_URL).hostname}) — all ${points.length} waypoint(s) inside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`, 'success');
+    await selfHostedValhallaLimiter();
+    return CONFIG.SELF_HOSTED_VALHALLA_URL;
+  }
+  resolverDebugLog(`Valhalla: using public fallback (${new URL(CONFIG.VALHALLA_URL).hostname}) — at least one waypoint falls outside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`, 'warn');
+  await valhallaLimiter();
+  return CONFIG.VALHALLA_URL;
+}
 
 /** `stops` (optional) are intermediate waypoints visited in order between
  * `from` and `to`. Valhalla returns one leg per consecutive pair of
@@ -4233,14 +4270,15 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   const cacheKey = routeCacheKey(from, to, stops, wantAlternates, costing, avoidOpts.avoidTolls, avoidOpts.avoidHighways);
   if (valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
 
-  await valhallaLimiter();
+  const waypoints = [from, ...stops, to];
+  const valhallaBase = await valhallaTarget(waypoints);
   const body = {
     // heading/heading_tolerance pass through when a location carries them
     // (see triggerReroute) — Valhalla uses this to snap to the road edge
     // facing the direction of travel; without it, a moving vehicle's
     // reroute origin can snap to the wrong-facing edge and Valhalla's first
     // maneuver becomes a U-turn just to correct that, not a real turn.
-    locations: [from, ...stops, to].map((p) => (
+    locations: waypoints.map((p) => (
       p.heading != null ? { lat: p.lat, lon: p.lon, heading: p.heading, heading_tolerance: p.heading_tolerance } : { lat: p.lat, lon: p.lon }
     )),
     costing,
@@ -4256,7 +4294,7 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   if (wantAlternates > 0) body.alternates = wantAlternates;
   let res;
   try {
-    res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/route`, {
+    res = await fetchWithTimeout(`${valhallaBase}/route`, {
       method: 'POST',
       // text/plain, not application/json: Valhalla parses the body as JSON
       // regardless of the declared content-type (confirmed live), but
@@ -4317,13 +4355,13 @@ function sampleCoordsForHeight(coords, maxPoints) {
 }
 
 /** Returns Valhalla's range_height pairs: [[cumulativeDistM, heightM], ...].
- * Goes through the same rate limiter as /route since it hits the same
- * server. Throws on any failure — callers must treat that as "no chart",
- * never a user-facing error. */
+ * Goes through the same server-selection/rate-limiting as /route (see
+ * valhallaTarget) since it hits the same server. Throws on any failure —
+ * callers must treat that as "no chart", never a user-facing error. */
 async function fetchElevationProfile(coords) {
   const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
-  await valhallaLimiter();
-  const res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/height`, {
+  const valhallaBase = await valhallaTarget(shape);
+  const res = await fetchWithTimeout(`${valhallaBase}/height`, {
     method: 'POST',
     // text/plain — see the matching comment on the /route call in
     // requestRoute for why (avoids a CORS preflight that a self-hosted,
