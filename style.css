@@ -818,17 +818,30 @@ button {
 }
 .poi-marker.selected { background: var(--accent); color: #fff; }
 
-/* Name-tag bubble above each POI dot. MapLibre appends this marker element
-   directly into its (statically-positioned) canvas container rather than
-   absolutely positioning it, so a plain block-level div here would stretch
-   to the full width of the map instead of shrinking to fit the 22px dot —
-   confirmed live: the label's `left: 50%` was then landing ~900px away from
-   the actual dot. display:inline-block makes the wrapper shrink-to-fit its
-   one in-flow child (the dot; the label is position:absolute and doesn't
-   count toward this sizing), so `left: 50%` on the label resolves against
-   the dot's own width and actually centers over it. position:relative
-   still gives the (absolutely positioned) label something to anchor to. */
-.poi-marker-wrap { position: relative; display: inline-block; }
+/* Name-tag bubble above each POI dot. This element IS MapLibre's marker root
+   node (passed as `element` to `new maplibregl.Marker()`) — MapLibre stamps
+   its own `.maplibregl-marker` class onto it and positions it purely via a
+   `transform: translate(x,y)` computed from a `position: absolute; top:0;
+   left:0` base (see maplibre-gl.css), recomputed on every pan/zoom frame.
+   `position: relative` here used to override that (same specificity, and
+   style.css loads after maplibre-gl.css so it wins the tie) — putting the
+   element back in normal document flow among its marker siblings instead of
+   purely transform-positioned, so its on-screen position became "flow
+   position plus a translate offset computed assuming flow position was
+   (0,0)": those two drift apart independently as markers are added/removed
+   and as the map zooms, which is what made pins appear to float away from
+   their real lat/lon instead of staying anchored (confirmed live, worst on
+   EV/OCM results where more/scattered candidates are typically on screen at
+   once, but affecting every one-tap category chip's pins the same way).
+   `position: absolute` still establishes a containing block for
+   `.poi-marker-label` below (position:absolute, anchored via `left: 50%`),
+   so the label-centering behavior is unchanged — it just no longer fights
+   MapLibre's own positioning contract. display:inline-block still makes the
+   wrapper shrink-to-fit its one in-flow child (the dot; the label doesn't
+   count toward sizing since it's position:absolute), which is what makes
+   `left: 50%` on the label resolve against the dot's own width instead of
+   stretching to the map's full width. */
+.poi-marker-wrap { position: absolute; display: inline-block; }
 .poi-marker-label {
   position: absolute;
   bottom: 100%;
@@ -1058,8 +1071,12 @@ button {
 /* Marker dropped on the actual route to show where a tapped elevation point
    is — explicit width/height (not display:block auto-width) so it can't
    repeat the earlier .poi-marker-wrap bug of stretching to the map's full
-   width inside MapLibre's statically-positioned canvas container. */
-.elevation-highlight-marker { display: inline-block; position: relative; width: 18px; height: 18px; }
+   width inside MapLibre's statically-positioned canvas container.
+   position:absolute (not relative) for the same reason as .poi-marker-wrap
+   above: this element IS MapLibre's marker root node, positioned purely via
+   a transform computed from position:absolute — relative would silently
+   override that and let the marker drift from its real lat/lon on zoom. */
+.elevation-highlight-marker { display: inline-block; position: absolute; width: 18px; height: 18px; }
 .elevation-highlight-ring { position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0.5; }
 .elevation-highlight-dot { position: absolute; inset: 0; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
 
