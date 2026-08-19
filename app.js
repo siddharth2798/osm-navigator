@@ -33,6 +33,7 @@ const el = {
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
+  selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
   placeInput: document.getElementById('place-input'),
@@ -1981,6 +1982,25 @@ if (el.debugModeToggle) {
     else localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
     el.debugModeToggle.classList.toggle('active', resolverDebugEnabled);
     el.debugModeToggle.setAttribute('aria-checked', String(resolverDebugEnabled));
+  });
+}
+
+// Lets the "Self-hosted Valhalla" Developer tools toggle override
+// CONFIG.USE_SELF_HOSTED_VALHALLA per device without editing config.js —
+// handy for flipping it on/off while testing. localStorage wins once set;
+// with nothing stored yet, the toggle reflects (and this app instance
+// behaves like) whatever config.js shipped with.
+const SELF_HOSTED_VALHALLA_STORAGE_KEY = 'useSelfHostedValhalla';
+const storedSelfHostedValhalla = localStorage.getItem(SELF_HOSTED_VALHALLA_STORAGE_KEY);
+let useSelfHostedValhalla = storedSelfHostedValhalla !== null ? storedSelfHostedValhalla === '1' : CONFIG.USE_SELF_HOSTED_VALHALLA;
+if (el.selfHostedValhallaToggle) {
+  el.selfHostedValhallaToggle.classList.toggle('active', useSelfHostedValhalla);
+  el.selfHostedValhallaToggle.setAttribute('aria-checked', String(useSelfHostedValhalla));
+  el.selfHostedValhallaToggle.addEventListener('click', () => {
+    useSelfHostedValhalla = !useSelfHostedValhalla;
+    localStorage.setItem(SELF_HOSTED_VALHALLA_STORAGE_KEY, useSelfHostedValhalla ? '1' : '0');
+    el.selfHostedValhallaToggle.classList.toggle('active', useSelfHostedValhalla);
+    el.selfHostedValhallaToggle.setAttribute('aria-checked', String(useSelfHostedValhalla));
   });
 }
 
@@ -4134,7 +4154,7 @@ const selfHostedValhallaLimiter = createLimiter(CONFIG.SELF_HOSTED_VALHALLA_MIN_
  * has no route data for that waypoint at all, so the whole request goes to
  * VALHALLA_URL instead. */
 async function valhallaTarget(points) {
-  if (!CONFIG.USE_SELF_HOSTED_VALHALLA) {
+  if (!useSelfHostedValhalla) {
     await valhallaLimiter();
     return CONFIG.VALHALLA_URL;
   }

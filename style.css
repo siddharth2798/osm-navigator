@@ -1230,7 +1230,9 @@ button {
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
 }
+.docs-toggle-row:last-child { border-bottom: none; }
 .docs-toggle-text { flex: 1 1 auto; min-width: 0; }
 .docs-toggle-label { font-size: 14px; font-weight: 600; color: var(--text); }
 .docs-toggle-hint { margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--docs-body); }
