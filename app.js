@@ -1958,6 +1958,16 @@ if (el.debugModeToggle) {
   });
 }
 
+// Captured before the console.* patch further below ever runs, so
+// resolverDebugLog's own logging (and the patch itself) can call the real
+// console without recursing into itself.
+const nativeConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  info: console.info.bind(console),
+};
+
 let resolverDebugStartTs = null;
 function resolverDebugReset() {
   resolverDebugStartTs = Date.now();
@@ -1965,7 +1975,7 @@ function resolverDebugReset() {
 }
 function resolverDebugLog(message, kind = '') {
   if (resolverDebugStartTs == null) resolverDebugStartTs = Date.now();
-  console.log('[resolver]', message);
+  nativeConsole.log('[resolver]', message);
   if (!resolverDebugEnabled || !el.resolverDebugLogEl) return;
   const line = document.createElement('div');
   line.className = kind ? `resolver-debug-line ${kind}` : 'resolver-debug-line';
@@ -1991,6 +2001,31 @@ window.addEventListener('unhandledrejection', (e) => {
   const reason = e.reason;
   const detail = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
   resolverDebugLog(`Unhandled promise rejection: ${detail}`, 'error');
+});
+
+/** Makes the on-screen Debug mode panel a genuine general-purpose log
+ * capture, not just the resolver/native-shell call sites already
+ * instrumented with their own explicit resolverDebugLog() calls — any
+ * console.log/warn/error/info anywhere (this app's own code, or a library
+ * it loads, e.g. MapLibre) now also lands on screen. This is practically
+ * the only way to see what happened on a real Android device, where
+ * devtools isn't reachable. Every patched method still calls straight
+ * through to the real console first via nativeConsole — this only ADDS a
+ * second destination, a connected remote-debugger session or a desktop
+ * browser's own devtools keep working exactly as before. */
+function formatConsoleArg(arg) {
+  if (arg instanceof Error) return arg.stack || arg.message;
+  if (typeof arg === 'object' && arg !== null) {
+    try { return JSON.stringify(arg); } catch (_) { return String(arg); }
+  }
+  return String(arg);
+}
+const CONSOLE_DEBUG_KIND = { warn: 'warn', error: 'error' };
+['log', 'warn', 'error', 'info'].forEach((level) => {
+  console[level] = (...args) => {
+    nativeConsole[level](...args);
+    resolverDebugLog(args.map(formatConsoleArg).join(' '), CONSOLE_DEBUG_KIND[level] || '');
+  };
 });
 
 if (el.resolverDebugCloseBtn) {

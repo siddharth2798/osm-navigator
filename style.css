@@ -138,6 +138,7 @@ button {
   word-break: break-all;
 }
 .resolver-debug-line.error   { color: #ffb4b4; }
+.resolver-debug-line.warn    { color: #ffd97a; }
 .resolver-debug-line.success { color: #bdf2d0; }
 .resolver-debug-line.url     { color: var(--docs-link); }
 
