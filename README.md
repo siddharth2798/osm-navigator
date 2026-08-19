@@ -96,7 +96,7 @@ No update/fetch script here — freshness is entirely a property of whichever se
 The web app also works wrapped in [Capacitor](https://capacitorjs.com/) as a native Android app, specifically for reliable location tracking — and voice guidance — with the screen off or the app minimized (plain `watchPosition` isn't reliable once Android backgrounds the WebView, and Android's own `WebView.onPause()` freezes all JS execution on top of that). Needs Node/npm; the web app itself still doesn't.
 
 ```
-npm install                  # @capacitor/core, @capacitor/android, the background-geolocation plugin
+npm install                  # @capacitor/core, @capacitor/android, background-geolocation/text-to-speech/app plugins
 npm run cap:sync             # copies the web app into www/, syncs the android/ project
 npx cap open android         # opens the project in Android Studio
 ```

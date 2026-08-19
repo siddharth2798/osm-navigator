@@ -6,7 +6,7 @@
 //     purged by this file's own upgrade logic below — it holds tiles the
 //     user explicitly downloaded via "Offline maps", and wiping it on every
 //     SW update would silently throw that away.
-const SHELL_CACHE_NAME = 'navigator-shell-v77';
+const SHELL_CACHE_NAME = 'navigator-shell-v78';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG.TILE_CACHE_NAME in config.js — explicit "Download this area" tiles ONLY, written directly by app.js, never auto-evicted here
 // Tiles seen just from ordinary online browsing (panning/zooming, not an
 // explicit download) land in this separate, size-capped cache instead of
@@ -32,9 +32,11 @@ const SHELL_FILES = [
   './idb.js',
   './native-location.js',
   './native-tts.js',
+  './native-back.js',
   './vendor/open-location-code.js',
   './vendor/capacitor-core.js',
   './vendor/capacitor-text-to-speech.js',
+  './vendor/capacitor-app.js',
   './manifest.json',
   './icons/icon.svg',
 ];

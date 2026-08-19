@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal turn-by-turn navigation PWA — this file exists only to support the optional Capacitor native Android shell. The web app itself has no build step; open index.html directly or serve the folder statically.",
   "scripts": {
-    "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js native-tts.js style.css manifest.json sw.js www/ && cp -r icons www/icons && cp -r vendor www/vendor",
+    "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js native-tts.js native-back.js style.css manifest.json sw.js www/ && cp -r icons www/icons && cp -r vendor www/vendor",
     "cap:sync": "npm run cap:copy && cap sync android"
   },
   "license": "MIT",
@@ -12,6 +12,7 @@
     "@capacitor-community/background-geolocation": "^1.2.26",
     "@capacitor-community/text-to-speech": "^8.0.2",
     "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.5.0"
   },
   "devDependencies": {

@@ -9,6 +9,7 @@ import {
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch, isNativePlatform } from './native-location.js';
 import { speakNative } from './native-tts.js';
+import { initNativeBackButton } from './native-back.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -205,11 +206,20 @@ const state = {
 // left to go back to. So instead of listening for a back-button event
 // directly, every "closeable" UI layer (a modal, a mode, an open panel)
 // pushes a dummy history entry when it opens, and the resulting `popstate`
-// event — fired for a hardware/gesture back press OR our own history.back()
-// calls — is what actually closes it. This is the standard technique for
-// making a back button behave sensibly in a single-page app, and it works
-// identically on a plain PWA install and inside the Capacitor shell, with
-// no extra native plugin needed.
+// event — fired for our own history.back() calls, and (on the web) for a
+// real browser back press too — is what actually closes it. This is the
+// standard technique for making a back button behave sensibly in a
+// single-page app.
+//
+// Inside the Capacitor Android shell specifically, the hardware/gesture
+// back button does NOT fire a popstate event at all (confirmed live:
+// Capacitor's BridgeActivity registers no back-press callback and
+// dispatches nothing to JS for it by default) — left alone, it falls
+// straight through to Android's default "finish the activity" behaviour
+// and exits the app entirely, bypassing this whole mechanism. See
+// native-back.js: initNativeBackButton below routes the hardware/gesture
+// back button through this exact same goBackInApp()/backStack pipeline
+// instead of introducing a second, parallel back-handling path.
 //
 // The design follows Google Maps' own back-button model: back undoes
 // exactly one layer of UI state at a time (close a modal, then leave
@@ -289,6 +299,10 @@ window.addEventListener('popstate', () => {
     backStack.pop();
   }
 });
+
+if (isNativePlatform()) {
+  initNativeBackButton({ hasOpenLayer: () => backStack.length > 0, goBack: goBackInApp });
+}
 
 // ============================================================================
 // Small utilities
