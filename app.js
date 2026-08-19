@@ -4258,7 +4258,21 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   try {
     res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/route`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // text/plain, not application/json: Valhalla parses the body as JSON
+      // regardless of the declared content-type (confirmed live), but
+      // application/json is NOT one of the three CORS-safelisted content
+      // types (text/plain, application/x-www-form-urlencoded,
+      // multipart/form-data) — a browser sends a CORS preflight (OPTIONS)
+      // for anything else. valhalla_service's own built-in HTTP server
+      // doesn't implement OPTIONS at all (confirmed live: HTTP 405), so a
+      // self-hosted instance with no reverse proxy in front (nginx, which
+      // is what actually makes the public demo server's CORS work) fails
+      // outright with a bare "Failed to fetch" the moment this is called
+      // cross-origin — same-origin deployments never notice since a
+      // preflight is only needed for cross-origin requests in the first
+      // place. text/plain sidesteps the problem entirely, for every
+      // deployment, not just self-hosted ones.
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -4311,7 +4325,10 @@ async function fetchElevationProfile(coords) {
   await valhallaLimiter();
   const res = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/height`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // text/plain — see the matching comment on the /route call in
+    // requestRoute for why (avoids a CORS preflight that a self-hosted,
+    // reverse-proxy-less Valhalla instance can't answer).
+    headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ range: true, shape }),
   });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
