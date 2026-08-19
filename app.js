@@ -416,12 +416,34 @@ const MANEUVER_ICONS = {
   26: { path: ROUNDABOUT_PATH }, 27: { path: ROUNDABOUT_PATH },              // roundabout
 };
 
-// "Continue straight for X km" is spoken once per occurrence of either of
+// "Continue straight for X km" is spoken once per occurrence of any of
 // these Valhalla maneuver types, but only when the straight leg is long
 // enough to be worth calling out — a plain straight-through at a minor
 // intersection every few hundred metres would otherwise narrate constantly.
-const CONTINUE_STRAIGHT_TYPES = new Set([8, 22]);
+// kContinue/kStayStraight are the obvious "keep going" types; kBecomes
+// ("road becomes X") is still a straight-through, just a name change, so it
+// counts too — and matters here because it's exactly the kind of boundary
+// Valhalla splits a long straight stretch on (see straightAheadDistanceM).
+const CONTINUE_STRAIGHT_TYPES = new Set([7, 8, 22]);
 const CONTINUE_STRAIGHT_MIN_LENGTH_M = 1000;
+
+/** Sums the length of maneuvers[startIdx] plus every consecutive
+ * straight-through maneuver right after it, stopping at the first real
+ * turn (or the end of the route). Valhalla often splits one genuinely long
+ * straight stretch into several consecutive kContinue/kBecomes maneuvers —
+ * at a named-road change, an interchange guidance point, a minor jog — each
+ * individually well under CONTINUE_STRAIGHT_MIN_LENGTH_M even though the
+ * aggregate distance to the next actual turn is long. Using only
+ * maneuvers[startIdx].lengthM would miss the "Continue straight for X km"
+ * callout in exactly that (common) case; this looks ahead to find the real
+ * distance the driver will spend going straight. */
+function straightAheadDistanceM(maneuvers, startIdx) {
+  let total = 0;
+  for (let i = startIdx; i < maneuvers.length && CONTINUE_STRAIGHT_TYPES.has(maneuvers[i].type); i++) {
+    total += maneuvers[i].lengthM;
+  }
+  return total;
+}
 
 function maneuverIcon(type) {
   const cfg = MANEUVER_ICONS[type] || {};
@@ -444,14 +466,21 @@ function trashIcon() {
 }
 
 let statusTimer = null;
-/** Plain-language status banner. Errors stay until replaced; info/success
- * messages fade out on their own so they don't clutter a small phone screen. */
+/** Plain-language status banner. Auto-dismisses after a delay unless
+ * `opts.sticky` — used only by genuine in-progress states ("Finding
+ * route…", "Off route, no signal…") that need to persist until a real
+ * follow-up event replaces them. Errors get a longer delay than info/
+ * success (more to read), but still auto-dismiss: many error call sites
+ * have no natural follow-up showStatus/clearStatus call, so leaving them
+ * unconditionally sticky (the previous behavior) meant they'd sit pinned
+ * on screen indefinitely — confirmed live with
+ * "Couldn't restore your in-progress trip — starting fresh.". */
 function showStatus(message, type = 'info', opts = {}) {
   clearTimeout(statusTimer);
   el.statusBanner.textContent = message;
   el.statusBanner.className = type;
-  if (type !== 'error' && !opts.sticky) {
-    statusTimer = setTimeout(clearStatus, opts.timeoutMs || 4000);
+  if (!opts.sticky) {
+    statusTimer = setTimeout(clearStatus, opts.timeoutMs || (type === 'error' ? 8000 : 4000));
   }
 }
 function clearStatus() {
@@ -5578,17 +5607,31 @@ function updateActiveManeuver(traveledM) {
     return; // navigation just ended — nothing below is still meaningful
   }
 
-  // "Continue straight for X km" — spoken once, the moment a sufficiently
-  // long straight-through maneuver (Valhalla type 8 kContinue / 22
-  // kStayStraight) BECOMES current, not as an approach cue like the turn
-  // prompts below. This is also what covers maneuver 0 on a route that
-  // starts with a long straight leg: currentIdx is 0 from the very first
-  // fix, so it's included here same as any later straight segment — the
-  // upcoming-maneuver voice cues below never speak the current maneuver.
+  // "Continue straight for X km" — spoken once, the moment a straight-
+  // through maneuver (see CONTINUE_STRAIGHT_TYPES) BECOMES current, not as
+  // an approach cue like the turn prompts below. This is also what covers
+  // maneuver 0 on a route that starts with a long straight leg: currentIdx
+  // is 0 from the very first fix, so it's included here same as any later
+  // straight segment — the upcoming-maneuver voice cues below never speak
+  // the current maneuver.
+  //
+  // Only fires at the START of a straight run (currentIdx 0, or the
+  // maneuver right before it wasn't itself a straight-through type) — not
+  // on every straight-through maneuver in a run, since straightAheadDistanceM
+  // already looks ahead through the whole run from here. Without this
+  // guard, a stretch Valhalla splits into several consecutive kContinue
+  // maneuvers (see straightAheadDistanceM) would otherwise re-announce
+  // "Continue straight for X km" at every one of them as currentIdx
+  // advances through the run, each time with a shorter remaining distance.
   const current = maneuvers[currentIdx];
-  if (CONTINUE_STRAIGHT_TYPES.has(current.type) && current.lengthM >= CONTINUE_STRAIGHT_MIN_LENGTH_M && !state.spokenContinue.has(currentIdx)) {
-    state.spokenContinue.add(currentIdx);
-    speak(`Continue straight for ${formatDistanceForSpeech(current.lengthM)}.`, { queue: true });
+  const startsStraightRun = CONTINUE_STRAIGHT_TYPES.has(current.type)
+    && (currentIdx === 0 || !CONTINUE_STRAIGHT_TYPES.has(maneuvers[currentIdx - 1].type));
+  if (startsStraightRun && !state.spokenContinue.has(currentIdx)) {
+    const aheadM = straightAheadDistanceM(maneuvers, currentIdx);
+    if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
+      state.spokenContinue.add(currentIdx);
+      speak(`Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+    }
   }
 
   if (nextIdx !== null) {
@@ -5608,7 +5651,17 @@ function updateActiveManeuver(traveledM) {
     // CONFIG comment above VOICE_PROMPT_LEAD_TIME_S.
     const farLeadM = dynamicVoiceLeadM(CONFIG.VOICE_PROMPT_LEAD_TIME_S, CONFIG.VOICE_PROMPT_MIN_M, CONFIG.VOICE_PROMPT_MAX_M);
     const nearLeadM = dynamicVoiceLeadM(CONFIG.VOICE_NEAR_LEAD_TIME_S, CONFIG.VOICE_NEAR_MIN_M, CONFIG.VOICE_NEAR_MAX_M);
-    if (distToNextM <= farLeadM && distToNextM > nearLeadM && !state.spokenFar.has(nextIdx)) {
+    // farLeadM >= nearLeadM at every speed (far's lead-time and clamp range
+    // are both larger), so this is deliberately NOT gated on
+    // `distToNextM > nearLeadM` — a coarse GPS fix (high speed, closely
+    // spaced maneuvers, a fix that arrives late) can otherwise carry
+    // distToNextM from above farLeadM to at-or-below nearLeadM in a single
+    // tick, which used to skip the far cue entirely and leave the terse
+    // near cue as the ONLY warning, arriving abruptly close to the turn
+    // (confirmed as the cause of "the last callout is very close to the
+    // turn"). Firing far purely on `distToNextM <= farLeadM` guarantees at
+    // least one advance-warning phrase every time.
+    if (distToNextM <= farLeadM && !state.spokenFar.has(nextIdx)) {
       const next = maneuvers[nextIdx];
       if (next.verbalMultiCue && next.verbalPreTransition) {
         // Valhalla already solved "two turns too close together to speak
@@ -5624,6 +5677,11 @@ function updateActiveManeuver(traveledM) {
         state.spokenNear.add(nextIdx);
       } else {
         speak(`In ${formatDistanceForSpeech(distToNextM)}, ${next.instruction}`, { queue: true });
+        // Already inside the near window on this same tick (the skip
+        // scenario above) — mark it done now so the near block just below
+        // doesn't immediately repeat the same instruction a second time
+        // with zero gap.
+        if (distToNextM <= nearLeadM) state.spokenNear.add(nextIdx);
       }
       state.spokenFar.add(nextIdx);
     }
