@@ -146,6 +146,7 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **Transit mode** covers planning/rendering only, not live GPS-guided transit navigation.
 - **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server you point at.
 - **Android shell** — built and running on a real device now, including working voice guidance and background tracking/guidance with the screen off or the app minimized (see the "Google Maps link resolution fails" troubleshooting entries above for other shell-specific quirks already fixed).
+- **Picture-in-Picture mini view** (this branch only, not `main` — an experimental feature not yet promoted): while actively navigating, leaving the app (Home button, switching apps) automatically drops into a small floating window showing the next instruction, distance, and ETA — matching Google Maps' own PiP behavior. Implemented as a small custom native plugin (`NavPipPlugin.java`) plus a simplified native turn-card view (`res/layout/pip_turn_card.xml`) that MainActivity swaps in for the WebView only while in PiP; app.js pushes live turn-by-turn updates to it via `native-pip.js`, guarded the same way every other native-only call in this codebase is.
 - **The idle location marker's compass wedge** needs a real magnetometer — without one (or if permission is denied), it falls back to GPS-derived heading.
 
 ## Contributing

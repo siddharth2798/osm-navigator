@@ -1,8 +1,17 @@
 package com.navigator.app;
 
+import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.content.res.Configuration;
+import android.os.Build;
 import android.os.Bundle;
+import android.util.Rational;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.JSObject;
@@ -14,12 +23,35 @@ import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.Priority;
 
 public class MainActivity extends BridgeActivity {
+  private View pipTurnCardView;
+  private ImageView pipArrow;
+  private TextView pipInstruction;
+  private TextView pipDistanceEta;
+  private volatile boolean navigating = false;
+
   @Override
   public void onCreate(Bundle savedInstanceState) {
     // Must run before super.onCreate() — that's where Capacitor's Bridge
     // discovers/initializes plugins.
     registerPlugin(LocationSettingsPlugin.class);
+    registerPlugin(NavPipPlugin.class);
     super.onCreate(savedInstanceState);
+
+    // Inflated once, kept hidden (GONE) until PiP actually starts — see
+    // onPictureInPictureModeChanged, which swaps this in for the WebView.
+    // Added to the Activity's own root content container (android.R.id.content,
+    // the FrameLayout every Activity's setContentView() result lives inside)
+    // as a sibling of whatever Capacitor's activity_main.xml put there, so
+    // it's unaffected by anything the WebView/bridge does to its own view.
+    pipTurnCardView = LayoutInflater.from(this).inflate(R.layout.pip_turn_card, null);
+    pipArrow = pipTurnCardView.findViewById(R.id.pip_arrow);
+    pipInstruction = pipTurnCardView.findViewById(R.id.pip_instruction);
+    pipDistanceEta = pipTurnCardView.findViewById(R.id.pip_distance_eta);
+    pipTurnCardView.setVisibility(View.GONE);
+    ((ViewGroup) findViewById(android.R.id.content)).addView(
+      pipTurnCardView,
+      new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+    );
   }
 
   // Capacitor's BridgeActivity.onPause() pauses its WebView, and
@@ -89,6 +121,93 @@ public class MainActivity extends BridgeActivity {
           call.resolve(result);
         }
       });
+  }
+
+  // ---- Picture-in-Picture (see NavPipPlugin.java) ----
+
+  /** Called by NavPipPlugin (see native-pip.js's setNavigating) whenever
+   * app.js's startNavigation()/endNavigation() run. onUserLeaveHint only
+   * tries to auto-enter PiP while this is true, so leaving the app during
+   * ordinary planning/browsing behaves exactly as it always has — no PiP
+   * popup for a plain "switched to another app while looking at a map". */
+  void setNavPipNavigating(boolean active) {
+    navigating = active;
+  }
+
+  /** Called by NavPipPlugin (see native-pip.js's updateTurnCard) every time
+   * app.js's on-screen nav banner updates — keeps the native mini view
+   * from ever showing stale turn-by-turn info while it's the only thing on
+   * screen (app backgrounded). Capacitor plugin methods don't guarantee
+   * the UI thread, so this dispatches explicitly. */
+  void updateNavPipTurnCard(String maneuverKind, String instruction, String distanceText, String etaText) {
+    runOnUiThread(() -> {
+      pipArrow.setImageResource(pipArrowDrawableFor(maneuverKind));
+      pipArrow.setRotation(pipArrowRotationFor(maneuverKind));
+      pipInstruction.setText(instruction);
+      String distanceEta = etaText == null || etaText.isEmpty() ? distanceText : distanceText + " · " + etaText;
+      pipDistanceEta.setText(distanceEta);
+    });
+  }
+
+  // maneuverKind is the small fixed icon-key string maneuverPipIconKey()
+  // produces in app.js — kept as plain strings rather than an enum/shared
+  // constant so this file and app.js don't need to import from each other;
+  // the string literals are the actual contract between them, documented
+  // in both places.
+  private int pipArrowDrawableFor(String maneuverKind) {
+    switch (maneuverKind) {
+      case "uturn": return R.drawable.ic_pip_uturn;
+      case "roundabout": return R.drawable.ic_pip_roundabout;
+      case "arrive": return R.drawable.ic_pip_flag;
+      default: return R.drawable.ic_pip_arrow; // straight/left/right/slight-*/sharp-* — same arrow, rotated below
+    }
+  }
+
+  private float pipArrowRotationFor(String maneuverKind) {
+    switch (maneuverKind) {
+      case "slight-right": return 30f;
+      case "right": return 90f;
+      case "sharp-right": return 120f;
+      case "slight-left": return -30f;
+      case "left": return -90f;
+      case "sharp-left": return -120f;
+      default: return 0f; // straight, uturn, roundabout, arrive — their own drawables are already oriented correctly
+    }
+  }
+
+  /** Auto-enters PiP the moment the user leaves this Activity (Home button,
+   * app switch, another app coming to front) while actively navigating —
+   * reliable back to very old API levels, unlike the newer Android 12
+   * auto-enter API, so this works across the project's full
+   * minSdkVersion 24 range. PiP itself (enterPictureInPictureMode) is
+   * API 26+; below that this is a no-op and the app just backgrounds
+   * normally (still with working voice guidance, via the onPause fix
+   * above — PiP is a bonus on top of that, not a requirement for it). */
+  @Override
+  public void onUserLeaveHint() {
+    super.onUserLeaveHint();
+    if (navigating && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      enterPictureInPictureMode(pipParams());
+    }
+  }
+
+  @Override
+  public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+    // Swaps which view is visible rather than anything more involved — the
+    // WebView's full interactive UI makes no sense shrunk into a small,
+    // barely-touchable PiP window, so PiP shows this simplified native
+    // turn-card instead; normal size shows the real app again exactly as
+    // it was.
+    View webView = getBridge() != null ? getBridge().getWebView() : null;
+    if (webView != null) webView.setVisibility(isInPictureInPictureMode ? View.GONE : View.VISIBLE);
+    pipTurnCardView.setVisibility(isInPictureInPictureMode ? View.VISIBLE : View.GONE);
+  }
+
+  private PictureInPictureParams pipParams() {
+    return new PictureInPictureParams.Builder()
+      .setAspectRatio(new Rational(3, 2))
+      .build();
   }
 
   @Override

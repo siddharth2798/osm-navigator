@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Simplified native turn-by-turn card shown ONLY while the Activity is in
+  Android's Picture-in-Picture mode (see MainActivity.onPictureInPictureModeChanged
+  and onUserLeaveHint) — the full interactive WebView UI makes no sense
+  shrunk into a small floating window, so this stands in for it instead,
+  matching how Google Maps' own PiP mini view looks: an arrow, the next
+  instruction, and a distance/ETA line. Kept updated from app.js via
+  NavPipPlugin.updateTurnCard (see native-pip.js), and is otherwise
+  invisible (GONE) at normal window size.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="#0F172A"
+    android:padding="16dp">
+
+    <ImageView
+        android:id="@+id/pip_arrow"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginEnd="16dp"
+        android:src="@drawable/ic_pip_arrow"
+        android:tint="#FFFFFF"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/pip_instruction"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:text="" />
+
+        <TextView
+            android:id="@+id/pip_distance_eta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#94A3B8"
+            android:textSize="13sp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="" />
+
+    </LinearLayout>
+
+</LinearLayout>

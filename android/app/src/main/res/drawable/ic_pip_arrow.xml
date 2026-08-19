@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Straight-ahead arrow — the same path data as ARROW_PATH in app.js's
+     maneuverIcon(), reused here for visual consistency with the on-screen
+     nav banner. Every turn direction reuses this one drawable, rotated via
+     ImageView.setRotation() in MainActivity rather than shipping a
+     separate drawable per direction (mirrors how the web UI does it with a
+     CSS transform). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:pathData="M12 4 L12 20 M12 4 L6 10 M12 4 L18 10"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="2.4"
+      android:strokeLineCap="round"
+      android:strokeLineJoin="round"
+      android:fillColor="#00000000" />
+</vector>

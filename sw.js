@@ -33,6 +33,7 @@ const SHELL_FILES = [
   './native-location.js',
   './native-tts.js',
   './native-back.js',
+  './native-pip.js',
   './vendor/open-location-code.js',
   './vendor/capacitor-core.js',
   './vendor/capacitor-text-to-speech.js',

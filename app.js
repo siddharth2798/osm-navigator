@@ -10,6 +10,7 @@ import {
 import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocationEnabled } from './native-location.js';
 import { speakNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
+import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -487,6 +488,26 @@ function maneuverIcon(type) {
   const style = transforms.length ? ` style="transform:${transforms.join(' ')}"` : '';
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" `
     + `stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"${style}>${path}</svg>`;
+}
+
+/** Maps a Valhalla maneuver type to a small fixed icon-key string for the
+ * personal branch's native Picture-in-Picture mini view (see native-pip.js
+ * / MainActivity.java) — native has no idea what Valhalla's numeric
+ * maneuver types mean, so this collapses MANEUVER_ICONS' same
+ * categorization down to a handful of named buckets it can do a simple
+ * lookup against, rather than duplicating Valhalla's type numbers there. */
+function maneuverPipIconKey(type) {
+  const cfg = MANEUVER_ICONS[type];
+  if (!cfg) return 'straight';
+  if (cfg.path === FLAG_PATH) return 'arrive';
+  if (cfg.path === UTURN_PATH) return 'uturn';
+  if (cfg.path === ROUNDABOUT_PATH) return 'roundabout';
+  if (cfg.path === DOT_PATH || !cfg.rotate) return 'straight';
+  if (cfg.rotate === 90) return 'right';
+  if (cfg.rotate === -90) return 'left';
+  if (cfg.rotate === 120) return 'sharp-right';
+  if (cfg.rotate === -120) return 'sharp-left';
+  return cfg.rotate > 0 ? 'slight-right' : 'slight-left';
 }
 
 function starIcon() {
@@ -6135,6 +6156,21 @@ function updateActiveManeuver(traveledM) {
     ? state.route.totalTimeS * (remainingM / state.route.totalDistM)
     : 0;
   el.sheetSummary.textContent = `${formatDistance(remainingM)} remaining · about ${formatDuration(remainingTimeS)}`;
+
+  // Personal-branch-only native Picture-in-Picture mini view (see
+  // native-pip.js) — kept in lockstep with the on-screen banner above so
+  // it's never stale while it's the only thing visible (app backgrounded).
+  // Best-effort: a rejected promise here (main branch has no NavPip plugin
+  // at all, or this simply isn't the Android shell) is expected and must
+  // never affect navigation itself.
+  if (isNativePlatform()) {
+    updatePipTurnCard({
+      maneuverKind: nextIdx !== null ? maneuverPipIconKey(maneuvers[nextIdx].type) : 'arrive',
+      instruction: el.navBannerInstruction.textContent,
+      distanceText: el.navBannerDistance.textContent,
+      etaText: `${formatDistance(remainingM)} left · ${formatDuration(remainingTimeS)}`,
+    }).catch(() => {});
+  }
 }
 
 /** Tracks how long the driver has been continuously off-route and triggers a
@@ -6420,6 +6456,13 @@ async function startNavigation({ resuming = false } = {}) {
   // real navigation's own tracking — stop it now so there's never two
   // overlapping GPS watches or two markers once the nav puck takes over.
   stopIdleLocationShare();
+  // Lets MainActivity's onUserLeaveHint (personal-branch-only Picture-in-
+  // Picture mini view — see native-pip.js) know it's now worth auto-
+  // entering PiP if the user leaves the app. Native-only, and a rejected
+  // promise here (web, or the plugin simply not present on main) is
+  // expected and harmless — never anything navigation itself should fail
+  // over.
+  if (isNativePlatform()) setPipNavigating(true).catch(() => {});
   // Every source this function touches below (route-alternates, puck) is
   // only ever added inside mapLoad's own .then() — normally guaranteed by
   // the time a real "Start navigation" tap is even possible (renderRoute
@@ -6556,6 +6599,7 @@ function endNavigation() {
   state.watchId = null;
   state.navigating = false;
   releaseWakeLock();
+  if (isNativePlatform()) setPipNavigating(false).catch(() => {}); // see the matching call in startNavigation
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
