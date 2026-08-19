@@ -8,6 +8,7 @@ import {
   setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch, isNativePlatform } from './native-location.js';
+import { speakNative } from './native-tts.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -5224,12 +5225,76 @@ function applyShareLink(payload) {
 // Live tracking, voice guidance, deviation/reroute
 // ============================================================================
 
+// Chromium's speechSynthesis.getVoices() is asynchronous — the list is
+// empty until the 'voiceschanged' event fires, sometimes several seconds
+// after page load. In a plain browser tab this is harmless (voices are
+// almost always ready long before the first prompt), but inside the
+// Capacitor Android shell's WebView the same async gap has been observed to
+// leave an utterance with no voice resolved AND no error event at all —
+// speak() call succeeds, nothing is ever heard, no exception, nothing in
+// the console. Calling getVoices() once up front (right away, not waiting
+// for navigation to start) and caching whatever 'voiceschanged' eventually
+// delivers gives the WebView's TTS bridge the longest possible head start
+// before speak() is ever actually called for a real turn-by-turn prompt.
+let cachedVoices = [];
+function primeSpeechVoices() {
+  if (!('speechSynthesis' in window)) return;
+  cachedVoices = window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', () => {
+    cachedVoices = window.speechSynthesis.getVoices();
+    resolverDebugLog(`speechSynthesis: voiceschanged fired, ${cachedVoices.length} voice(s) now available.`);
+  });
+}
+primeSpeechVoices();
+
 function speak(text, isImportant = false) {
-  if (!('speechSynthesis' in window)) return; // silently unsupported, never crashes navigation
   if (state.voiceMode === 'off') return;
   if (state.voiceMode === 'important' && !isImportant) return;
-  window.speechSynthesis.cancel(); // never let prompts queue up / overlap
-  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+
+  if (isNativePlatform()) {
+    // Confirmed live via the on-screen debug log: 'speechSynthesis' in
+    // window is false inside the Capacitor shell's WebView — unlike a
+    // normal Chrome tab, Android's embedded WebView has never implemented
+    // the Web Speech Synthesis API at all. The web path below is
+    // deliberately left untouched and web/PWA-only; the shell always uses
+    // real native TTS instead (see native-tts.js).
+    resolverDebugLog(`speak() [native]: "${text}"`);
+    speakNative(text).catch((err) => resolverDebugLog(`speak() [native]: threw "${err.message}" for "${text}"`, 'error'));
+    return;
+  }
+
+  if (!('speechSynthesis' in window)) {
+    resolverDebugLog('speak(): speechSynthesis not supported on this WebView/browser — voice guidance unavailable.', 'error');
+    return; // silently unsupported, never crashes navigation
+  }
+  try {
+    // Android has been observed leaving the synthesis queue stuck 'paused'
+    // after the WebView is backgrounded (screen lock, app-switch) and
+    // foregrounded again — resume() is a no-op when nothing is paused, so
+    // this is safe to call unconditionally on every prompt.
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    // Only cancel an utterance that's actually in flight — calling
+    // cancel() unconditionally right before speak() has been reported to
+    // race the native TTS bridge on some Android WebView versions (the
+    // cancel can land after the new utterance is already queued, silently
+    // killing it instead of the old one).
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    // Explicitly resolving a voice (rather than leaving utterance.voice
+    // unset) is the known fix for WebViews that silently no-op when asked
+    // to speak with no voice resolved yet — falls through to whatever
+    // getVoices() returned at prime time, first English voice preferred,
+    // otherwise just the first available voice. Leaves the browser's own
+    // default in place (no functional change) when no voices are known at
+    // all, which is the normal case on the web build.
+    const voice = cachedVoices.find((v) => v.lang && v.lang.startsWith('en')) || cachedVoices[0];
+    if (voice) utterance.voice = voice;
+    utterance.onerror = (e) => resolverDebugLog(`speak(): utterance error "${e.error}" for "${text}"`, 'error');
+    resolverDebugLog(`speak(): "${text}" (voice=${voice ? voice.name : '(default, none resolved)'}, ${cachedVoices.length} voice(s) known)`);
+    window.speechSynthesis.speak(utterance);
+  } catch (err) {
+    resolverDebugLog(`speak(): threw "${err.message}" for "${text}"`, 'error');
+  }
 }
 
 /** A short two-tone alert chime for the moment a reroute actually fires —

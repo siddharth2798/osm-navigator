@@ -124,7 +124,7 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **The PWA looks blank or stale after an update**: bump `SHELL_CACHE_NAME` in `sw.js` — a stale service-worker cache is almost always the cause. If bumping it doesn't help, unregister the service worker and clear the site's storage from DevTools, then reload.
 - **A new Android "Share" sheet entry doesn't show up after updating**: remove and re-add the installed PWA to the home screen once — a plain reload isn't enough for Android to pick up a `share_target` manifest change.
 - **Search returns nothing, or wrong-country results, right after self-hosting**: see the `GEOCODE_COUNTRY_CODES` callout above — the default is India-only.
-- **Voice guidance sounds much quieter than music over a car's Bluetooth**: not this app under-setting anything — Android commonly routes browser text-to-speech over the Bluetooth **SCO** channel (phone-call quality, fixed volume, not adjustable from any normal volume slider) rather than the **A2DP** channel music uses. No fix is available from a plain browser/PWA; the only real fix is a native Android `TextToSpeech` call with the navigation-guidance audio attribute, in the Capacitor shell specifically (not yet implemented).
+- **Voice guidance was silent in the Android shell**: Android's embedded WebView (unlike a normal Chrome tab) has never implemented the Web Speech Synthesis API at all — `speak()` was calling into an API that simply doesn't exist there, silently. Fixed by using `@capacitor-community/text-to-speech` (real native `android.speech.tts.TextToSpeech`) inside the shell specifically; the web/PWA build is untouched and still uses the browser's own Web Speech API. As a side effect this should also fix voice guidance sounding quieter than music over a car's Bluetooth — browser text-to-speech is commonly routed over the Bluetooth **SCO** channel (phone-call quality, fixed volume) rather than the **A2DP** channel music uses, while native `TextToSpeech` defaults to the music stream instead.
 - **An Android-shell-only bug reappears after a rebuild that should have fixed it**: the WebView's Cache Storage and any registered service worker persist across a rebuild (only a full uninstall or clearing app storage wipes them) — this is why the app now skips registering a service worker inside the native shell entirely and self-heals any leftover one on launch.
 
 ## Known limitations
@@ -133,7 +133,7 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 - **EV charging search is genuinely sparse** in India's current OSM coverage.
 - **Transit mode** covers planning/rendering only, not live GPS-guided transit navigation.
 - **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server you point at.
-- **Android shell** — built and running on a real device now, but background tracking with the screen off and the Bluetooth car-audio question (above) are both still open.
+- **Android shell** — built and running on a real device now, including working voice guidance (above); background tracking with the screen off is the remaining open item.
 - **The idle location marker's compass wedge** needs a real magnetometer — without one (or if permission is denied), it falls back to GPS-derived heading.
 
 ## Contributing
