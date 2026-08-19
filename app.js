@@ -42,6 +42,12 @@ const el = {
   placeCardPrimary: document.getElementById('place-card-primary'),
   placeCardSecondary: document.getElementById('place-card-secondary'),
   placeCardActions: document.getElementById('place-card-actions'),
+  evDetailsCard: document.getElementById('ev-details-card'),
+  evConnectorLine: document.getElementById('ev-connector-line'),
+  evOperatorLine: document.getElementById('ev-operator-line'),
+  evStatusDot: document.getElementById('ev-status-dot'),
+  evStatusText: document.getElementById('ev-status-text'),
+  evOperatorLink: document.getElementById('ev-operator-link'),
   placeDirectionsBtn: document.getElementById('place-directions-btn'),
   placeCardSaveBtn: document.getElementById('place-card-save-btn'),
   placeClearBtn: document.getElementById('place-clear-btn'),
@@ -905,14 +911,20 @@ function createPinElement(colorHex, label) {
  * Carries a small name-tag bubble above the dot so it's clear which result
  * is which without having to tap each one — the label is absolutely
  * positioned (out of normal flow), so it doesn't affect the wrapper's own
- * size and the dot's center still lands exactly on the marker's lngLat. */
-function createPoiMarkerElement(labelText) {
+ * size and the dot's center still lands exactly on the marker's lngLat.
+ * `statusKey` (only ever set for an Open Charge Map EV result — see
+ * normalizeChargingStation) tints the dot with the same honest
+ * operational-status coloring as the place card's status dot; omitted
+ * entirely for every other category, which keeps today's plain accent
+ * color. */
+function createPoiMarkerElement(labelText, statusKey) {
   const wrap = document.createElement('div');
   wrap.className = 'poi-marker-wrap';
   const primary = splitPlaceLabel(labelText).primary;
+  const dotClass = statusKey ? `poi-marker ev-marker-${statusKey}` : 'poi-marker';
   wrap.innerHTML = `
     <div class="poi-marker-label">${escapeHtml(primary)}</div>
-    <div class="poi-marker"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="10"/></svg></div>
+    <div class="${dotClass}"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="10"/></svg></div>
   `;
   return wrap;
 }
@@ -931,7 +943,7 @@ function clearPoiMarkers() {
 function showPoiMarkers(results, onSelect) {
   clearPoiMarkers();
   results.forEach((r) => {
-    const el2 = createPoiMarkerElement(r.label);
+    const el2 = createPoiMarkerElement(r.label, r.evDetails && r.evDetails.statusKey);
     el2.addEventListener('click', (e) => {
       e.stopPropagation();
       onSelect(r);
@@ -1767,6 +1779,108 @@ function dedupeSameNamedNearbyResults(results) {
   return kept;
 }
 
+// ============================================================================
+// EV charging details: Open Charge Map (see CONFIG.OPENCHARGEMAP_API_KEY for
+// why this exists, and why it's never a live "is this charger free right
+// now" feature). Only ever called when a key is configured — see the branch
+// inside categorySearchNear just below, the single dispatch point every EV
+// search (category chip, "search along the route", "EV charging near X")
+// already funnels through.
+// ============================================================================
+const EV_CHARGING_TAG = 'amenity=charging_station'; // matches CHIP_CATEGORY_TAGS.ev and the POI_CATEGORY_TAGS entry below — one literal, repeated deliberately rather than introduced as a shared constant those tables would need to import
+const openChargeMapLimiter = createLimiter(CONFIG.OPENCHARGEMAP_MIN_INTERVAL_MS);
+
+// Open Charge Map's own StatusType.Title strings, mapped to one of three
+// CSS-safe keys the place card and map markers style against. Never
+// invents a status for a POI that has none — see normalizeChargingStation,
+// which leaves statusKey as 'unknown' rather than guessing.
+const OCM_STATUS_KEY_BY_TITLE = {
+  Operational: 'operational',
+  'Partly Operational': 'operational',
+  'Not Operational': 'not-operational',
+  'Temporarily Unavailable': 'not-operational',
+};
+
+/** "4 months ago" / "3 days ago" / "today" — used only for Open Charge
+ * Map's DateLastStatusUpdate. That field matters more here than a typical
+ * "last updated" timestamp would: OCM's status is community-maintained and
+ * confirmed often stale, so a bare status word with no age reads as far
+ * more trustworthy than it should — see the OPENCHARGEMAP_API_KEY comment
+ * in config.js. Returns null for a missing/unparseable date so callers can
+ * say "check-in date unknown" rather than showing a wrong one. */
+function formatRelativeAge(isoDate) {
+  if (!isoDate) return null;
+  const then = new Date(isoDate).getTime();
+  if (Number.isNaN(then)) return null;
+  const days = Math.floor((Date.now() - then) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1 day ago';
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return months === 1 ? '1 month ago' : `${months} months ago`;
+  const years = Math.floor(months / 12);
+  return years === 1 ? '1 year ago' : `${years} years ago`;
+}
+
+/** Normalizes one Open Charge Map POI into this app's existing
+ * {label, lat, lon} search-result shape (see nominatimSearch) plus an
+ * `evDetails` object the place card renders when present (see
+ * showPlaceCard). Field names sourced directly from OCM's own OpenAPI spec
+ * — AddressInfo/Connections/OperatorInfo/UsageType/StatusType are all
+ * nested objects with their own `.Title`, not flat strings. */
+function normalizeChargingStation(poi) {
+  const addr = poi.AddressInfo || {};
+  const connections = (poi.Connections || []).map((c) => ({
+    type: (c.ConnectionType && c.ConnectionType.Title) || 'Unknown connector',
+    powerKW: c.PowerKW || null,
+    quantity: c.Quantity || 1,
+    currentType: (c.CurrentType && c.CurrentType.Title) || null,
+  }));
+  const statusTitle = (poi.StatusType && poi.StatusType.Title) || null;
+  return {
+    label: addr.Title || 'Charging station',
+    lat: addr.Latitude,
+    lon: addr.Longitude,
+    evDetails: {
+      connections,
+      operatorName: (poi.OperatorInfo && poi.OperatorInfo.Title) || null,
+      operatorWebsite: (poi.OperatorInfo && poi.OperatorInfo.WebsiteURL) || null,
+      usageType: (poi.UsageType && poi.UsageType.Title) || null,
+      usageCost: poi.UsageCost || null,
+      numberOfPoints: poi.NumberOfPoints || null,
+      statusLabel: statusTitle,
+      statusKey: statusTitle ? (OCM_STATUS_KEY_BY_TITLE[statusTitle] || 'unknown') : 'unknown',
+      statusAge: formatRelativeAge(poi.DateLastStatusUpdate),
+      comments: poi.GeneralComments || null,
+    },
+  };
+}
+
+/** Open Charge Map-backed EV charging search — see the branch inside
+ * categorySearchNear just below for how this and the plain-OSM path
+ * coexist. Throws the same way nominatimSearch/requestRoute do (a plain
+ * Error with a user-facing message) so it fits the existing
+ * try/catch-and-showStatus handling at every call site unchanged. */
+async function fetchNearbyChargingStations(lat, lon) {
+  await openChargeMapLimiter();
+  const url = `${CONFIG.OPENCHARGEMAP_URL}/poi?latitude=${lat}&longitude=${lon}`
+    + `&distance=${CONFIG.OPENCHARGEMAP_SEARCH_RADIUS_KM}&distanceunit=km&maxresults=25`
+    + `&key=${encodeURIComponent(CONFIG.OPENCHARGEMAP_API_KEY)}`;
+  let res;
+  try {
+    res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
+  } catch (err) {
+    throw new Error(err.name === 'AbortError'
+      ? 'Open Charge Map is taking too long to respond. Try again in a moment.'
+      : 'Could not reach Open Charge Map. Check your connection.');
+  }
+  if (!res.ok) throw new Error(`Open Charge Map returned an error (HTTP ${res.status}) — check OPENCHARGEMAP_API_KEY in config.js.`);
+  const data = await res.json();
+  return data
+    .map(normalizeChargingStation)
+    .filter((r) => typeof r.lat === 'number' && typeof r.lon === 'number');
+}
+
 /** Nominatim's bracket syntax (`q=[amenity=fuel]`) searches by OSM tag
  * rather than by name — this is what makes "petrol pumps near me" work at
  * all, since petrol pumps mostly aren't individually named in OSM. Tries
@@ -1776,6 +1890,17 @@ function dedupeSameNamedNearbyResults(results) {
 async function categorySearchNear(tag, lat, lon) {
   const cacheKey = categorySearchCacheKey(tag, lat, lon);
   if (categorySearchCache.has(cacheKey)) return categorySearchCache.get(cacheKey);
+  // Open Charge Map, when a key is configured, replaces the OSM path
+  // specifically for EV charging — every caller of categorySearchNear
+  // (the category chip, "search along the route", "EV charging near X")
+  // funnels through here, so this one branch is the whole integration
+  // point. No key configured: falls through to the exact OSM search below,
+  // unchanged from before this feature existed.
+  if (tag === EV_CHARGING_TAG && CONFIG.OPENCHARGEMAP_API_KEY) {
+    const results = await fetchNearbyChargingStations(lat, lon);
+    categorySearchCache.set(cacheKey, results);
+    return results;
+  }
   for (const radiusDeg of [CONFIG.GEOCODE_NEAR_RADIUS_DEG_DEFAULT, CONFIG.GEOCODE_NEAR_RADIUS_DEG_WIDE]) {
     const rawResults = await nominatimSearch(`[${tag}]`, viewboxParam(lat, lon, radiusDeg) + '&extratags=1');
     if (rawResults.length) {
@@ -2897,7 +3022,54 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
   return () => document.removeEventListener('click', outsideClickHandler);
 }
 
-function showPlaceCard({ label, lat, lon }) {
+/** Renders the EV charging details card below the main place card — only
+ * ever populated for a result that came from Open Charge Map (see
+ * fetchNearbyChargingStations/normalizeChargingStation); a plain OSM pick
+ * has no `evDetails` at all, so this just hides the block. The status line
+ * is always framed with recency (see formatRelativeAge) — never as a bare
+ * status word — because Open Charge Map's own status field is community-
+ * maintained and often stale (see CONFIG.OPENCHARGEMAP_API_KEY); showing
+ * it without an age would read as far more current/trustworthy than it is. */
+function renderEvDetailsCard(evDetails) {
+  if (!evDetails) {
+    el.evDetailsCard.classList.add('hidden');
+    return;
+  }
+  const { connections, operatorName, operatorWebsite, usageType, usageCost, numberOfPoints, statusLabel, statusKey, statusAge } = evDetails;
+
+  const first = connections[0];
+  const connectorParts = [];
+  if (first) {
+    connectorParts.push(first.type);
+    if (first.powerKW) connectorParts.push(`${first.powerKW} kW`);
+  }
+  const pointCount = numberOfPoints || (first && first.quantity) || null;
+  if (pointCount) connectorParts.push(pointCount === 1 ? '1 point' : `${pointCount} points`);
+  el.evConnectorLine.textContent = connectorParts.length ? connectorParts.join(' · ') : 'Connector details not reported';
+
+  const operatorParts = [];
+  if (operatorName) operatorParts.push(operatorName);
+  if (usageCost) operatorParts.push(usageCost);
+  else if (usageType) operatorParts.push(usageType);
+  el.evOperatorLine.textContent = operatorParts.join(' · ');
+  el.evOperatorLine.classList.toggle('hidden', operatorParts.length === 0);
+
+  el.evStatusDot.className = `ev-status-dot ${statusKey}`;
+  el.evStatusText.textContent = statusLabel
+    ? `Reported ${statusLabel.toLowerCase()} · ${statusAge ? `checked ${statusAge}` : 'check-in date unknown'}`
+    : 'Status not recently reported';
+
+  if (operatorWebsite) {
+    el.evOperatorLink.href = operatorWebsite;
+    el.evOperatorLink.classList.remove('hidden');
+  } else {
+    el.evOperatorLink.classList.add('hidden');
+  }
+
+  el.evDetailsCard.classList.remove('hidden');
+}
+
+function showPlaceCard({ label, lat, lon, evDetails }) {
   const { primary, secondary } = splitPlaceLabel(label);
   el.placeCardPrimary.textContent = primary;
   el.placeCardSecondary.textContent = secondary;
@@ -2909,10 +3081,12 @@ function showPlaceCard({ label, lat, lon }) {
     el.placeCardActions.insertBefore(svBtn, el.placeClearBtn);
   }
   el.placeCard.classList.remove('hidden');
+  renderEvDetailsCard(evDetails);
   refreshWeatherBadge(); // fire-and-forget — weather for this place, doesn't block the card appearing
 }
 function hidePlaceCard() {
   el.placeCard.classList.add('hidden');
+  el.evDetailsCard.classList.add('hidden');
   refreshWeatherBadge(); // re-evaluate: hides the badge unless navigation is still active
 }
 

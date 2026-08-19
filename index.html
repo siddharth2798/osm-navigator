@@ -232,6 +232,15 @@
       </div>
     </div>
 
+    <!-- ============ EV charging details (Open Charge Map, when
+         OPENCHARGEMAP_API_KEY is configured — see config.js) ============ -->
+    <div id="ev-details-card" class="hidden">
+      <div id="ev-connector-line" class="ev-detail-line"></div>
+      <div id="ev-operator-line" class="ev-detail-line"></div>
+      <div id="ev-status-line" class="ev-detail-line"><span id="ev-status-dot" class="ev-status-dot"></span><span id="ev-status-text"></span></div>
+      <a id="ev-operator-link" class="ev-detail-link hidden" href="#" target="_blank" rel="noopener">Operator website</a>
+    </div>
+
     <!-- ============ "Which list?" prompt — shared by every save-to-favorites
          entry point, and by renaming/creating a list from the Saved panel. ============ -->
     <div id="save-to-list-prompt" class="hidden">
@@ -683,6 +692,7 @@
             <li><a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a> — the routing engine behind driving and walking directions.</li>
             <li><a href="https://www.opentripplanner.org" target="_blank" rel="noopener">OpenTripPlanner</a> — transit trip planning, when configured.</li>
             <li><a href="https://www.mapillary.com" target="_blank" rel="noopener">Mapillary</a> — street-level imagery coverage, when configured.</li>
+            <li><a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> and its contributors — EV charging station connector, operator, and status details, when configured.</li>
             <li><a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> — the weather badge's current conditions, free and keyless.</li>
             <li><a href="https://www.esri.com" target="_blank" rel="noopener">Esri, Maxar, Earthstar Geographics, and the GIS User Community</a> — satellite imagery for the layer toggle.</li>
           </ul>

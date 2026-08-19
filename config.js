@@ -215,6 +215,29 @@ export const CONFIG = {
   MAPILLARY_COVERAGE_MIN_ZOOM: 14, // below this zoom the coverage layer stays off (too many tiles, not useful at a glance)
   MAPILLARY_SEARCH_RADIUS_M: 60,   // how far from a tapped/picked point to look for the nearest image
 
+  // --- EV charging details: Open Charge Map ------------------------------------
+  // Get a free API key at https://openchargemap.org/site/develop/api (sign in,
+  // then "Request an API Key"). Leave this empty to disable the feature
+  // entirely — the EV charging category chip (and EV results in "search
+  // along the route") fall back to today's plain OSM amenity=charging_station
+  // search, with no connector/power/operator/cost/status detail. There is no
+  // public shared demo key (Open Charge Map's API rejects unauthenticated
+  // requests outright — confirmed live), unlike Nominatim/Valhalla/OpenFreeMap.
+  //
+  // Deliberately NOT a live "is this charger free right now" feature: Open
+  // Charge Map's own StatusType is a community-maintained *operational* flag
+  // (working / not working / planned), often stale by weeks or months — real
+  // per-connector live occupancy only exists behind OCPI, which requires a
+  // registered business relationship (eMSP status + bilateral contracts with
+  // each charge point operator) that a personal project has no path to. What
+  // this DOES get you: real connector type/power/operator/cost detail, plus
+  // an honestly-labeled "last reported" status — see fetchNearbyChargingStations
+  // in app.js.
+  OPENCHARGEMAP_API_KEY: '',
+  OPENCHARGEMAP_URL: 'https://api.openchargemap.io/v3',
+  OPENCHARGEMAP_MIN_INTERVAL_MS: 1000,
+  OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
+
   // --- Transit -------------------------------------------------------------
   // Point at a self-hosted OpenTripPlanner 2 instance loaded with your OSM
   // extract + a GTFS feed, e.g. 'https://otp.mydomain.com'. Leave empty and

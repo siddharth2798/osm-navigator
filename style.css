@@ -501,6 +501,48 @@ button {
   color: #fff;
 }
 
+/* ---------------------------------------------------------------- EV charging details (Open Charge Map) */
+
+#ev-details-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
+  font-size: 13px;
+}
+#ev-details-card.hidden { display: none; }
+.ev-detail-line { color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+.ev-detail-line:first-child { color: var(--text); font-weight: 500; } /* connector line — the detail people scan for first */
+.ev-detail-link { font-size: 13px; color: var(--accent); text-decoration: none; }
+.ev-detail-link:active { text-decoration: underline; }
+.ev-detail-link.hidden { display: none; }
+
+/* A genuine "does this charger work at all" signal (Open Charge Map's own
+   community-maintained operational status) — deliberately NOT green/red
+   framed as "free"/"busy": that live-occupancy signal doesn't exist for
+   this data source (see CONFIG.OPENCHARGEMAP_API_KEY), and styling it that
+   way would imply something untrue. */
+.ev-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-dim);
+}
+.ev-status-dot.operational { background: #4ade80; }
+.ev-status-dot.not-operational { background: #f87171; }
+.ev-status-dot.unknown { background: var(--text-dim); }
+
+/* Same honest signal, applied to an EV result's map marker (.poi-marker,
+   see createPoiMarkerElement) instead of the place card's inline dot — a
+   border/icon tint on the existing 22px marker rather than reusing
+   .ev-status-dot directly, which would shrink it to a bare 8px dot. */
+.poi-marker.ev-marker-operational { border-color: #4ade80; color: #4ade80; }
+.poi-marker.ev-marker-not-operational { border-color: #f87171; color: #f87171; }
+
 /* ---------------------------------------------------------------- saved-item rows (downloaded areas list) */
 
 .saved-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; max-height: 40dvh; overflow-y: auto; }
