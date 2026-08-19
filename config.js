@@ -246,7 +246,7 @@ export const CONFIG = {
   // this DOES get you: real connector type/power/operator/cost detail, plus
   // an honestly-labeled "last reported" status — see fetchNearbyChargingStations
   // in app.js.
-  OPENCHARGEMAP_ENABLED: true,
+  OPENCHARGEMAP_ENABLED: false,
   OPENCHARGEMAP_MIN_INTERVAL_MS: 1000,
   OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
 

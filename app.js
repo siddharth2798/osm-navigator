@@ -1152,9 +1152,11 @@ function updateLocateBtnState() {
 async function startIdleLocationShare({ silent = false } = {}) {
   if (state.idleLocationWatchId != null) return;
   if (!('geolocation' in navigator)) {
+    resolverDebugLog(`startIdleLocationShare(silent=${silent}): no geolocation support in this browser/WebView.`, 'error');
     if (!silent) showStatus('This browser does not support GPS location.', 'error');
     return;
   }
+  resolverDebugLog(`startIdleLocationShare(silent=${silent}) called — this is the ${silent ? 'automatic on-open' : 'locate-button'} share, separate from real navigation's own GPS watch.`);
   if (!silent) await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
   if (!silent) showStatus('Finding your location…', 'info');
   let flownToOnce = false;
@@ -1163,6 +1165,7 @@ async function startIdleLocationShare({ silent = false } = {}) {
       const lngLat = [pos.coords.longitude, pos.coords.latitude];
       if (!flownToOnce) {
         flownToOnce = true;
+        resolverDebugLog(`startIdleLocationShare(silent=${silent}): first GPS fix received, flying map there.`, 'success');
         map.flyTo({ center: lngLat, zoom: Math.max(map.getZoom(), 14), duration: 800 });
         if (!silent) clearStatus();
         el.locateBtn.classList.add('active');
@@ -1173,12 +1176,13 @@ async function startIdleLocationShare({ silent = false } = {}) {
       const headingDeg = typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : compassHeadingDeg;
       updateMyLocationMarker(lngLat, headingDeg);
     },
-    () => {
+    (err) => {
       // Without this reset, the very next tap hits stopIdleLocationShare's
       // "already sharing, turn it off" case (state.idleLocationWatchId is
       // still a non-null, dead id) and silently no-ops — the user has to
       // tap twice to actually retry after e.g. granting a permission
       // they'd denied.
+      resolverDebugLog(`startIdleLocationShare(silent=${silent}): watchPosition error "${err.message}" (code ${err.code}) — ${silent ? 'staying quiet, this was an unprompted attempt' : 'showing an error banner'}.`, 'error');
       navigator.geolocation.clearWatch(state.idleLocationWatchId);
       state.idleLocationWatchId = null;
       el.locateBtn.classList.remove('active');
@@ -1888,12 +1892,21 @@ async function fetchNearbyChargingStations(lat, lon) {
       ? 'Open Charge Map is taking too long to respond. Try again in a moment.'
       : 'Could not reach Open Charge Map. Check your connection.');
   }
-  if (res.status === 501) return null; // OPENCHARGEMAP_API_KEY not set server-side yet — see the comment above
-  if (!res.ok) throw new Error(`Open Charge Map returned an error (HTTP ${res.status}).`);
+  if (res.status === 501) {
+    // OPENCHARGEMAP_API_KEY not set server-side yet — see the comment above.
+    resolverDebugLog('EV charging: Open Charge Map is enabled but /api/opencharge-poi returned 501 (OPENCHARGEMAP_API_KEY not set on this deployment) — falling back to OSM search.', 'warn');
+    return null;
+  }
+  if (!res.ok) {
+    resolverDebugLog(`EV charging: Open Charge Map returned an error (HTTP ${res.status}) via /api/opencharge-poi.`, 'error');
+    throw new Error(`Open Charge Map returned an error (HTTP ${res.status}).`);
+  }
   const data = await res.json();
-  return data
+  const results = data
     .map(normalizeChargingStation)
     .filter((r) => typeof r.lat === 'number' && typeof r.lon === 'number');
+  resolverDebugLog(`EV charging: using Open Charge Map — found ${results.length} station(s) within ${CONFIG.OPENCHARGEMAP_SEARCH_RADIUS_KM}km.`, 'success');
+  return results;
 }
 
 /** Nominatim's bracket syntax (`q=[amenity=fuel]`) searches by OSM tag
@@ -1913,11 +1926,17 @@ async function categorySearchNear(tag, lat, lon) {
   // (fetchNearbyChargingStations returns null for that case — see its own
   // comment): falls through to the exact OSM search below, unchanged from
   // before this feature existed.
-  if (tag === EV_CHARGING_TAG && CONFIG.OPENCHARGEMAP_ENABLED) {
-    const results = await fetchNearbyChargingStations(lat, lon);
-    if (results) {
-      categorySearchCache.set(cacheKey, results);
-      return results;
+  if (tag === EV_CHARGING_TAG) {
+    if (CONFIG.OPENCHARGEMAP_ENABLED) {
+      const results = await fetchNearbyChargingStations(lat, lon);
+      if (results) {
+        categorySearchCache.set(cacheKey, results);
+        return results;
+      }
+      // results === null: fetchNearbyChargingStations already logged why
+      // (the 501/not-configured case) — fall through to OSM below.
+    } else {
+      resolverDebugLog('EV charging: Open Charge Map is disabled (OPENCHARGEMAP_ENABLED is false in config.js) — using OSM search.', 'warn');
     }
   }
   for (const radiusDeg of [CONFIG.GEOCODE_NEAR_RADIUS_DEG_DEFAULT, CONFIG.GEOCODE_NEAR_RADIUS_DEG_WIDE]) {
@@ -5904,6 +5923,7 @@ function updateActiveManeuver(traveledM) {
     const aheadM = straightAheadDistanceM(maneuvers, currentIdx);
     if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
       state.spokenContinue.add(currentIdx);
+      resolverDebugLog(`Voice: continue-straight run starting at maneuver ${currentIdx}, aggregate ${Math.round(aheadM)}m ahead (own maneuver length alone: ${Math.round(current.lengthM)}m) — announcing the aggregate.`);
       speak(`Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
     }
   }
@@ -5955,7 +5975,10 @@ function updateActiveManeuver(traveledM) {
         // scenario above) — mark it done now so the near block just below
         // doesn't immediately repeat the same instruction a second time
         // with zero gap.
-        if (distToNextM <= nearLeadM) state.spokenNear.add(nextIdx);
+        if (distToNextM <= nearLeadM) {
+          resolverDebugLog(`Voice: far/near skip-collapse for maneuver ${nextIdx} (distToNextM=${Math.round(distToNextM)}m already inside nearLeadM=${Math.round(nearLeadM)}m on the same tick) — spoke the far phrasing once instead of a separate near repeat.`);
+          state.spokenNear.add(nextIdx);
+        }
       }
       state.spokenFar.add(nextIdx);
     }
