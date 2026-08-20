@@ -3,6 +3,7 @@ package com.navigator.app;
 import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
@@ -52,6 +53,13 @@ public class MainActivity extends BridgeActivity {
       pipTurnCardView,
       new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     );
+
+    // Registers initial (not-navigating) params right away rather than
+    // waiting for the first onUserLeaveHint — Android 12+'s auto-enter path
+    // (see pipParams()) needs setPictureInPictureParams() called ahead of
+    // time to have anything to act on when the user actually leaves, not
+    // just inside onUserLeaveHint itself.
+    updatePipParams();
   }
 
   // Capacitor's BridgeActivity.onPause() pauses its WebView, and
@@ -132,6 +140,21 @@ public class MainActivity extends BridgeActivity {
    * popup for a plain "switched to another app while looking at a map". */
   void setNavPipNavigating(boolean active) {
     navigating = active;
+    // Refreshes setAutoEnterEnabled (API 31+, see pipParams()) so leaving
+    // the app while NOT navigating never auto-enters PiP, and leaving it
+    // WHILE navigating does — without this, params set once at onCreate()
+    // would only ever reflect navigating=false.
+    updatePipParams();
+  }
+
+  /** Pushes the current pipParams() to the OS. Safe to call at any point in
+   * the Activity lifecycle from API 26 on (setPictureInPictureParams exists
+   * from the same level enterPictureInPictureMode does); no-ops below that,
+   * same as onUserLeaveHint's own guard. */
+  private void updatePipParams() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      setPictureInPictureParams(pipParams());
+    }
   }
 
   /** Called by NavPipPlugin (see native-pip.js's updateTurnCard) every time
@@ -175,14 +198,18 @@ public class MainActivity extends BridgeActivity {
     }
   }
 
-  /** Auto-enters PiP the moment the user leaves this Activity (Home button,
-   * app switch, another app coming to front) while actively navigating —
-   * reliable back to very old API levels, unlike the newer Android 12
-   * auto-enter API, so this works across the project's full
-   * minSdkVersion 24 range. PiP itself (enterPictureInPictureMode) is
-   * API 26+; below that this is a no-op and the app just backgrounds
-   * normally (still with working voice guidance, via the onPause fix
-   * above — PiP is a bonus on top of that, not a requirement for it). */
+  /** Manual fallback for auto-enter PiP the moment the user leaves this
+   * Activity (Home button, app switch, another app coming to front) while
+   * actively navigating. On API 31+, pipParams() already sets
+   * setAutoEnterEnabled(true) while navigating, so the OS is expected to
+   * enter PiP itself before this even runs — the isInPictureInPictureMode()
+   * check below skips the redundant manual call in that case. Below API 31
+   * (and as a safety net if auto-enter didn't fire for some reason), this
+   * manual enterPictureInPictureMode() call is what actually does it —
+   * reliable back to API 26, the oldest level PiP itself supports; below
+   * that this is a no-op and the app just backgrounds normally (still with
+   * working voice guidance, via the onPause fix above — PiP is a bonus on
+   * top of that, not a requirement for it). */
   @Override
   public void onUserLeaveHint() {
     super.onUserLeaveHint();
@@ -191,20 +218,32 @@ public class MainActivity extends BridgeActivity {
       android.util.Log.i("NavPip", "onUserLeaveHint while navigating, but SDK " + Build.VERSION.SDK_INT + " < 26 (PiP unsupported) — backgrounding normally.");
       return;
     }
+    if (isInPictureInPictureMode()) {
+      android.util.Log.i("NavPip", "Already in PiP (API 31+ auto-enter already handled it) — skipping the manual call.");
+      return;
+    }
+    // Android explicitly allows PiP to be disabled entirely on some
+    // devices (e.g. low-RAM configurations) via this system feature flag —
+    // distinguishing that from an OS/OEM permission decline below, since
+    // they'd otherwise look identical (both just "PiP never appears").
+    if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+      android.util.Log.i("NavPip", "This device does not declare FEATURE_PICTURE_IN_PICTURE — PiP is unsupported here entirely, not just blocked.");
+      return;
+    }
     // enterPictureInPictureMode can return false (no exception) when the
     // OS/OEM declines to actually enter PiP even though the manifest and
     // this call are both correct — e.g. MIUI gates PiP behind its own
-    // separate per-app "Picture-in-picture"/"Display pop-up windows while
-    // running in the background" permission (Settings > Apps > this app >
-    // Other permissions), independent of the standard Android
-    // android:supportsPictureInPicture manifest flag. Logged rather than
-    // silently ignored so a real on-device failure is diagnosable via
-    // `adb logcat -s NavPip` instead of just "PiP didn't happen, no idea why".
+    // separate per-app "Picture-in-picture" permission (Settings > Privacy
+    // protection > Special permissions > Picture-in-picture), independent
+    // of the standard Android android:supportsPictureInPicture manifest
+    // flag. Logged rather than silently ignored so a real on-device
+    // failure is diagnosable via `adb logcat -s NavPip` instead of just
+    // "PiP didn't happen, no idea why".
     try {
       boolean entered = enterPictureInPictureMode(pipParams());
       android.util.Log.i("NavPip", entered
         ? "enterPictureInPictureMode succeeded."
-        : "enterPictureInPictureMode returned false — likely blocked by device policy or an OEM-specific PiP permission (see Settings > Apps > this app > Other permissions on MIUI).");
+        : "enterPictureInPictureMode returned false — likely blocked by device policy or an OEM-specific PiP permission (see Settings > Privacy protection > Special permissions > Picture-in-picture on MIUI).");
     } catch (Exception e) {
       android.util.Log.e("NavPip", "enterPictureInPictureMode threw", e);
     }
@@ -224,9 +263,22 @@ public class MainActivity extends BridgeActivity {
   }
 
   private PictureInPictureParams pipParams() {
-    return new PictureInPictureParams.Builder()
-      .setAspectRatio(new Rational(3, 2))
-      .build();
+    PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
+      .setAspectRatio(new Rational(3, 2));
+    // API 31+ (Android 12): declares up front whether this Activity should
+    // auto-enter PiP when the user leaves, instead of solely reacting in
+    // onUserLeaveHint — the OS then owns the exact transition timing itself
+    // (avoiding the "activity wasn't RESUMED at the instant we tried to
+    // call enterPictureInPictureMode" class of failure that the older,
+    // manual-only approach is prone to). Tied to `navigating` so leaving
+    // the app while NOT mid-trip still never triggers PiP.
+    // setSeamlessResizeEnabled(true) is recommended for non-video content
+    // like this app's map view, per Android's own PiP guide.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      builder.setAutoEnterEnabled(navigating);
+      builder.setSeamlessResizeEnabled(true);
+    }
+    return builder.build();
   }
 
   @Override
