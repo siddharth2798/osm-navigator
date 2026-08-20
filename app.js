@@ -6399,8 +6399,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.navigating && !wakeLockSentinel) acquireWakeLock();
 });
 
-async function startNavigation() {
-  resolverDebugLog(`startNavigation() called (route: ${!!state.route}, already navigating: ${state.navigating})`);
+async function startNavigation({ resuming = false } = {}) {
+  resolverDebugLog(`startNavigation() called (route: ${!!state.route}, already navigating: ${state.navigating}, resuming: ${resuming})`);
   if (!state.route || state.navigating) {
     resolverDebugLog('Bailing out — no route planned, or already navigating.', 'error');
     return;
@@ -6448,6 +6448,42 @@ async function startNavigation() {
   state.arrivedAnnounced = false;
   state.lastFix = null;
   acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
+
+  // Confirms navigation is actually on, right away — otherwise the very
+  // first thing a driver hears is whatever updateActiveManeuver's normal
+  // distance-triggered logic happens to fire once the first GPS fix
+  // arrives, which can be several seconds of silence, or nothing at all if
+  // the first maneuver is a short "continue straight" segment below
+  // CONTINUE_STRAIGHT_MIN_LENGTH_M. Never on a resume (page reload
+  // mid-drive) — the driver is already moving, "starting navigation" would
+  // be actively wrong, and state.currentManeuverIdx has just been reset to
+  // 0 above purely so the ratchet in updateActiveManeuver can fast-forward
+  // it back to the real position on the next fix, not because navigation
+  // is actually restarting from maneuver 0.
+  //
+  // Reuses the exact same CONTINUE_STRAIGHT_TYPES/spokenContinue mechanism
+  // updateActiveManeuver's own continue-straight announcement uses (same
+  // length threshold, same phrasing), rather than a second implementation
+  // of it — and marks maneuver 0 as already spoken there, so that once the
+  // first real fix arrives moments later, the normal trigger doesn't
+  // announce the exact same "Continue straight for X" a second time.
+  if (!resuming) {
+    const firstManeuver = state.route.maneuvers[0];
+    if (CONTINUE_STRAIGHT_TYPES.has(firstManeuver.type)) {
+      const aheadM = straightAheadDistanceM(state.route.maneuvers, 0);
+      if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
+        state.spokenContinue.add(0);
+        resolverDebugLog(`Voice: announcing start-of-navigation continue-straight (${Math.round(aheadM)}m ahead) immediately, marking maneuver 0 as already spoken so updateActiveManeuver doesn't repeat it on the first GPS fix.`);
+        speak(`Starting navigation. Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+      } else {
+        resolverDebugLog('Voice: announcing start-of-navigation only (first maneuver is a short continue-straight, below the announce threshold).');
+        speak('Starting navigation.', { queue: true });
+      }
+    } else {
+      resolverDebugLog(`Voice: announcing start-of-navigation with the first maneuver's own instruction: "${firstManeuver.instruction}"`);
+      speak(`Starting navigation. ${firstManeuver.instruction}`, { queue: true });
+    }
+  }
 
   // Marks the persisted trip as actively navigating (not just planned), so
   // if Android discards this tab under memory pressure and reloads it, the
@@ -6649,7 +6685,7 @@ if (shareTargetText) {
           // of dropping to the "tap Start again" planning screen, which is
           // what used to make it feel like navigation had simply stopped.
           showStatus('Resuming your drive…', 'info');
-          startNavigation();
+          startNavigation({ resuming: true });
         } else {
           el.startNavBtn.classList.remove('hidden');
           el.cancelRouteBtn.classList.remove('hidden');
