@@ -186,8 +186,27 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onUserLeaveHint() {
     super.onUserLeaveHint();
-    if (navigating && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      enterPictureInPictureMode(pipParams());
+    if (!navigating) return;
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      android.util.Log.i("NavPip", "onUserLeaveHint while navigating, but SDK " + Build.VERSION.SDK_INT + " < 26 (PiP unsupported) — backgrounding normally.");
+      return;
+    }
+    // enterPictureInPictureMode can return false (no exception) when the
+    // OS/OEM declines to actually enter PiP even though the manifest and
+    // this call are both correct — e.g. MIUI gates PiP behind its own
+    // separate per-app "Picture-in-picture"/"Display pop-up windows while
+    // running in the background" permission (Settings > Apps > this app >
+    // Other permissions), independent of the standard Android
+    // android:supportsPictureInPicture manifest flag. Logged rather than
+    // silently ignored so a real on-device failure is diagnosable via
+    // `adb logcat -s NavPip` instead of just "PiP didn't happen, no idea why".
+    try {
+      boolean entered = enterPictureInPictureMode(pipParams());
+      android.util.Log.i("NavPip", entered
+        ? "enterPictureInPictureMode succeeded."
+        : "enterPictureInPictureMode returned false — likely blocked by device policy or an OEM-specific PiP permission (see Settings > Apps > this app > Other permissions on MIUI).");
+    } catch (Exception e) {
+      android.util.Log.e("NavPip", "enterPictureInPictureMode threw", e);
     }
   }
 
