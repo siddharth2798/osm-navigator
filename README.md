@@ -26,7 +26,7 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **Long-press to pin a place** (4-second press, ignores multi-touch/pinch) — fills the search box, or sets it as the destination directly if you're already mid-trip.
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, shown automatically as soon as GPS resolves when the app opens (no need to tap anything first), on or off navigation, and toggleable from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes.
-- **Turn-by-turn navigation** — live position arrow, traveled-route dulling, the screen stays awake for the whole drive, arrival is detected automatically. Survives a mid-drive browser reload (resumes exactly where it left off) and reroutes onto whatever road you actually took, not just "U-turn back."
+- **Turn-by-turn navigation** — live position arrow, traveled-route dulling, the screen stays awake for the whole drive, arrival is detected automatically. Survives a mid-drive browser reload (resumes exactly where it left off) and reroutes onto whatever road you actually took, not just "U-turn back." On the [Android shell](#the-optional-android-shell), minimizing the app while navigating auto-enters **Picture-in-Picture** — a small floating turn-card (arrow, next instruction, distance, ETA) instead of losing the map entirely.
 - **Voice guidance** — an immediate "Starting navigation" call-out (with the first instruction) the moment you tap Start, so you're never left wondering whether it's actually on; early and near turn prompts, both scaled to your actual driving speed (a fixed distance is early at highway speed and dangerously late in slow traffic) rather than a flat distance, natural phrasing (roundabout exit counts, "slight" instead of "bear"), a mute/important-only/full toggle, a distinct alert tone on deviation, a "continue straight for X km" call-out on long stretches, and combined single-prompt handling for two turns too close together to announce separately.
 - **Weather at a glance**, **search along the route**, **favorites & recent trips**, **offline map tiles**, **shareable route links** (no backend involved), **street-level imagery** via Mapillary when configured.
 - Works with the screen off via the [optional Android shell](#the-optional-android-shell).
@@ -121,6 +121,12 @@ gh secret set ANDROID_KEY_PASSWORD --body "..."
 Without these, the daily release is still created, just without an APK attached.
 
 Also worth knowing: `@capacitor-community/background-geolocation`'s notification text is set once and can't update live afterward — [`@transistorsoft/capacitor-background-geolocation`](https://github.com/transistorsoft/capacitor-background-geolocation) supports that, at the cost of being a commercial plugin.
+
+**Picture-in-Picture on some OEM Android skins (e.g. MIUI/HyperOS) may need a manual permission grant.** MIUI in particular gates PiP behind its own per-app permission (Settings → Privacy protection → Special permissions → Picture-in-picture), defaulted off for every non-preinstalled app — and a sideloaded APK can fail to even appear in that list until the permission is touched once. If PiP doesn't auto-enter when minimizing during navigation, grant it directly instead of hunting through settings menus:
+```
+adb shell appops set com.navigator.app PICTURE_IN_PICTURE allow
+```
+`adb logcat -s NavPip` after minimizing shows exactly why it didn't enter (SDK too low, OS/OEM declined, device doesn't support PiP at all, or an exception) if it's still not working after that.
 
 ## Troubleshooting
 

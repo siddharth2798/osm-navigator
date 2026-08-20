@@ -6,7 +6,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 /**
- * Thin bridge for the personal-branch-only Picture-in-Picture mini view —
+ * Thin bridge for the Picture-in-Picture mini view shown during navigation —
  * every actual PiP/view decision lives in MainActivity (it owns the window
  * and the PiP lifecycle callbacks); this class just forwards calls from
  * app.js's native-pip.js to it. See native-pip.js for the JS-side contract.

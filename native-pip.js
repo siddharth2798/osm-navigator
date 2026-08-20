@@ -1,6 +1,5 @@
 // ============================================================================
-// Native Picture-in-Picture mini-view bridge (Capacitor / Android only —
-// personal/self-hosted-valhalla branch, not main; see README).
+// Native Picture-in-Picture mini-view bridge (Capacitor / Android shell only).
 //
 // Mirrors native-tts.js's shape: thin wrappers around a small custom native
 // plugin (NavPipPlugin.java), with no platform check of its own — callers

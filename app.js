@@ -491,8 +491,8 @@ function maneuverIcon(type) {
 }
 
 /** Maps a Valhalla maneuver type to a small fixed icon-key string for the
- * personal branch's native Picture-in-Picture mini view (see native-pip.js
- * / MainActivity.java) — native has no idea what Valhalla's numeric
+ * native Picture-in-Picture mini view (see native-pip.js / MainActivity.java)
+ * — native has no idea what Valhalla's numeric
  * maneuver types mean, so this collapses MANEUVER_ICONS' same
  * categorization down to a handful of named buckets it can do a simple
  * lookup against, rather than duplicating Valhalla's type numbers there. */
@@ -6157,12 +6157,11 @@ function updateActiveManeuver(traveledM) {
     : 0;
   el.sheetSummary.textContent = `${formatDistance(remainingM)} remaining · about ${formatDuration(remainingTimeS)}`;
 
-  // Personal-branch-only native Picture-in-Picture mini view (see
-  // native-pip.js) — kept in lockstep with the on-screen banner above so
-  // it's never stale while it's the only thing visible (app backgrounded).
-  // Best-effort: a rejected promise here (main branch has no NavPip plugin
-  // at all, or this simply isn't the Android shell) is expected and must
-  // never affect navigation itself.
+  // Native Picture-in-Picture mini view (see native-pip.js) — kept in
+  // lockstep with the on-screen banner above so it's never stale while
+  // it's the only thing visible (app backgrounded). Best-effort: a
+  // rejected promise here (not running inside the Android shell) is
+  // expected and must never affect navigation itself.
   if (isNativePlatform()) {
     updatePipTurnCard({
       maneuverKind: nextIdx !== null ? maneuverPipIconKey(maneuvers[nextIdx].type) : 'arrive',
@@ -6456,12 +6455,11 @@ async function startNavigation({ resuming = false } = {}) {
   // real navigation's own tracking — stop it now so there's never two
   // overlapping GPS watches or two markers once the nav puck takes over.
   stopIdleLocationShare();
-  // Lets MainActivity's onUserLeaveHint (personal-branch-only Picture-in-
-  // Picture mini view — see native-pip.js) know it's now worth auto-
-  // entering PiP if the user leaves the app. Native-only, and a rejected
-  // promise here (web, or the plugin simply not present on main) is
-  // expected and harmless — never anything navigation itself should fail
-  // over.
+  // Lets MainActivity's onUserLeaveHint (native Picture-in-Picture mini
+  // view — see native-pip.js) know it's now worth auto-entering PiP if the
+  // user leaves the app. Native-only, and a rejected promise here (web, or
+  // running outside the Android shell) is expected and harmless — never
+  // anything navigation itself should fail over.
   if (isNativePlatform()) setPipNavigating(true).catch(() => {});
   // Every source this function touches below (route-alternates, puck) is
   // only ever added inside mapLoad's own .then() — normally guaranteed by
