@@ -158,11 +158,19 @@ export const CONFIG = {
   VOICE_NEAR_LEAD_TIME_S: 5,
   VOICE_NEAR_MIN_M: 20,
   VOICE_NEAR_MAX_M: 140,
-  // Fallback used whenever pos.coords.speed is null/unreliable (a real,
-  // documented GPS quirk at low accuracy) — ~30km/h, a reasonable urban
-  // default so voice timing degrades to something sane rather than
-  // collapsing to *_MIN_M on every low-accuracy fix.
-  VOICE_DEFAULT_SPEED_MPS: 8.3,
+  // Last-resort fallback for dynamicVoiceLeadM (app.js), used only when
+  // there's neither a live GPS speed NOR a fix-to-fix derived one yet —
+  // effectively just the very first position fix of a trip, before
+  // onPositionUpdate has a previous fix to derive speed from. Deliberately
+  // kept comfortably ABOVE VOICE_PROMPT_MIN_M / VOICE_PROMPT_LEAD_TIME_S's
+  // own break-even speed (120m / 14s ≈ 8.57 m/s) — 8.3 here previously sat
+  // just BELOW that line (8.3 × 14 = 116.2 < 120), so this fallback always
+  // collapsed to the 120m floor instead of "degrading to something sane"
+  // as originally intended, which read aloud as a constant ~110m
+  // regardless of actual speed (formatDistanceForSpeech floors to the
+  // nearest 10m). 10 m/s (~36km/h) clears that break-even with real margin:
+  // far callout → 140m, near callout → 50m.
+  VOICE_DEFAULT_SPEED_MPS: 10,
 
   // Once the live position is within this many metres of the destination,
   // navigation ends automatically (same as tapping "End") and "You have

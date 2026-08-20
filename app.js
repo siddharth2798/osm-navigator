@@ -379,12 +379,16 @@ function formatDistanceForSpeech(m) {
 
 /** Turns a target lead TIME into a lead DISTANCE at the current live speed,
  * clamped to [minM, maxM] — see the CONFIG comment above VOICE_PROMPT_LEAD_TIME_S
- * for why this is time-based rather than a flat distance (matches Google
- * Maps/Waze/TomTom convention: the same fixed meter value is both too early
- * in slow city traffic and dangerously late at highway speed). Falls back
- * to CONFIG.VOICE_DEFAULT_SPEED_MPS whenever live speed isn't known yet or
- * the GPS fix didn't report one (a real, documented low-accuracy quirk —
- * see onPositionUpdate). */
+ * for why this is time-based rather than a flat distance (the same fixed
+ * meter value is both too early in slow city traffic and dangerously late
+ * at highway speed — this project's own tuned take on the general
+ * time-based-lead convention common to turn-by-turn nav UX, not a verified
+ * match to any specific app's real algorithm). state.currentSpeedMps
+ * already carries a fix-to-fix derived estimate whenever the live GPS fix
+ * itself didn't report a usable speed (see onPositionUpdate), so
+ * CONFIG.VOICE_DEFAULT_SPEED_MPS below is only the last-resort fallback —
+ * effectively just the very first fix of a trip, before there's a previous
+ * fix to derive anything from. */
 function dynamicVoiceLeadM(leadTimeS, minM, maxM) {
   const speedMps = state.currentSpeedMps ?? CONFIG.VOICE_DEFAULT_SPEED_MPS;
   return Math.min(maxM, Math.max(minM, speedMps * leadTimeS));
@@ -6277,10 +6281,30 @@ function onPositionUpdate(pos) {
   const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
   const lngLat = [lng, lat];
   updateSpeedText(speed);
-  // Stored as null (not defaulted here) whenever the fix didn't report a
-  // usable speed — the fallback default (CONFIG.VOICE_DEFAULT_SPEED_MPS) is
-  // applied once, at read time, in dynamicVoiceLeadM, not duplicated here.
-  state.currentSpeedMps = (typeof speed === 'number' && !Number.isNaN(speed) && speed >= 0) ? speed : null;
+
+  // Fix-to-fix distance/elapsed-time vs the previous fix — computed once
+  // and shared by both the derived-speed fallback right below and the
+  // heading fallback further down, rather than calling turf.distance twice
+  // for the same two points.
+  let movedM = null;
+  let dtS = null;
+  if (state.lastFix) {
+    movedM = turf.distance([state.lastFix.lng, state.lastFix.lat], lngLat, { units: 'meters' });
+    dtS = ((pos.timestamp || Date.now()) - state.lastFix.t) / 1000;
+  }
+  // Only trusted within a sane small window — a huge gap (e.g. a
+  // backgrounded tab resuming minutes later) or a near-zero one (two fixes
+  // at effectively the same instant) would make movedM/dtS meaningless, so
+  // those fall through to null instead of a derived value.
+  const derivedSpeedMps = (dtS != null && dtS >= 0.5 && dtS <= 10) ? movedM / dtS : null;
+  // pos.coords.speed is null on a lot of real fixes — a documented, common
+  // GPS/device quirk, not a rare edge case — so falling back straight to
+  // CONFIG.VOICE_DEFAULT_SPEED_MPS (applied once, at read time, in
+  // dynamicVoiceLeadM) on every one of those fixes made voice-guidance
+  // timing collapse to that same constant far more often than intended.
+  // Deriving speed from real position+time here instead means it keeps
+  // tracking actual driving speed on those fixes too.
+  state.currentSpeedMps = (typeof speed === 'number' && !Number.isNaN(speed) && speed >= 0) ? speed : derivedSpeedMps;
 
   // --- Heading: prefer the device's own compass/course-over-ground; fall
   // back to a bearing computed from the last two fixes when unavailable
@@ -6288,15 +6312,12 @@ function onPositionUpdate(pos) {
   let headingDeg = state.lastHeading;
   if (typeof heading === 'number' && !Number.isNaN(heading)) {
     headingDeg = heading;
-  } else if (state.lastFix) {
-    const movedM = turf.distance([state.lastFix.lng, state.lastFix.lat], lngLat, { units: 'meters' });
+  } else if (movedM != null && movedM > 0.5) {
     // Low enough to still track a slow turn (a 2m gate meant the map could
     // stay pointed the pre-turn direction for a couple of fixes right after
     // turning at low speed) while high enough that plain GPS jitter at rest
     // (sub-metre) still doesn't spin the heading around at random.
-    if (movedM > 0.5) {
-      headingDeg = (turf.bearing([state.lastFix.lng, state.lastFix.lat], lngLat) + 360) % 360;
-    }
+    headingDeg = (turf.bearing([state.lastFix.lng, state.lastFix.lat], lngLat) + 360) % 360;
   }
   state.lastHeading = headingDeg;
   state.lastFix = { lng, lat, t: pos.timestamp || Date.now() };
