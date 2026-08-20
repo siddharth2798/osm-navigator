@@ -60,6 +60,11 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // Needed directly by MainActivity's location-settings resolution (see
+    // LocationSettingsPlugin.java) — @capacitor-community/background-geolocation
+    // also depends on this, but only as `implementation`, which Gradle does
+    // NOT expose transitively to :app's own compile classpath.
+    implementation "com.google.android.gms:play-services-location:$playServicesLocationVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

@@ -52,6 +52,30 @@ export function isNativePlatform() {
   return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 }
 
+/** Granting the ACCESS_FINE_LOCATION *permission* (handled entirely by
+ * @capacitor-community/background-geolocation below) is a separate thing
+ * from the device's Location *service* actually being switched on — that
+ * plugin detects a disabled service and rejects the watch outright, but has
+ * no way to prompt the user to fix it (confirmed by reading its source: no
+ * SettingsClient/ResolvableApiException handling anywhere in it). This is a
+ * small custom native plugin (see LocationSettingsPlugin.java,
+ * MainActivity.ensureLocationEnabled) using Play Services' SettingsClient —
+ * the standard API for this — to show Android's own "Turn on Location?"
+ * system dialog when the service is off, *before* ever starting a watch
+ * that would otherwise just silently fail. No-ops (resolves as already
+ * enabled) on plain web or if the plugin isn't present (e.g. this device
+ * has no Google Play Services) — callers should still handle a watch error
+ * afterwards regardless, this is a proactive nudge, not a guarantee. */
+export async function ensureLocationEnabled() {
+  if (!isNativePlatform()) return { enabled: true };
+  try {
+    const LocationSettings = registerPlugin('LocationSettings');
+    return await LocationSettings.ensureEnabled();
+  } catch (err) {
+    return { enabled: true }; // plugin missing/errored — let the normal watch error path handle it
+  }
+}
+
 /** Starts location updates. Returns a handle to pass to stopLocationWatch()
  * — its shape differs by platform, so treat it as opaque. `onPosition` is
  * called with the same {coords:{latitude,longitude,heading,speed,accuracy},
@@ -64,6 +88,7 @@ export async function startLocationWatch(onPosition, onError, geoOptions, notifi
     return { isNative: false, id };
   }
 
+  await ensureLocationEnabled();
   const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
   const id = await BackgroundGeolocation.addWatcher(
     {

@@ -7,7 +7,7 @@ import {
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
   setQuickPlace, getQuickPlace,
 } from './idb.js';
-import { startLocationWatch, stopLocationWatch, isNativePlatform } from './native-location.js';
+import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocationEnabled } from './native-location.js';
 import { speakNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
@@ -1185,6 +1185,12 @@ async function startIdleLocationShare({ silent = false } = {}) {
   }
   resolverDebugLog(`startIdleLocationShare(silent=${silent}) called — this is the ${silent ? 'automatic on-open' : 'locate-button'} share, separate from real navigation's own GPS watch.`);
   if (!silent) await enableDeviceOrientation(); // gesture-gated on this same tap — iOS requires that
+  // This path uses plain navigator.geolocation even on the Android shell
+  // (unlike real navigation's startLocationWatch, which goes through
+  // @capacitor-community/background-geolocation) — but the device's
+  // Location *service* being off breaks it exactly the same way, so it
+  // needs the same proactive "turn on Location?" nudge before watching.
+  if (isNativePlatform()) await ensureLocationEnabled();
   if (!silent) showStatus('Finding your location…', 'info');
   let flownToOnce = false;
   state.idleLocationWatchId = navigator.geolocation.watchPosition(
@@ -1214,7 +1220,21 @@ async function startIdleLocationShare({ silent = false } = {}) {
       state.idleLocationWatchId = null;
       el.locateBtn.classList.remove('active');
       disableDeviceOrientation();
-      if (!silent) showStatus('Could not get your location. Check location permissions.', 'error');
+      // POSITION_UNAVAILABLE (2) is what the browser/WebView reports when
+      // the device's Location *service* is off — a different problem from
+      // PERMISSION_DENIED (1), and "check location permissions" is actively
+      // misleading for it (the permission is fine; the OS-level service
+      // isn't). ensureLocationEnabled() above should catch this before it
+      // ever gets here on the Android shell, but plain web/PWA has no
+      // equivalent prompt, so this can still happen there.
+      if (!silent) {
+        showStatus(
+          err.code === err.POSITION_UNAVAILABLE
+            ? 'Could not get your location. Check that Location is turned on for this device.'
+            : 'Could not get your location. Check location permissions.',
+          'error',
+        );
+      }
     },
     CONFIG.GEOLOCATION_OPTIONS,
   );
@@ -6296,7 +6316,21 @@ function resaveNavigatingTripThrottled() {
 }
 
 function onPositionError(err) {
-  if (err.code === err.PERMISSION_DENIED) {
+  // @capacitor-community/background-geolocation's own error shape is
+  // {message, code} with a STRING code (e.g. "NOT_AUTHORIZED"), not the
+  // browser GeolocationPositionError numeric constants below — so on the
+  // Android shell, err.PERMISSION_DENIED/err.TIMEOUT are always undefined
+  // and this used to silently fall through to the generic "lost signal"
+  // message even when the real cause was the device's Location *service*
+  // being off (a different problem than the app's own permission, and one
+  // ensureLocationEnabled() in native-location.js now proactively prompts
+  // for before a watch even starts — this branch is the fallback for
+  // someone declining that prompt, or turning Location off again mid-trip).
+  const isLocationServiceDisabled = err.code === 'NOT_AUTHORIZED' && /disabled/i.test(err.message || '');
+  if (isLocationServiceDisabled) {
+    showStatus('Location is turned off on this device. Turn it on to continue navigation.', 'error');
+    endNavigation();
+  } else if (err.code === err.PERMISSION_DENIED || err.code === 'NOT_AUTHORIZED') {
     showStatus('Location access was denied. Allow location permission for this site to use turn-by-turn navigation.', 'error');
     endNavigation();
   } else if (err.code === err.TIMEOUT) {
