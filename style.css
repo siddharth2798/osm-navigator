@@ -802,6 +802,20 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .fab.small { width: 38px; height: 38px; }
 .fab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+/* One-shot attention pulse — #locate-btn, the moment navigation goes
+   off-center (see updateLocateBtnState in app.js). Scale only (no
+   position/opacity change) so it can't be mistaken for the button moving
+   or another control appearing — just this one catching a peripheral
+   glance while driving. Class is stripped on animationend so it can
+   retrigger the next time the same button goes off-center again. */
+@keyframes fab-pulse-once {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.18); }
+  65% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+.fab.pulse-once { animation: fab-pulse-once 420ms ease-out; }
+
 /* markers built from plain DOM/SVG, no image assets */
 .pin-marker { width: 30px; height: 40px; display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
 .puck-marker { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; }

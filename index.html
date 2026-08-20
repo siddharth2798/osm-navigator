@@ -324,11 +324,10 @@
     <button id="zoom-out-btn" class="fab small" type="button" aria-label="Zoom out">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12 h14"/></svg>
     </button>
-    <button id="locate-btn" class="fab" type="button" title="Show my location" aria-label="Show my location">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <circle cx="12" cy="12" r="3"/><path d="M12 2 v3.5 M12 18.5 v3 M2.5 12 h3.5 M18.5 12 h3"/>
-      </svg>
-    </button>
+    <!-- Icon is set entirely from app.js (locateBtnIcon/updateLocateBtnState)
+         — swaps between the plain locate glyph and a distinct recenter arrow
+         while navigating off-center, same pattern as #voice-mode-btn below. -->
+    <button id="locate-btn" class="fab" type="button" title="Show my location" aria-label="Show my location"></button>
     <!-- Only ever revealed by app.js if MAPILLARY_ACCESS_TOKEN is set -->
     <button id="mapillary-toggle-btn" class="fab hidden" type="button" title="Show street-level imagery coverage" aria-label="Show street-level imagery coverage">
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

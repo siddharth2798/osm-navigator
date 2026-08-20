@@ -1185,9 +1185,43 @@ function updatePlanningMarkers() {
 el.zoomInBtn.addEventListener('click', () => map.zoomIn({ duration: 200 }));
 el.zoomOutBtn.addEventListener('click', () => map.zoomOut({ duration: 200 }));
 
-function updateLocateBtnState() {
-  el.locateBtn.classList.toggle('active', state.navigating && !state.followMode);
+/** Two distinct glyphs, not just a recolor — an icon that only changes
+ * color is easy to miss in peripheral vision while driving. The off-center
+ * one reads as "this is your direction arrow, tap to bring it back into
+ * view"; fill="currentColor" so it goes white automatically once
+ * .fab.active sets color:#fff on the accent background, no separate CSS
+ * needed for that. Same JS-owns-the-icon pattern as voiceModeIcon() above. */
+function locateBtnIcon(offCenter) {
+  if (offCenter) {
+    return '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" stroke="none"><path d="M12 2 L19 21 L12 17 L5 21 Z"/></svg>';
+  }
+  return '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+    + '<circle cx="12" cy="12" r="3"/><path d="M12 2 v3.5 M12 18.5 v3 M2.5 12 h3.5 M18.5 12 h3"/></svg>';
 }
+
+// null (not false) so the very first updateLocateBtnState() call below
+// always paints an icon — #locate-btn ships with no inline SVG at all
+// (see index.html), unlike the old static-markup version this replaced.
+let lastLocateBtnOffCenter = null;
+function updateLocateBtnState() {
+  const offCenter = state.navigating && !state.followMode;
+  el.locateBtn.classList.toggle('active', offCenter);
+  if (offCenter !== lastLocateBtnOffCenter) {
+    el.locateBtn.innerHTML = locateBtnIcon(offCenter);
+    el.locateBtn.setAttribute('aria-label', offCenter ? 'Recenter on your location' : 'Show my location');
+    if (offCenter) {
+      // Remove-reflow-readd so the pulse retriggers even if this somehow
+      // fires twice in a row — a CSS animation won't restart on a class
+      // that's already present with no reflow in between.
+      el.locateBtn.classList.remove('pulse-once');
+      void el.locateBtn.offsetWidth;
+      el.locateBtn.classList.add('pulse-once');
+    }
+    lastLocateBtnOffCenter = offCenter;
+  }
+}
+el.locateBtn.addEventListener('animationend', () => el.locateBtn.classList.remove('pulse-once'));
+updateLocateBtnState(); // paints the default (following) icon on load
 
 /** Starts the idle "where am I" GPS share backing state.myLocationMarker —
  * shared by the locate button's click handler and the silent auto-start on
