@@ -309,7 +309,16 @@ window.addEventListener('popstate', () => {
     // push an equivalent one back so the same guard catches the next back
     // press too, without growing backStack (same depth, not a new layer).
     history.pushState({ nav: backStack.length }, '');
-  } else {
+  } else if (backStack[backStack.length - 1] === closeFn) {
+    // Only pop if closeFn is still the top entry — some closeFns (e.g.
+    // leaveDirectionsMode, which reveals the place card as its own new
+    // closeable layer) legitimately push/replace a layer of their own as a
+    // side effect of running. Popping unconditionally here would then
+    // remove that JUST-ADDED entry instead of this one, leaving closeFn
+    // itself permanently stuck on top of backStack — confirmed live: every
+    // later back press (hardware/gesture back included, same
+    // goBackInApp()/popstate path) just re-ran it harmlessly forever,
+    // and the place card could never be dismissed via back again.
     backStack.pop();
   }
 });
@@ -1338,6 +1347,12 @@ el.locateBtn.addEventListener('click', async () => {
 const MAPILLARY_ENABLED = !!CONFIG.MAPILLARY_ACCESS_TOKEN;
 let mapillaryLayerVisible = false;
 const mapillarySequence = { ids: [], index: -1 };
+// Guards against a rapid open of two different street-view buttons before
+// the first request resolves — without this, a slower first response
+// arriving after a second (different) one would overwrite the viewer with
+// the wrong image. Same isStale()-style token idea used for autocomplete
+// elsewhere in this file, just not previously applied here.
+let mapillaryOpenSeq = 0;
 
 if (MAPILLARY_ENABLED) {
   mapLoad.then(() => {
@@ -1450,21 +1465,28 @@ async function loadMapillaryImage(img) {
 }
 
 async function openMapillaryViewerById(imageId) {
+  const mySeq = ++mapillaryOpenSeq;
   showMapillaryViewer({ loading: true });
   try {
-    await loadMapillaryImage(await fetchMapillaryImage(imageId));
+    const img = await fetchMapillaryImage(imageId);
+    if (mySeq !== mapillaryOpenSeq) return; // a newer open request has since started — don't clobber it
+    await loadMapillaryImage(img);
   } catch (err) {
+    if (mySeq !== mapillaryOpenSeq) return;
     showMapillaryViewer({ error: err.message });
   }
 }
 
 async function openMapillaryViewerNear(lat, lon) {
+  const mySeq = ++mapillaryOpenSeq;
   showMapillaryViewer({ loading: true });
   try {
     const img = await findNearestMapillaryImage(lat, lon);
+    if (mySeq !== mapillaryOpenSeq) return; // a newer open request has since started — don't clobber it
     if (!img) { showMapillaryViewer({ empty: true }); return; }
     await loadMapillaryImage(img);
   } catch (err) {
+    if (mySeq !== mapillaryOpenSeq) return;
     showMapillaryViewer({ error: err.message });
   }
 }
@@ -1589,10 +1611,18 @@ async function runTileDownload(template, tiles, onProgress) {
       let ok = false;
       for (let attempt = 0; attempt <= CONFIG.OFFLINE_TILE_MAX_RETRIES && !ok; attempt++) {
         try {
-          const res = await fetch(url);
+          // fetchWithTimeout, not a bare fetch — every other network call in
+          // this app already goes through it. A single stalled tile (flaky
+          // network, a captive portal that accepts the connection but never
+          // answers) would otherwise hang this worker's loop forever: the
+          // Promise.all below never resolves, the progress UI freezes
+          // permanently, and Cancel (only checked between tiles, not
+          // against a fetch already in flight) can't get it unstuck either.
+          const res = await fetchWithTimeout(url);
           if (res.ok) { await cache.put(url, res); ok = true; }
         } catch (err) {
-          // Network hiccup — loop retries, or falls through to "failed" below.
+          // Network hiccup (or a timeout, now) — loop retries, or falls
+          // through to "failed" below.
         }
       }
       if (ok) done++; else failed++;
@@ -2292,12 +2322,20 @@ const CATEGORY_KEYWORDS = [
   { tag: 'amenity=restaurant', keys: ['restaurant', 'food', 'dining', 'eatery'] },
   { tag: 'amenity=parking', keys: ['parking', 'car park'] },
   { tag: 'tourism=hotel', keys: ['hotel', 'lodging', 'accommodation'] },
-];
+// Word-boundary matching, not a raw substring check — e.g. `s.includes('atm')`
+// matched "Katmandu Kitchen" and "Atmiya Institute" (confirmed live), silently
+// hijacking a specific-place lookup into an ATM category search near the
+// anchor instead, with no fallback to the free-text path since geocodeNear
+// only falls through when the tag search comes back genuinely empty.
+].map((entry) => ({
+  ...entry,
+  re: new RegExp(`\\b(?:${entry.keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`),
+}));
 
 function matchCategoryTag(subject) {
   const s = subject.toLowerCase();
   for (const entry of CATEGORY_KEYWORDS) {
-    if (entry.keys.some((k) => s.includes(k))) return entry.tag;
+    if (entry.re.test(s)) return entry.tag;
   }
   return null;
 }
@@ -2412,6 +2450,17 @@ function resolverDebugLog(message, kind = '') {
   line.textContent = `[+${Date.now() - resolverDebugStartTs}ms] ${message}`;
   el.resolverDebugLogEl.appendChild(line);
   el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
+  // Same pattern as every other on-screen panel (place card, Mapillary
+  // viewer, docs) — only push a back-stack layer the moment it actually
+  // opens (hidden -> visible), not on every single log line this function
+  // appends while already open. Missing this meant the panel was
+  // completely outside the back-stack: on the Android shell, pressing the
+  // hardware/gesture back button while it was the only thing open exited
+  // the app outright instead of closing the panel (see native-back.js —
+  // it falls through to App.exitApp() once backStack is empty).
+  if (el.resolverDebugPanel.classList.contains('hidden')) {
+    pushBackLayer(() => el.resolverDebugPanel.classList.add('hidden'));
+  }
   el.resolverDebugPanel.classList.remove('hidden');
 }
 // This panel started out resolver-specific but is the only on-screen trace
@@ -2459,7 +2508,7 @@ const CONSOLE_DEBUG_KIND = { warn: 'warn', error: 'error' };
 });
 
 if (el.resolverDebugCloseBtn) {
-  el.resolverDebugCloseBtn.addEventListener('click', () => el.resolverDebugPanel.classList.add('hidden'));
+  el.resolverDebugCloseBtn.addEventListener('click', goBackInApp);
 }
 if (el.resolverDebugCopyBtn) {
   el.resolverDebugCopyBtn.addEventListener('click', async () => {
@@ -3283,6 +3332,11 @@ function showPlaceCard({ label, lat, lon, evDetails }) {
 function hidePlaceCard() {
   el.placeCard.classList.add('hidden');
   el.evDetailsCard.classList.add('hidden');
+  // Written before the full-screen "View full details" panel existed and
+  // never updated — defense-in-depth in case some future caller reaches
+  // this while that panel is open, rather than relying solely on the panel
+  // being a full-screen overlay sitting on top of everything else today.
+  el.evDetailsPanel.classList.add('hidden');
   refreshWeatherBadge(); // re-evaluate: hides the badge unless navigation is still active
 }
 
@@ -4436,6 +4490,16 @@ el.placeCardSaveBtn.addEventListener('click', async () => {
   const preselectedListId = sourceUrl ? await getOrCreateNamedListId('To add to OSM').catch(() => null) : null;
   openSaveToListPrompt(splitPlaceLabel(label).primary, preselectedListId, async (listId) => {
     try {
+      // Same de-dup this file already does for autoBookmarkGoogleMapsLink,
+      // just missing here — this button had no existence check at all, so
+      // re-tapping Save (easy to do by accident, and there's no "already
+      // saved" indicator on the star to discourage it) created a new,
+      // byte-identical favorite every time (confirmed live).
+      const existing = await getFavorites(listId);
+      if (existing.some((f) => f.lat === lat && f.lon === lon)) {
+        showStatus(`"${splitPlaceLabel(label).primary}" is already saved to this list.`, 'info');
+        return;
+      }
       await addFavorite({ label, lat, lon, listId, note: sourceUrl });
       showStatus('Saved to favorites.', 'success');
     } catch (err) {
@@ -4476,6 +4540,18 @@ el.swapBtn.addEventListener('click', () => {
  * directions request starts (a new search, favorite, or recent trip), so
  * stops from a previous trip don't linger onto an unrelated one. */
 function clearStops() {
+  // Each row's own teardown (normally released via its remove button, see
+  // addStopRow) must also run here — a raw innerHTML='' discards the rows
+  // without ever calling it, permanently leaking setupAutocomplete's
+  // document-level click listener (and the closed-over, now-detached row)
+  // once per stop that ever existed. This is the far more common path in
+  // practice — picking a favorite/recent trip, the "X to Y" shortcut, a
+  // shared route link, and the place card's Directions button all clear
+  // stops this way, not just the per-row ✕ button — so this was a real,
+  // easily-triggered, unbounded leak in a PWA people keep open all day.
+  el.stopsContainer.querySelectorAll('.stop-unit').forEach((unit) => {
+    if (unit._teardownAutocomplete) unit._teardownAutocomplete();
+  });
   el.stopsContainer.innerHTML = '';
   updatePlanningMarkers();
 }
@@ -4544,6 +4620,10 @@ function addStopRow(prefill) {
     input._stopPlace = picked || null;
     updatePlanningMarkers();
   });
+  // Stored directly on the row so clearStops() (a totally separate code
+  // path from this row's own remove button) can also release it — see the
+  // comment there for why that matters.
+  unit._teardownAutocomplete = teardownAutocomplete;
 
   removeBtn.addEventListener('click', () => {
     teardownAutocomplete();
@@ -4753,6 +4833,19 @@ function checkRoutePlausibility(trip, from, to, hasStops = false) {
 // reroutes are never cache hits (the coordinates are different every time by
 // design), so this only ever saves the redundant-resubmit case, not real trips.
 const valhallaCache = new Map();
+// Every reroute (live-position waypoints, different every time by design)
+// still WRITES a new entry here even though it can never HIT one — over a
+// long drive with several reroutes, or a session with many different trips
+// planned, this grew without bound for the life of the tab. A plain
+// insertion-order FIFO cap is enough here (no need for real LRU): this
+// cache only ever saves the redundant-exact-resubmit case, not a
+// meaningfully-reused working set worth optimizing eviction order for.
+const VALHALLA_CACHE_MAX_ENTRIES = 50;
+function capValhallaCache() {
+  while (valhallaCache.size > VALHALLA_CACHE_MAX_ENTRIES) {
+    valhallaCache.delete(valhallaCache.keys().next().value);
+  }
+}
 function routeCacheKey(from, to, stops, wantAlternates, costing, avoidTolls, avoidHighways) {
   return JSON.stringify([costing, wantAlternates, !!avoidTolls, !!avoidHighways, ...[from, ...stops, to].map((p) => [p.lat.toFixed(5), p.lon.toFixed(5)])]);
 }
@@ -4872,6 +4965,7 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   const alternates = wantAlternates > 0 ? filterMeaningfulAlternates(data.trip, rawAlternates) : [];
   const result = { trip: data.trip, alternates };
   valhallaCache.set(cacheKey, result);
+  capValhallaCache();
   return result;
 }
 
@@ -5291,7 +5385,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   // working from in-memory state either way, this only affects whether it
   // survives a reload.
   try {
-    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: false });
+    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: state.navigating });
   } catch (err) {
     showStatus('Could not save trip progress locally: ' + err.message, 'error');
   }
@@ -5349,11 +5443,30 @@ if (transitModeBtn) transitModeBtn.classList.toggle('hidden', !TRANSIT_ENABLED);
 if (modeButtons.filter((b) => !b.classList.contains('hidden')).length > 1) {
   el.travelModeToggle.classList.remove('hidden');
 }
+// Stops aren't supported by transit routing at all — requestTransitRoute
+// only ever takes state.from/state.to (contrast the drive/walk branch,
+// which passes getStops()) — so leaving the stops UI visible in transit
+// mode used to mean any stops already added just silently vanished from
+// the plan the moment Transit actually ran, with zero feedback. Called
+// from every place state.travelMode gets set, not just the mode-button
+// click handler, so a restored/shared trip in transit mode starts with
+// this hidden too.
+function updateStopsUiForTravelMode() {
+  const isTransit = state.travelMode === 'transit';
+  el.stopsContainer.classList.toggle('hidden', isTransit);
+  el.addStopBtn.classList.toggle('hidden', isTransit);
+}
+
 modeButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     state.travelMode = btn.dataset.mode;
     modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
     el.routeAvoidToggle.classList.toggle('hidden', state.travelMode !== 'drive');
+    if (state.travelMode === 'transit' && el.stopsContainer.children.length) {
+      showStatus("Stops aren't supported for transit directions — showing a direct trip instead.", 'info');
+      clearStops();
+    }
+    updateStopsUiForTravelMode();
     el.planBtn.classList.remove('hidden'); // travel mode changed — any route already shown was planned for the old mode
   });
 });
@@ -5857,6 +5970,7 @@ function applyShareLink(payload) {
   if (mode === 'transit' && !TRANSIT_ENABLED) { mode = 'drive'; modeFellBack = true; }
   state.travelMode = mode;
   modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  updateStopsUiForTravelMode();
 
   goToDirections({ from: payload.from, to: payload.to }); // also clears/redraws stops+markers, opens directions UI, pushes its own back layer
   stops.forEach((s) => addStopRow(s));
@@ -6281,8 +6395,22 @@ async function triggerReroute(currentLngLat) {
     const warning = checkRoutePlausibility(trip, from, state.to, remainingStops.length > 0);
     if (warning) showStatus(warning, 'error'); else clearStatus();
   } catch (err) {
-    showStatus('Off route, no signal — continuing on the current route until reconnected.', 'error', { sticky: true });
-    state.pendingRerouteFrom = currentLngLat;
+    // Re-check here, not just before the try above — connectivity can also
+    // drop mid-request. But a genuine failure while still online (a real
+    // Valhalla error, a timeout, no route found — requestRoute throws a
+    // distinct message for each) used to get overwritten with this same
+    // "no signal" text regardless, misleading the driver into thinking
+    // there's nothing to do but wait for a connection that never actually
+    // dropped. pendingRerouteFrom is specifically "retry once the 'online'
+    // event fires" (see its own state comment) — not relevant here since
+    // there's no offline period to recover from, so it's deliberately left
+    // unset; the next off-route dwell cycle naturally gets another attempt.
+    if (!navigator.onLine) {
+      showStatus('Off route, no signal — continuing on the current route until reconnected.', 'error', { sticky: true });
+      state.pendingRerouteFrom = currentLngLat;
+    } else {
+      showStatus(`Could not recalculate — continuing on the current route (${err.message})`, 'error', { sticky: true });
+    }
   } finally {
     state.offRouteSince = null;
     state.isRerouting = false;
@@ -6529,117 +6657,146 @@ async function startNavigation({ resuming = false } = {}) {
   } catch (err) {
     resolverDebugLog(`Map load failed: ${err.message}`, 'error');
     state.navigating = false;
+    if (isNativePlatform()) setPipNavigating(false).catch(() => {});
     showStatus(err.message, 'error');
     return;
   }
 
-  state.followMode = true;
-  state.offRouteSince = null;
-  state.isRerouting = false;
-  state.pendingRerouteFrom = null;
-  state.spokenFar = new Set();
-  state.spokenNear = new Set();
-  state.spokenContinue = new Set();
-  state.currentManeuverIdx = 0; // covers the resume-after-reload path, which sets state.route directly without going through renderRoute
-  state.arrivedAnnounced = false;
-  state.lastFix = null;
-  acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
-
-  // Confirms navigation is actually on, right away — otherwise the very
-  // first thing a driver hears is whatever updateActiveManeuver's normal
-  // distance-triggered logic happens to fire once the first GPS fix
-  // arrives, which can be several seconds of silence, or nothing at all if
-  // the first maneuver is a short "continue straight" segment below
-  // CONTINUE_STRAIGHT_MIN_LENGTH_M. Never on a resume (page reload
-  // mid-drive) — the driver is already moving, "starting navigation" would
-  // be actively wrong, and state.currentManeuverIdx has just been reset to
-  // 0 above purely so the ratchet in updateActiveManeuver can fast-forward
-  // it back to the real position on the next fix, not because navigation
-  // is actually restarting from maneuver 0.
-  //
-  // Reuses the exact same CONTINUE_STRAIGHT_TYPES/spokenContinue mechanism
-  // updateActiveManeuver's own continue-straight announcement uses (same
-  // length threshold, same phrasing), rather than a second implementation
-  // of it — and marks maneuver 0 as already spoken there, so that once the
-  // first real fix arrives moments later, the normal trigger doesn't
-  // announce the exact same "Continue straight for X" a second time.
-  if (!resuming) {
-    const firstManeuver = state.route.maneuvers[0];
-    if (CONTINUE_STRAIGHT_TYPES.has(firstManeuver.type)) {
-      const aheadM = straightAheadDistanceM(state.route.maneuvers, 0);
-      if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
-        state.spokenContinue.add(0);
-        resolverDebugLog(`Voice: announcing start-of-navigation continue-straight (${Math.round(aheadM)}m ahead) immediately, marking maneuver 0 as already spoken so updateActiveManeuver doesn't repeat it on the first GPS fix.`);
-        speak(`Starting navigation. Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
-      } else {
-        resolverDebugLog('Voice: announcing start-of-navigation only (first maneuver is a short continue-straight, below the announce threshold).');
-        speak('Starting navigation.', { queue: true });
-      }
-    } else {
-      resolverDebugLog(`Voice: announcing start-of-navigation with the first maneuver's own instruction: "${firstManeuver.instruction}"`);
-      speak(`Starting navigation. ${firstManeuver.instruction}`, { queue: true });
-    }
+  // state.route/state.to can have been cancelled out from under this call
+  // while the await above was pending (e.g. a tap on Cancel) — state.navigating
+  // was already claimed synchronously above specifically to block a second
+  // concurrent Start tap, but nothing else guards against the route
+  // disappearing mid-wait. Bail out cleanly instead of dereferencing a null
+  // state.route/state.to below (confirmed live: this used to throw an
+  // uncaught TypeError, leaving state.navigating stuck true forever with no
+  // GPS watch and a leaked wake lock — every future Start tap then silently
+  // no-op'd against the stale "already navigating" guard at the top).
+  if (!state.route || !state.to) {
+    resolverDebugLog('state.route/state.to disappeared while awaiting map load (route was cancelled) — aborting startNavigation.', 'warn');
+    state.navigating = false;
+    if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+    return;
   }
 
-  // Marks the persisted trip as actively navigating (not just planned), so
-  // if Android discards this tab under memory pressure and reloads it, the
-  // startup resume path (below) restarts live navigation instead of
-  // dropping back to the "tap Start again" planning screen — see
-  // onPositionUpdate for the periodic re-save that keeps this current.
-  saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
-    .catch(() => { /* non-fatal: worst case a reload lands on the planning screen instead of resuming live */ });
-
-  forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
-  resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
-  // Once driving, back should warn rather than silently discard the route —
-  // Google Maps never lets a stray back press during turn-by-turn exit
-  // navigation; only the explicit "End" button does that (see endNavigation).
-  replaceTopBackLayer(navigatingBackGuard);
-  el.searchCard.classList.add('hidden');
-  el.placeCard.classList.add('hidden');
-  el.navBanner.classList.remove('hidden');
-  el.navSpeed.classList.remove('hidden');
-  updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
-  refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
-  el.bottomSheet.classList.remove('expanded', 'half');
-  el.startNavBtn.classList.add('hidden');
-  el.cancelRouteBtn.classList.add('hidden');
-  // Along-route search stays available while driving (see routeSearchScope) —
-  // scoped to what's still ahead of you rather than the whole original route.
-  // It moves from the inline row (under the now-hidden search card) to the
-  // floating FAB+popover, which is reachable without the search card on screen.
-  hideRouteChipsInline();
-  showRouteSearchFeature();
-  el.routeOptionsRow.classList.add('hidden'); // no more switching routes once you're committed and driving
-  map.getSource('route-alternates').setData(emptyFeatureCollection());
-  el.endNavBtn.classList.remove('hidden');
-  updateLocateBtnState();
-
-  // The live puck takes over as the "where am I" marker — stop the idle
-  // (non-navigating) location watch entirely rather than leaving it running
-  // redundantly alongside navigation's own watch.
-  if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
-  if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
-  if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; disableDeviceOrientation(); }
-
-  showStatus('Getting your location…', 'info');
-  resolverDebugLog('Calling startLocationWatch() — on the Android shell this requests the background-geolocation permission and can pause here waiting on that native dialog…');
   try {
-    // On a plain web deployment this is navigator.geolocation.watchPosition
-    // under the hood. Inside the optional Capacitor Android shell, it
-    // instead starts a real Android foreground service via a
-    // background-geolocation plugin, whose native callback feeds the exact
-    // same onPositionUpdate() below — see native-location.js for why that
-    // matters with the screen off.
-    state.watchId = await startLocationWatch(onPositionUpdate, onPositionError, CONFIG.GEOLOCATION_OPTIONS, {
-      title: 'Navigating to ' + state.to.label,
-      message: 'Tracking your location for turn-by-turn guidance.',
-    });
-    resolverDebugLog(`Location watch started (id: ${JSON.stringify(state.watchId)}).`, 'success');
+    state.followMode = true;
+    state.offRouteSince = null;
+    state.isRerouting = false;
+    state.pendingRerouteFrom = null;
+    state.spokenFar = new Set();
+    state.spokenNear = new Set();
+    state.spokenContinue = new Set();
+    state.currentManeuverIdx = 0; // covers the resume-after-reload path, which sets state.route directly without going through renderRoute
+    state.arrivedAnnounced = false;
+    state.lastFix = null;
+    acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
+
+    // Confirms navigation is actually on, right away — otherwise the very
+    // first thing a driver hears is whatever updateActiveManeuver's normal
+    // distance-triggered logic happens to fire once the first GPS fix
+    // arrives, which can be several seconds of silence, or nothing at all if
+    // the first maneuver is a short "continue straight" segment below
+    // CONTINUE_STRAIGHT_MIN_LENGTH_M. Never on a resume (page reload
+    // mid-drive) — the driver is already moving, "starting navigation" would
+    // be actively wrong, and state.currentManeuverIdx has just been reset to
+    // 0 above purely so the ratchet in updateActiveManeuver can fast-forward
+    // it back to the real position on the next fix, not because navigation
+    // is actually restarting from maneuver 0.
+    //
+    // Reuses the exact same CONTINUE_STRAIGHT_TYPES/spokenContinue mechanism
+    // updateActiveManeuver's own continue-straight announcement uses (same
+    // length threshold, same phrasing), rather than a second implementation
+    // of it — and marks maneuver 0 as already spoken there, so that once the
+    // first real fix arrives moments later, the normal trigger doesn't
+    // announce the exact same "Continue straight for X" a second time.
+    if (!resuming) {
+      const firstManeuver = state.route.maneuvers[0];
+      if (CONTINUE_STRAIGHT_TYPES.has(firstManeuver.type)) {
+        const aheadM = straightAheadDistanceM(state.route.maneuvers, 0);
+        if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
+          state.spokenContinue.add(0);
+          resolverDebugLog(`Voice: announcing start-of-navigation continue-straight (${Math.round(aheadM)}m ahead) immediately, marking maneuver 0 as already spoken so updateActiveManeuver doesn't repeat it on the first GPS fix.`);
+          speak(`Starting navigation. Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+        } else {
+          resolverDebugLog('Voice: announcing start-of-navigation only (first maneuver is a short continue-straight, below the announce threshold).');
+          speak('Starting navigation.', { queue: true });
+        }
+      } else {
+        resolverDebugLog(`Voice: announcing start-of-navigation with the first maneuver's own instruction: "${firstManeuver.instruction}"`);
+        speak(`Starting navigation. ${firstManeuver.instruction}`, { queue: true });
+      }
+    }
+
+    // Marks the persisted trip as actively navigating (not just planned), so
+    // if Android discards this tab under memory pressure and reloads it, the
+    // startup resume path (below) restarts live navigation instead of
+    // dropping back to the "tap Start again" planning screen — see
+    // onPositionUpdate for the periodic re-save that keeps this current.
+    saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+      .catch(() => { /* non-fatal: worst case a reload lands on the planning screen instead of resuming live */ });
+
+    forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
+    resetToRouteView(); // don't start driving mid-way through browsing "restaurants along the route"
+    // Once driving, back should warn rather than silently discard the route —
+    // Google Maps never lets a stray back press during turn-by-turn exit
+    // navigation; only the explicit "End" button does that (see endNavigation).
+    replaceTopBackLayer(navigatingBackGuard);
+    el.searchCard.classList.add('hidden');
+    el.placeCard.classList.add('hidden');
+    el.navBanner.classList.remove('hidden');
+    el.navSpeed.classList.remove('hidden');
+    updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
+    refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
+    el.bottomSheet.classList.remove('expanded', 'half');
+    el.startNavBtn.classList.add('hidden');
+    el.cancelRouteBtn.classList.add('hidden');
+    // Along-route search stays available while driving (see routeSearchScope) —
+    // scoped to what's still ahead of you rather than the whole original route.
+    // It moves from the inline row (under the now-hidden search card) to the
+    // floating FAB+popover, which is reachable without the search card on screen.
+    hideRouteChipsInline();
+    showRouteSearchFeature();
+    el.routeOptionsRow.classList.add('hidden'); // no more switching routes once you're committed and driving
+    map.getSource('route-alternates').setData(emptyFeatureCollection());
+    el.endNavBtn.classList.remove('hidden');
+    updateLocateBtnState();
+
+    // The live puck takes over as the "where am I" marker — stop the idle
+    // (non-navigating) location watch entirely rather than leaving it running
+    // redundantly alongside navigation's own watch.
+    if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
+    if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
+    if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; disableDeviceOrientation(); }
+
+    showStatus('Getting your location…', 'info');
+    resolverDebugLog('Calling startLocationWatch() — on the Android shell this requests the background-geolocation permission and can pause here waiting on that native dialog…');
+    try {
+      // On a plain web deployment this is navigator.geolocation.watchPosition
+      // under the hood. Inside the optional Capacitor Android shell, it
+      // instead starts a real Android foreground service via a
+      // background-geolocation plugin, whose native callback feeds the exact
+      // same onPositionUpdate() below — see native-location.js for why that
+      // matters with the screen off.
+      state.watchId = await startLocationWatch(onPositionUpdate, onPositionError, CONFIG.GEOLOCATION_OPTIONS, {
+        title: 'Navigating to ' + state.to.label,
+        message: 'Tracking your location for turn-by-turn guidance.',
+      });
+      resolverDebugLog(`Location watch started (id: ${JSON.stringify(state.watchId)}).`, 'success');
+    } catch (err) {
+      resolverDebugLog(`startLocationWatch() failed: ${err.message}`, 'error');
+      showStatus('Could not start location tracking: ' + err.message, 'error');
+      endNavigation();
+    }
   } catch (err) {
-    resolverDebugLog(`startLocationWatch() failed: ${err.message}`, 'error');
-    showStatus('Could not start location tracking: ' + err.message, 'error');
-    endNavigation();
+    // Safety net for anything else unexpected between the map-load await
+    // and here throwing — without this, state.navigating stays stuck true
+    // forever (see the comment above the route/to null-check earlier in
+    // this function for the exact failure mode that motivated this).
+    resolverDebugLog(`startNavigation() failed: ${err.message}`, 'error');
+    state.navigating = false;
+    releaseWakeLock();
+    if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+    showStatus('Could not start navigation: ' + err.message, 'error');
   }
 }
 
@@ -6757,6 +6914,7 @@ if (shareTargetText) {
         state.to = saved.to;
         state.travelMode = saved.travelMode || 'drive';
         modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === state.travelMode));
+        updateStopsUiForTravelMode();
 
         await awaitMapLoad();
         map.getSource('route').setData(state.route.lineFeature);
