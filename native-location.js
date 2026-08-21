@@ -88,7 +88,20 @@ export async function startLocationWatch(onPosition, onError, geoOptions, notifi
     return { isNative: false, id };
   }
 
-  await ensureLocationEnabled();
+  // Must actually check the result, not just await it: @capacitor-community/
+  // background-geolocation's own addWatcher() has a real bug (confirmed by
+  // reading its source) where both its permission-denied AND its
+  // location-service-disabled rejection branches are missing a `return` —
+  // execution falls through and starts a real Android foreground service
+  // (complete with a persistent notification) regardless, which then has no
+  // JS-side handle to ever clean up since this call already threw before
+  // state.watchId could be assigned. Throwing here instead of calling
+  // addWatcher() at all when the user declined the "Turn on Location?"
+  // dialog avoids ever reaching that plugin bug in the first place.
+  const { enabled } = await ensureLocationEnabled();
+  if (!enabled) {
+    throw new Error('Location is turned off on this device. Turn it on to use turn-by-turn navigation.');
+  }
   const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
   const id = await BackgroundGeolocation.addWatcher(
     {
