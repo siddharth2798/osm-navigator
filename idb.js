@@ -65,6 +65,19 @@ function openDb() {
       resolve(db);
     };
     req.onerror = () => { dbPromise = null; reject(req.error || new Error('Could not open the local database.')); };
+    // Fires when a version-upgrade open is blocked by another tab/instance
+    // still holding a connection at an older DB_VERSION — plausible here
+    // since DB_VERSION has been bumped more than once (quick places added
+    // it to 3). Without this, neither onsuccess nor onerror ever fires
+    // until that other connection closes: dbPromise sits pending forever,
+    // with no timeout, so every caller (getFavorites, addFavorite,
+    // getRecentTrips, the 15s saveCurrentTrip ticker, getDownloadedAreas,
+    // ...) hangs indefinitely instead of hitting its existing "Could not
+    // load…" error path.
+    req.onblocked = () => {
+      dbPromise = null;
+      reject(new Error('Could not open the local database — it looks like another tab has this app open on an older version. Close other tabs of this app and reload.'));
+    };
   });
   return dbPromise;
 }
