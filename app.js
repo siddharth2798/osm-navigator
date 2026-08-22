@@ -3590,7 +3590,23 @@ el.poiBackBtn.addEventListener('click', goBackInApp);
 async function addStopFromPoi(picked) {
   forgetBackLayerIfTop(resetToRouteView); // closing by side effect (a pick was made), not via goBackInApp
   resetToRouteView();
-  addStopRow(picked);
+  // Tapping "Add stop" first leaves an empty row waiting to be filled — the
+  // whole point of putting these category chips right under it. Without
+  // this check, picking one always appended a brand-new row instead,
+  // leaving that empty one behind permanently (it's invisible to getStops(),
+  // so it wouldn't break routing, but it never goes away on its own and
+  // silently eats into CONFIG.MAX_STOPS).
+  const emptyStopInput = [...el.stopsContainer.querySelectorAll('.stop-row input')]
+    .reverse()
+    .find((input) => !input._stopPlace && !input.value.trim());
+  if (emptyStopInput) {
+    hideSuggestionList(emptyStopInput.nextElementSibling);
+    emptyStopInput.value = shortLabel(picked);
+    emptyStopInput._stopPlace = picked;
+    updatePlanningMarkers();
+  } else {
+    addStopRow(picked);
+  }
   showStatus(`Adding ${splitPlaceLabel(picked.label).primary} as a stop…`, 'info', { sticky: true });
   try {
     // Mid-drive (picked from the "ahead" search), route from where you
