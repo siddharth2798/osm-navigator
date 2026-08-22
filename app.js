@@ -34,7 +34,7 @@ const el = {
   resolverDebugLogEl: document.getElementById('resolver-debug-log'),
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
-  debugOffBtn: document.getElementById('debug-off-btn'),
+  resolverDebugEndBtn: document.getElementById('resolver-debug-end'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
   searchCard: document.getElementById('search-card'),
@@ -2411,11 +2411,11 @@ else if (debugParam === 'off') localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KE
 let resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
 
 /** Single place that turns Debug mode on/off — keeps the Developer tools
- * toggle, the always-reachable round off-button (top-left), and the debug
- * panel's own visibility all in sync, rather than each call site touching
- * a subset of them separately. Turning off also hides the panel itself —
- * this is a real "stop debug mode" action, not just "hide the panel for
- * now" (see resolverDebugCloseBtn below for that distinction). */
+ * toggle and the debug panel's own visibility in sync, rather than each
+ * call site touching a subset of them separately. Turning off also hides
+ * the panel itself — this is a real "stop debug mode" action, not just
+ * "hide the panel for now" (see resolverDebugCloseBtn below for that
+ * distinction). */
 function setResolverDebugEnabled(enabled) {
   resolverDebugEnabled = enabled;
   if (enabled) localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
@@ -2424,16 +2424,12 @@ function setResolverDebugEnabled(enabled) {
     el.debugModeToggle.classList.toggle('active', enabled);
     el.debugModeToggle.setAttribute('aria-checked', String(enabled));
   }
-  if (el.debugOffBtn) el.debugOffBtn.classList.toggle('hidden', !enabled);
   if (!enabled && el.resolverDebugPanel) el.resolverDebugPanel.classList.add('hidden');
 }
-setResolverDebugEnabled(resolverDebugEnabled); // paints the toggle/off-button's initial state on load
+setResolverDebugEnabled(resolverDebugEnabled); // paints the toggle's initial state on load
 
 if (el.debugModeToggle) {
   el.debugModeToggle.addEventListener('click', () => setResolverDebugEnabled(!resolverDebugEnabled));
-}
-if (el.debugOffBtn) {
-  el.debugOffBtn.addEventListener('click', () => setResolverDebugEnabled(false));
 }
 
 // Lets the "Self-hosted Valhalla" Developer tools toggle override
@@ -2490,8 +2486,8 @@ function resolverDebugLog(message, kind = '') {
   // button (routed through the shared goBackInApp()) ends up closing
   // something else entirely while the panel itself stayed stuck open
   // (confirmed live: exactly the "gets stuck when a place is selected or
-  // navigation is on" symptom). See resolverDebugCloseBtn/debugOffBtn for
-  // the panel's own always-works close controls instead, and
+  // navigation is on" symptom). See resolverDebugCloseBtn/resolverDebugEndBtn
+  // for the panel's own always-works close controls instead, and
   // initNativeBackButton's wiring below for how the hardware/gesture back
   // button still special-cases this panel without going through
   // backStack.
@@ -2546,10 +2542,12 @@ if (el.resolverDebugCloseBtn) {
   // backStack (see the comment in resolverDebugLog for why), so it needs
   // its own always-works close action instead of relying on the general
   // back-press pipeline. Only hides the panel for now; Debug mode itself
-  // stays on and will reopen it on the next log line — use the round
-  // off-button (top-left, visible whenever Debug mode is on) to actually
-  // turn it off instead.
+  // stays on and will reopen it on the next log line — use the "End"
+  // button next to it to actually turn Debug mode off instead.
   el.resolverDebugCloseBtn.addEventListener('click', () => el.resolverDebugPanel.classList.add('hidden'));
+}
+if (el.resolverDebugEndBtn) {
+  el.resolverDebugEndBtn.addEventListener('click', () => setResolverDebugEnabled(false));
 }
 if (el.resolverDebugCopyBtn) {
   el.resolverDebugCopyBtn.addEventListener('click', async () => {
