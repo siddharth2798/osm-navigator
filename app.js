@@ -34,6 +34,7 @@ const el = {
   resolverDebugLogEl: document.getElementById('resolver-debug-log'),
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
+  debugOffBtn: document.getElementById('debug-off-btn'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
   searchCard: document.getElementById('search-card'),
@@ -324,7 +325,21 @@ window.addEventListener('popstate', () => {
 });
 
 if (isNativePlatform()) {
-  initNativeBackButton({ hasOpenLayer: () => backStack.length > 0, goBack: goBackInApp });
+  initNativeBackButton({
+    hasOpenLayer: () => backStack.length > 0 || !el.resolverDebugPanel.classList.contains('hidden'),
+    goBack: () => {
+      // The debug panel deliberately isn't tracked in backStack (see the
+      // comment in resolverDebugLog for why — it needs to stay closeable
+      // no matter what else is open) — checked explicitly first so the
+      // hardware/gesture back button can still close it when it's the
+      // only thing open, instead of falling through to App.exitApp().
+      if (!el.resolverDebugPanel.classList.contains('hidden')) {
+        el.resolverDebugPanel.classList.add('hidden');
+        return;
+      }
+      goBackInApp();
+    },
+  });
 }
 
 // ============================================================================
@@ -2394,16 +2409,31 @@ const debugParam = new URLSearchParams(location.search).get('debug');
 if (debugParam === 'resolver') localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
 else if (debugParam === 'off') localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
 let resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
+
+/** Single place that turns Debug mode on/off — keeps the Developer tools
+ * toggle, the always-reachable round off-button (top-left), and the debug
+ * panel's own visibility all in sync, rather than each call site touching
+ * a subset of them separately. Turning off also hides the panel itself —
+ * this is a real "stop debug mode" action, not just "hide the panel for
+ * now" (see resolverDebugCloseBtn below for that distinction). */
+function setResolverDebugEnabled(enabled) {
+  resolverDebugEnabled = enabled;
+  if (enabled) localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
+  else localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
+  if (el.debugModeToggle) {
+    el.debugModeToggle.classList.toggle('active', enabled);
+    el.debugModeToggle.setAttribute('aria-checked', String(enabled));
+  }
+  if (el.debugOffBtn) el.debugOffBtn.classList.toggle('hidden', !enabled);
+  if (!enabled && el.resolverDebugPanel) el.resolverDebugPanel.classList.add('hidden');
+}
+setResolverDebugEnabled(resolverDebugEnabled); // paints the toggle/off-button's initial state on load
+
 if (el.debugModeToggle) {
-  el.debugModeToggle.classList.toggle('active', resolverDebugEnabled);
-  el.debugModeToggle.setAttribute('aria-checked', String(resolverDebugEnabled));
-  el.debugModeToggle.addEventListener('click', () => {
-    resolverDebugEnabled = !resolverDebugEnabled;
-    if (resolverDebugEnabled) localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
-    else localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
-    el.debugModeToggle.classList.toggle('active', resolverDebugEnabled);
-    el.debugModeToggle.setAttribute('aria-checked', String(resolverDebugEnabled));
-  });
+  el.debugModeToggle.addEventListener('click', () => setResolverDebugEnabled(!resolverDebugEnabled));
+}
+if (el.debugOffBtn) {
+  el.debugOffBtn.addEventListener('click', () => setResolverDebugEnabled(false));
 }
 
 // Lets the "Self-hosted Valhalla" Developer tools toggle override
@@ -2450,17 +2480,21 @@ function resolverDebugLog(message, kind = '') {
   line.textContent = `[+${Date.now() - resolverDebugStartTs}ms] ${message}`;
   el.resolverDebugLogEl.appendChild(line);
   el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
-  // Same pattern as every other on-screen panel (place card, Mapillary
-  // viewer, docs) — only push a back-stack layer the moment it actually
-  // opens (hidden -> visible), not on every single log line this function
-  // appends while already open. Missing this meant the panel was
-  // completely outside the back-stack: on the Android shell, pressing the
-  // hardware/gesture back button while it was the only thing open exited
-  // the app outright instead of closing the panel (see native-back.js —
-  // it falls through to App.exitApp() once backStack is empty).
-  if (el.resolverDebugPanel.classList.contains('hidden')) {
-    pushBackLayer(() => el.resolverDebugPanel.classList.add('hidden'));
-  }
+  // Deliberately NOT pushBackLayer()'d — this panel needs to stay
+  // dismissable no matter what else is open (a place card, active
+  // navigation, ...). A previous version pushed it onto the shared
+  // backStack the first time it opened, but that back-stack is a strict
+  // LIFO: selecting a place afterward pushes closePlaceCard ON TOP of it,
+  // and starting navigation calls replaceTopBackLayer(navigatingBackGuard)
+  // which OVERWRITES it outright — either way the panel's own close
+  // button (routed through the shared goBackInApp()) ends up closing
+  // something else entirely while the panel itself stayed stuck open
+  // (confirmed live: exactly the "gets stuck when a place is selected or
+  // navigation is on" symptom). See resolverDebugCloseBtn/debugOffBtn for
+  // the panel's own always-works close controls instead, and
+  // initNativeBackButton's wiring below for how the hardware/gesture back
+  // button still special-cases this panel without going through
+  // backStack.
   el.resolverDebugPanel.classList.remove('hidden');
 }
 // This panel started out resolver-specific but is the only on-screen trace
@@ -2508,7 +2542,14 @@ const CONSOLE_DEBUG_KIND = { warn: 'warn', error: 'error' };
 });
 
 if (el.resolverDebugCloseBtn) {
-  el.resolverDebugCloseBtn.addEventListener('click', goBackInApp);
+  // Direct hide, not goBackInApp() — this panel isn't on the shared
+  // backStack (see the comment in resolverDebugLog for why), so it needs
+  // its own always-works close action instead of relying on the general
+  // back-press pipeline. Only hides the panel for now; Debug mode itself
+  // stays on and will reopen it on the next log line — use the round
+  // off-button (top-left, visible whenever Debug mode is on) to actually
+  // turn it off instead.
+  el.resolverDebugCloseBtn.addEventListener('click', () => el.resolverDebugPanel.classList.add('hidden'));
 }
 if (el.resolverDebugCopyBtn) {
   el.resolverDebugCopyBtn.addEventListener('click', async () => {

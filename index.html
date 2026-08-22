@@ -305,6 +305,16 @@
     <div id="resolver-debug-log" role="log" aria-live="polite"></div>
   </div>
 
+  <!-- Always-reachable "turn Debug mode off entirely" shortcut — top-left,
+       round, so it's never mistaken for resolver-debug-close (which only
+       hides the panel for now; Debug mode stays on and the panel reopens
+       on the next log line). Hidden whenever Debug mode itself is off —
+       see setResolverDebugEnabled in app.js, the one place that keeps this,
+       the Developer tools toggle, and the panel itself all in sync. -->
+  <button id="debug-off-btn" class="hidden" type="button" aria-label="Turn off debug mode" title="Turn off debug mode">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+  </button>
+
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
   <div id="map-controls">
     <!-- "Search along the route" — shown only once navigation has actually
@@ -765,7 +775,7 @@
         <div class="docs-toggle-row">
           <div class="docs-toggle-text">
             <div class="docs-toggle-label">Debug mode</div>
-            <div class="docs-toggle-hint">On-screen trace of every log and error in the app — useful when something fails silently and there's no browser console handy (e.g. on a phone). Same as adding <code>?debug=resolver</code> to the URL.</div>
+            <div class="docs-toggle-hint">On-screen trace of every log and error in the app — useful when something fails silently and there's no browser console handy (e.g. on a phone). Same as adding <code>?debug=resolver</code> to the URL. While it's on, a round ✕ button appears top-left as a quick way to turn it off again; the panel's own close button just dismisses it for now and it'll reopen on the next log line.</div>
           </div>
           <button id="debug-mode-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle debug mode"></button>
         </div>
