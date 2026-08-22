@@ -3066,11 +3066,30 @@ async function resolveTextOrQuickPlace(text, opts) {
   return geocodeSearch(text, opts);
 }
 
-/** Wires a text input + its suggestion <ul> to Nominatim. `onSelect` is
- * called with a {label,lat,lon} result when the user picks one, or with
- * `null` as soon as they start typing again (so a stale pick can never be
- * silently submitted as if it were still valid). */
+/** Shared by every suggestions/quick-picks dropdown (the plain search box,
+ * from/to fields, and every per-stop field) — none of these used to
+ * participate in the back-stack at all, so if one was the only thing open,
+ * a back press (hardware, gesture, or browser) skipped straight past it
+ * and exited/left the app instead of just closing the dropdown, the same
+ * "back should undo one visible step at a time" bug already fixed for
+ * every actual panel/modal in this app. Tracks its own pushed closeFn on
+ * the element itself (`_backLayerCloseFn`) so hideSuggestionList can
+ * correctly forgetBackLayerIfTop() it — needed since a plain
+ * `pushBackLayer(() => hideSuggestionList(listEl))` would create a fresh,
+ * unreferenceable closure every call. */
+function showSuggestionList(listEl) {
+  if (listEl.classList.contains('hidden')) {
+    const closeFn = () => hideSuggestionList(listEl);
+    listEl._backLayerCloseFn = closeFn;
+    pushBackLayer(closeFn);
+  }
+  listEl.classList.remove('hidden');
+}
 function hideSuggestionList(listEl) {
+  if (!listEl.classList.contains('hidden') && listEl._backLayerCloseFn) {
+    forgetBackLayerIfTop(listEl._backLayerCloseFn);
+    listEl._backLayerCloseFn = null;
+  }
   listEl.classList.add('hidden');
   listEl.innerHTML = '';
 }
@@ -3089,7 +3108,7 @@ function showSuggestionLoading(listEl, text = 'Searching…') {
   li.className = 'loading';
   li.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(text)}</span>`;
   listEl.appendChild(li);
-  listEl.classList.remove('hidden');
+  showSuggestionList(listEl);
 }
 
 /** Renders a results list into `listEl`, identically whether it came from
@@ -3153,7 +3172,7 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
     li.appendChild(saveBtn);
     listEl.appendChild(li);
   });
-  listEl.classList.remove('hidden');
+  showSuggestionList(listEl);
 }
 
 /** `opts.onDirectionsShortcut(fromText, toText, isStale)`, if given, is
@@ -3406,6 +3425,7 @@ function selectPlace(picked) {
   if (picked && state.pendingQuickPlaceKind) {
     const kind = state.pendingQuickPlaceKind;
     state.pendingQuickPlaceKind = null;
+    forgetBackLayerIfTop(cancelQuickPlacePick);
     setQuickPlace(kind, picked)
       .then(() => {
         showStatus(`${kind === 'home' ? 'Home' : 'Work'} set to ${shortLabel(picked)}.`, 'success');
@@ -3837,6 +3857,7 @@ function goToDirections({ from, to } = {}) {
   // the user is doing — cancel it rather than leaving it armed to silently
   // hijack whatever place gets selected next.
   state.pendingQuickPlaceKind = null;
+  forgetBackLayerIfTop(cancelQuickPlacePick);
   if (from) state.from = from;
   if (to) state.to = to;
   clearStops(); // a favorite/recent pick starts a fresh trip — don't carry over a previous one's stops; also redraws markers
@@ -3978,7 +3999,7 @@ async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } 
   }
   await appendQuickPicks(listEl, render);
 
-  if (listEl.children.length) listEl.classList.remove('hidden');
+  if (listEl.children.length) showSuggestionList(listEl);
 }
 
 /** Fetches a fresh GPS fix and applies it to whichever side is asked for —
@@ -3987,8 +4008,7 @@ async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } 
 function useCurrentLocationFor(side) {
   const inputEl = side === 'from' ? el.fromInput : el.toInput;
   const suggestionsEl = side === 'from' ? el.fromSuggestions : el.toSuggestions;
-  suggestionsEl.classList.add('hidden');
-  suggestionsEl.innerHTML = '';
+  hideSuggestionList(suggestionsEl); // not a direct classList toggle — needs to forgetBackLayerIfTop() too, see showSuggestionList
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location.', 'error');
     return;
@@ -4273,6 +4293,16 @@ function armQuickPlacePick(kind) {
   closeSavedPanelEntirely();
   showStatus(`Search for ${kind === 'home' ? 'home' : 'your workplace'}, then pick a result to set it.`, 'info', { timeoutMs: 6000 });
   el.placeInput.focus();
+  // This mode has no UI of its own beyond the status toast above, but it's
+  // real, invisible state that silently hijacks the next place picked from
+  // search (see selectPlace) — without a back-stack entry, a back press
+  // here fell straight through to whatever's next (or exited/left the app)
+  // with zero way to back out of it, and no visible sign it was even still
+  // armed.
+  pushBackLayer(cancelQuickPlacePick);
+}
+function cancelQuickPlacePick() {
+  state.pendingQuickPlaceKind = null;
 }
 
 async function renderQuickPlaces() {
