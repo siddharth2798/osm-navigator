@@ -4838,6 +4838,11 @@ async function valhallaTarget(points) {
  * retried — that's a real problem worth surfacing, not silently masking
  * (confirmed live: a self-hosted instance that's simply down should fail
  * outright, not quietly fall back). */
+/** Returns `{ res, selfHosted }` — `selfHosted` reflects where `res` itself
+ * actually came from (false again after the 501-fallback below reassigns
+ * `res` to the public server), so a caller that needs to know whether it's
+ * looking at a self-hosted answer (see fetchElevationProfile's degenerate-
+ * elevation retry) doesn't have to re-derive it. */
 async function fetchValhalla(action, points, body) {
   const target = await valhallaTarget(points);
   const doFetch = (url) => fetchWithTimeout(url, {
@@ -4847,21 +4852,23 @@ async function fetchValhalla(action, points, body) {
   });
   if (target.selfHosted) resolverDebugLog(`Valhalla: attempting self-hosted routing (${action}) for ${points.length} waypoint(s) inside SELF_HOSTED_VALHALLA_COVERAGE_BBOX.`);
   let res;
+  let selfHosted = target.selfHosted;
   try {
-    res = await doFetch(target.selfHosted ? `${target.base}/api/valhalla-${action}` : `${target.base}/${action}`);
+    res = await doFetch(selfHosted ? `${target.base}/api/valhalla-${action}` : `${target.base}/${action}`);
   } catch (err) {
-    if (!target.selfHosted) throw err;
+    if (!selfHosted) throw err;
     resolverDebugLog(`Valhalla: could not reach the self-hosted routing proxy (${err.message || err}).`, 'error');
     throw err;
   }
-  if (target.selfHosted && res.status === 501) {
+  if (selfHosted && res.status === 501) {
     resolverDebugLog('Valhalla: self-hosted routing is on but SELF_HOSTED_VALHALLA_URL is not set on this deployment — falling back to the public server.', 'warn');
     await valhallaLimiter();
     res = await doFetch(`${CONFIG.VALHALLA_URL}/${action}`);
-  } else if (target.selfHosted) {
+    selfHosted = false;
+  } else if (selfHosted) {
     resolverDebugLog(res.ok ? `Valhalla: routed via the self-hosted server for ${points.length} waypoint(s).` : `Valhalla: self-hosted server returned HTTP ${res.status}.`, res.ok ? 'success' : 'error');
   }
-  return res;
+  return { res, selfHosted };
 }
 
 /** `stops` (optional) are intermediate waypoints visited in order between
@@ -5031,7 +5038,7 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
     // place. text/plain sidesteps the problem entirely, for every
     // deployment, not just self-hosted ones. (fetchValhalla applies this
     // uniformly, including to the /api/valhalla-route proxy hop.)
-    res = await fetchValhalla('route', waypoints, body);
+    ({ res } = await fetchValhalla('route', waypoints, body));
   } catch (err) {
     throw new Error(err.name === 'AbortError'
       ? 'The routing service is taking too long to respond. Try again in a moment.'
@@ -5074,16 +5081,54 @@ function sampleCoordsForHeight(coords, maxPoints) {
   return sampled;
 }
 
+/** True when every height in `rangeHeight` is identical — the shape a
+ * Valhalla server takes when it has no elevation data loaded at all (it
+ * doesn't error on /height, it just returns a flat repeated value for
+ * every point, indistinguishable at the response level from a route that
+ * genuinely is flat). Only meaningful as a signal on a self-hosted
+ * answer — see fetchElevationProfile. */
+function isDegenerateElevation(rangeHeight) {
+  const first = rangeHeight[0][1];
+  return rangeHeight.every((p) => p[1] === first);
+}
+
 /** Returns Valhalla's range_height pairs: [[cumulativeDistM, heightM], ...].
  * Goes through the same server-selection/rate-limiting as /route (see
  * valhallaTarget) since it hits the same server. Throws on any failure —
- * callers must treat that as "no chart", never a user-facing error. */
+ * callers must treat that as "no chart", never a user-facing error.
+ *
+ * A self-hosted Valhalla whose tiles were built without ever running
+ * valhalla_build_elevation against downloaded DEM data (a separate,
+ * easy-to-skip step from just building the routing graph) doesn't error on
+ * /height — it silently returns a flat value for every point regardless of
+ * the real terrain. Confirmed live against a real route with ~30m of
+ * elevation change: routing came back correct from the self-hosted server,
+ * but its elevation was flat while the exact same coordinates against the
+ * public server showed the real profile. So when a self-hosted answer
+ * looks degenerate, this quietly retries elevation ONLY against the public
+ * server (routing itself stays wherever it already was) rather than
+ * showing a misleadingly flat chart for a route that isn't. */
 async function fetchElevationProfile(coords) {
   const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
-  const res = await fetchValhalla('height', shape, { range: true, shape });
+  const { res, selfHosted } = await fetchValhalla('height', shape, { range: true, shape });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
   const data = await res.json();
   if (!data.range_height || !data.range_height.length) throw new Error('No elevation data returned.');
+  if (selfHosted && isDegenerateElevation(data.range_height)) {
+    try {
+      resolverDebugLog('Valhalla: self-hosted elevation came back completely flat (likely built without elevation data) — retrying this chart only against the public server.', 'warn');
+      await valhallaLimiter();
+      const publicRes = await fetchWithTimeout(`${CONFIG.VALHALLA_URL}/height`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ range: true, shape }),
+      });
+      if (publicRes.ok) {
+        const publicData = await publicRes.json();
+        if (publicData.range_height && publicData.range_height.length) return publicData.range_height;
+      }
+    } catch (_) { /* keep the self-hosted (flat) result below rather than losing the chart entirely */ }
+  }
   return data.range_height;
 }
 
