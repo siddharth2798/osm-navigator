@@ -5333,6 +5333,16 @@ function renderElevationProfile(rangeHeight) {
       <div class="elevation-point-label hidden"></div>
     </div>`;
   el.elevationProfile.classList.remove('hidden');
+  // This whole chart is built after the route (and the peek height measured
+  // for it) already rendered — fetchElevationProfile is a separate, slower
+  // network round trip that starts once renderRoute is otherwise done (see
+  // updateElevationProfileForRoute). Without re-measuring here, the peek
+  // state's max-height stays exactly what it was before this content ever
+  // existed, clipping it off entirely (confirmed live: the chart's own
+  // title/ascent-descent line was cut off, and the sheet's own overflow:
+  // hidden meant there was no way to scroll to see it short of dragging the
+  // whole sheet up).
+  updateSheetPeekHeight();
 
   const frame = el.elevationProfile.querySelector('.elevation-chart-frame');
   const guideline = frame.querySelector('.elevation-guideline');
@@ -5362,6 +5372,7 @@ function hideElevationProfile() {
   el.elevationProfile.classList.add('hidden');
   el.elevationProfile.innerHTML = '';
   clearElevationHighlightMarker();
+  updateSheetPeekHeight(); // shrink the peek state back down now that this content is gone — see renderElevationProfile's comment for why this pairing matters
 }
 
 /** Fire-and-forget: kicks off /height for the currently-rendered route and
@@ -5805,20 +5816,24 @@ function syncMapControlsClearance() {
 new ResizeObserver(syncMapControlsClearance).observe(el.bottomSheet);
 
 /** The sheet's default "peek" landing state needs to fit the handle/summary,
- * route options (only present with 2+ meaningfully different routes), and
- * the action buttons all at once with no scrolling — a fixed guess clips
- * whichever of those is present but wasn't accounted for, so this measures
- * the real rendered height instead. Call whenever that content's presence
- * or size could have changed (route rendered, alternates shown/hidden). */
+ * route options (only present with 2+ meaningfully different routes), the
+ * walk-mode elevation chart (only present once its own async /height
+ * request resolves — see renderElevationProfile/hideElevationProfile,
+ * which both call this again once it does), and the action buttons all at
+ * once with no scrolling — a fixed guess clips whichever of those is
+ * present but wasn't accounted for, so this measures the real rendered
+ * height instead. Call whenever that content's presence or size could have
+ * changed (route rendered, alternates shown/hidden). */
 function updateSheetPeekHeight() {
   const routeOptionsHeight = el.routeOptionsRow.classList.contains('hidden') ? 0 : el.routeOptionsRow.offsetHeight;
+  const elevationHeight = el.elevationProfile.classList.contains('hidden') ? 0 : el.elevationProfile.offsetHeight;
   // #maneuver-list has no .hidden toggle of its own (unlike #poi-results-list)
   // — it stays in normal flow even with zero <li> items, and its own
   // padding-bottom (style.css) still gives it real height even then. Live
   // testing confirmed this: the sum below without this term consistently
   // undercounted the sheet's actual scrollHeight by exactly that padding,
   // clipping the bottom of the peek state by a few pixels.
-  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
+  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + elevationHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
   // Only actually apply it as the live inline max-height while at rest in
   // the peek state — .half/.expanded's own CSS max-height must stay in
   // charge otherwise, and an active drag is already driving this same
