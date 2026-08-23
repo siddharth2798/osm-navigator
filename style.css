@@ -1039,6 +1039,12 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .route-option-dist { font-size: 15px; font-weight: 700; }
 .route-option-time { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 .route-option-tag { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 3px; }
+/* Walk-mode elevation-gain badge — a second, less prominent line than
+   .route-option-tag (dimmer color) since it's informational context, not a
+   headline callout like "Fastest"/"Shortest". Starts hidden until its own
+   /height request resolves — see updateRouteOptionElevationBadges. */
+.route-option-elevation { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.route-option-elevation.hidden { display: none; }
 
 /* Walk-mode elevation profile — static chart, computed once per route. */
 #elevation-profile { flex-shrink: 0; padding: 4px 16px 8px; }
@@ -1288,7 +1294,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 
 /* ---------------------------------------------------------------- offline maps panel */
 
-#offline-panel, #saved-panel, #docs-panel, #ev-details-panel {
+#offline-panel, #saved-panel, #docs-panel, #ev-details-panel, #trip-summary-panel {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -1296,7 +1302,20 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   overflow-y: auto;
   padding: max(16px, env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
-#offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden, #ev-details-panel.hidden { display: none; }
+#offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden, #ev-details-panel.hidden, #trip-summary-panel.hidden { display: none; }
+
+/* ---- Trip summary — shown automatically once navigation ends ---- */
+.trip-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 15px;
+}
+.trip-summary-row:last-child { border-bottom: none; }
+.trip-summary-label { color: var(--text-dim); }
+.trip-summary-value { font-weight: 700; }
 
 /* ---- EV charging station: full details panel ---- */
 .ev-panel-status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); margin: 4px 2px 18px; }

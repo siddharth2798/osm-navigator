@@ -232,6 +232,26 @@ export const CONFIG = {
   // live: a 23m segment between two turns is a real case, not a rarity).
   MANEUVER_ADVANCE_HYSTERESIS_M: 10,
 
+  // Walk-mode voice incline announcements ("Moderate incline for the next
+  // 200 meters") — see deriveGradeSegments/checkInclineAnnouncement in
+  // app.js. Grade % thresholds are rough real-world walking bands (a
+  // sustained ~4% grade is noticeably more effort than flat ground; ~8%+
+  // is the kind of slope that shows up as a distinctly steep street), not
+  // a precise physiological cutoff. INCLINE_MIN_SEGMENT_M filters out
+  // short GPS/DEM noise blips that aren't a real sustained hill.
+  INCLINE_GRADE_MODERATE_PCT: 4,
+  INCLINE_GRADE_STEEP_PCT: 8,
+  INCLINE_MIN_SEGMENT_M: 30,
+  // Same dynamicVoiceLeadM() speed-scaling as the turn-by-turn callouts
+  // above, just tuned for walking pace specifically: walking speed varies
+  // far less than driving speed, so a shorter, narrower lead window still
+  // gives a consistent few seconds' notice without announcing a hill so
+  // early it's forgotten (or so late it's already underfoot) by the time
+  // you reach it.
+  INCLINE_LEAD_TIME_S: 20,
+  INCLINE_LEAD_MIN_M: 15,
+  INCLINE_LEAD_MAX_M: 80,
+
   // Camera behaviour while auto-following during navigation.
   NAV_ZOOM: 17,
   NAV_PITCH: 45,

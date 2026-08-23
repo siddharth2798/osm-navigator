@@ -66,6 +66,10 @@ const el = {
   evDetailsPanelAddress: document.getElementById('ev-details-panel-address'),
   evDetailsPanelCommentsSection: document.getElementById('ev-details-panel-comments-section'),
   evDetailsPanelComments: document.getElementById('ev-details-panel-comments'),
+  tripSummaryPanel: document.getElementById('trip-summary-panel'),
+  tripSummaryTitle: document.getElementById('trip-summary-title'),
+  tripSummaryCloseBtn: document.getElementById('trip-summary-close-btn'),
+  tripSummaryStats: document.getElementById('trip-summary-stats'),
   placeDirectionsBtn: document.getElementById('place-directions-btn'),
   placeCardSaveBtn: document.getElementById('place-card-save-btn'),
   placeClearBtn: document.getElementById('place-clear-btn'),
@@ -161,6 +165,7 @@ const el = {
   travelModeToggle: document.getElementById('travel-mode-toggle'),
   routeAvoidToggle: document.getElementById('route-avoid-toggle'),
   mapControlsLeft: document.getElementById('map-controls-left'),
+  effortBtn: document.getElementById('effort-btn'),
   voiceModeBtn: document.getElementById('voice-mode-btn'),
   mapLayerBtn: document.getElementById('map-layer-btn'),
   weatherBadge: document.getElementById('weather-badge'),
@@ -206,6 +211,7 @@ const state = {
   spokenFar: new Set(),
   spokenNear: new Set(),
   spokenContinue: new Set(), // "Continue straight for X km" — spoken once per long straight maneuver, on becoming current rather than approaching
+  spokenInclines: new Set(), // grade-segment start indices already announced — see checkInclineAnnouncement
   voiceMode: 'all', // 'all' | 'off' — see the voice-mode toggle button
   arrivedAnnounced: false,
   arrivalCandidateStreak: 0, // consecutive fixes in a row within ARRIVAL_RADIUS_M — see the arrival check in updateActiveManeuver
@@ -227,6 +233,10 @@ const state = {
   // traffic one's own); only startNavigation/endNavigation clear this, see
   // maybeRerouteForTraffic's own comment for why.
   lastTrafficRerouteAt: null,
+  navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
+  liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
+  liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
+  lastElevationHeightM: null, // interpolated height at the previous tick's traveledM, for the live-ascent/descent diff above
 };
 
 // ============================================================================
@@ -4192,6 +4202,52 @@ function hideRouteSearchFeature() {
   }
 }
 
+/** Shows/hides the live-effort FAB — same show/hide precedent as
+ * showRouteSearchFeature/hideRouteSearchFeature above, but walk mode only
+ * (there's no live-climb story worth reporting while driving). */
+function showEffortFeature() {
+  if (state.travelMode !== 'walk') return;
+  el.effortBtn.classList.remove('hidden');
+  updateEffortBtnLabel();
+}
+function hideEffortFeature() {
+  el.effortBtn.classList.add('hidden');
+}
+
+/** Low/Moderate/High read on how hard the walk has been so far — pace
+ * (current speed vs. a nominal brisk-walk baseline) combined with grade-
+ * adjusted climbing (ascent-per-km covered so far), rather than distance/
+ * time alone: a flat 3km stroll and a hilly 3km climb aren't the same
+ * effort. Deliberately qualitative, not calories — the app has no user-
+ * profile concept to source a body weight from, and a rough Low/Moderate/
+ * High read doesn't need one. The per-km ascent bands match
+ * elevationDifficultyLabel/checkSteepRouteAdvisory's own thresholds, so
+ * all three describe "how hilly" this trip is consistently. */
+function effortLevel() {
+  const NOMINAL_WALK_PACE_MPS = 1.4; // ~5 km/h brisk walk — also the fallback before a real speed is known
+  const distM = state.traveledM || 0;
+  const paceMps = state.currentSpeedMps ?? NOMINAL_WALK_PACE_MPS;
+  const ascentPerKm = distM > 0 ? (state.liveAscentM / (distM / 1000)) : 0;
+  let score = paceMps / NOMINAL_WALK_PACE_MPS;
+  if (ascentPerKm >= 20) score += 0.6;
+  else if (ascentPerKm >= 8) score += 0.3;
+  if (score < 0.85) return 'Low';
+  if (score < 1.3) return 'Moderate';
+  return 'High';
+}
+
+function updateEffortBtnLabel() {
+  el.effortBtn.setAttribute('aria-label', `Effort level so far: ${effortLevel()}`);
+}
+
+el.effortBtn.addEventListener('click', () => {
+  showStatus(
+    `${effortLevel()} effort · ${formatDistance(state.traveledM || 0)} covered`
+    + (state.liveAscentM > 0 ? ` · ↑${formatDistance(state.liveAscentM)} climbed` : ''),
+    'info',
+  );
+});
+
 /** Shows/hides the inline "search along the route" chip row under the
  * from/to fields — the pre-navigation equivalent of the FAB+popover above.
  * Visible from a successful drive plan until "Start navigation" is tapped
@@ -5064,6 +5120,7 @@ el.evViewDetailsBtn.addEventListener('click', () => {
   el.evDetailsPanel.classList.remove('hidden');
 });
 el.evDetailsPanelCloseBtn.addEventListener('click', goBackInApp);
+el.tripSummaryCloseBtn.addEventListener('click', goBackInApp);
 
 el.placeCardSaveBtn.addEventListener('click', async () => {
   if (!state.to) return;
@@ -5811,12 +5868,7 @@ function clearElevationHighlightMarker() {
 
 function renderElevationProfile(rangeHeight) {
   const heights = rangeHeight.map((p) => p[1]);
-  let ascent = 0;
-  let descent = 0;
-  for (let i = 1; i < heights.length; i++) {
-    const diff = heights[i] - heights[i - 1];
-    if (diff > 0) ascent += diff; else descent += -diff;
-  }
+  const { ascentM: ascent, descentM: descent } = computeAscentDescent(rangeHeight);
   const minH = Math.min(...heights);
   const maxH = Math.max(...heights);
   const totalDistM = rangeHeight[rangeHeight.length - 1][0];
@@ -5890,6 +5942,70 @@ function hideElevationProfile() {
   updateSheetPeekHeight(); // shrink the peek state back down now that this content is gone — see renderElevationProfile's comment for why this pairing matters
 }
 
+/** {ascentM, descentM} from a rangeHeight array ([[cumulativeDistM, heightM], ...],
+ * see fetchElevationProfile) — extracted so the chart, the steep-route
+ * advisory, route-option badges, and the trip-summary panel all report the
+ * exact same numbers instead of four subtly different reimplementations. */
+function computeAscentDescent(rangeHeight) {
+  let ascentM = 0;
+  let descentM = 0;
+  for (let i = 1; i < rangeHeight.length; i++) {
+    const diff = rangeHeight[i][1] - rangeHeight[i - 1][1];
+    if (diff > 0) ascentM += diff; else descentM += -diff;
+  }
+  return { ascentM, descentM };
+}
+
+/** Merges consecutive rangeHeight samples into runs of sustained climb/
+ * descent — {startDistM, endDistM, netHeightM, avgGradePct} — for the voice
+ * incline announcements (checkInclineAnnouncement) below. Deliberately
+ * separate from the chart's own findSignificantPointIndices/Douglas-Peucker
+ * simplification (buildElevationChart): that one simplifies in a distorted
+ * 300x64 pixel space purely to find what looks like a "bend" on screen;
+ * this one works in real distance/height units to find genuine sustained
+ * grade, a different question with a different answer. A run only breaks
+ * on an actual direction reversal (small flat wobbles don't end it), and
+ * anything shorter than CONFIG.INCLINE_MIN_SEGMENT_M or with negligible net
+ * height is dropped — GPS/DEM noise over a couple of samples isn't a real
+ * hill worth announcing. */
+function deriveGradeSegments(rangeHeight) {
+  const segments = [];
+  if (rangeHeight.length < 2) return segments;
+  let segStart = 0;
+  let segDir = null; // -1 down, 1 up, 0 flat, null until the first gap establishes one
+  const flush = (endIdx) => {
+    const startDistM = rangeHeight[segStart][0];
+    const endDistM = rangeHeight[endIdx][0];
+    const lengthM = endDistM - startDistM;
+    const netHeightM = rangeHeight[endIdx][1] - rangeHeight[segStart][1];
+    if (lengthM >= CONFIG.INCLINE_MIN_SEGMENT_M && Math.abs(netHeightM) >= 1) {
+      segments.push({ startDistM, endDistM, netHeightM, avgGradePct: (netHeightM / lengthM) * 100 });
+    }
+  };
+  for (let i = 1; i < rangeHeight.length; i++) {
+    const diff = rangeHeight[i][1] - rangeHeight[i - 1][1];
+    const dir = diff > 0.3 ? 1 : diff < -0.3 ? -1 : 0;
+    if (segDir === null) {
+      segDir = dir;
+    } else if (dir !== segDir) {
+      // A run ends the moment its direction actually changes — including
+      // into or out of flat (dir 0), not just up<->down. Confirmed live as
+      // a real bug in an earlier version of this function that only ended
+      // a run on an up<->down reversal: a real, sustained climb followed
+      // by a long flat stretch never triggered a reversal at all, so the
+      // whole route (climb + everything flat after it) got folded into one
+      // "run", diluting a genuine ~9% grade down to under 2% averaged over
+      // the entire trip — well under INCLINE_GRADE_MODERATE_PCT, so the
+      // real hill was silently never announced at all.
+      flush(i - 1);
+      segStart = i - 1;
+      segDir = dir;
+    }
+  }
+  flush(rangeHeight.length - 1);
+  return segments;
+}
+
 /** Fire-and-forget: kicks off /height for the currently-rendered route and
  * populates the chart if/when it resolves. Captures state.route by
  * reference so a stale response (route replaced/canceled while this was in
@@ -5902,11 +6018,45 @@ function updateElevationProfileForRoute() {
   fetchElevationProfile(myRoute.coords)
     .then((rangeHeight) => {
       if (state.route !== myRoute || state.travelMode !== 'walk') return; // stale — route changed/canceled meanwhile
+      // Persisted on the route itself (rather than just passed into
+      // renderElevationProfile as a local) so live navigation — voice
+      // incline announcements, the live effort score, the trip-summary
+      // panel — can all look this back up long after the chart's own
+      // closures over it would otherwise have gone out of scope.
+      myRoute.rangeHeight = rangeHeight;
+      myRoute.gradeSegments = deriveGradeSegments(rangeHeight);
+      Object.assign(myRoute, computeAscentDescent(rangeHeight));
       renderElevationProfile(rangeHeight);
+      // Only while still planning — once navigating (e.g. after a mid-walk
+      // reroute, which also calls this), there's no realistic way to act on
+      // "consider a different route" advice anyway, and it'd just be noise
+      // on top of live turn-by-turn guidance.
+      if (!state.navigating) checkSteepRouteAdvisory(myRoute.ascentM, myRoute.totalDistM);
     })
     .catch(() => {
       if (state.route === myRoute) hideElevationProfile(); // degrade gracefully — the walking route itself is already fully usable
     });
+}
+
+/** Sibling to checkRoutePlausibility, but for elevation rather than routing
+ * oddities — this can only run once /height resolves, slightly after the
+ * route itself already rendered (ascent isn't known synchronously), so it
+ * fires from here rather than alongside the plausibility check. Purely
+ * informational, so it never overrides a plausibility warning (a genuine
+ * ferry/absurd-detour issue) that might already be showing — just whatever
+ * showStatus call happens to land last wins, same as elsewhere in this app. */
+function checkSteepRouteAdvisory(ascentM, totalDistM) {
+  if (!totalDistM) return;
+  const ascentPerKm = ascentM / (totalDistM / 1000);
+  // Same threshold elevationDifficultyLabel already uses for its own
+  // "Steep in parts" tag, so this advisory's language and the chart's
+  // language agree with each other.
+  if (ascentPerKm < 20) return;
+  showStatus(
+    `This route climbs about ${formatDistance(ascentM)} over ${formatDistance(totalDistM)} — steeper than a casual walk. `
+    + 'Check the elevation chart below, or see if another route option climbs less.',
+    'info',
+  );
 }
 
 // Route options vs. live in-navigation traffic (see fetchTomTomFlowRatio/
@@ -6245,7 +6395,8 @@ function paintRouteOptionCards(trafficTimes) {
     const trafficTimeS = trafficTimes && trafficTimes[i];
     card.innerHTML = `<div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
       ${trafficTimeS != null ? `<div class="route-option-time">~${formatDuration(trafficTimeS)} in traffic</div>` : ''}
-      ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}`;
+      ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}
+      ${state.travelMode === 'walk' ? `<div class="route-option-elevation${trip.ascentM != null ? '' : ' hidden'}">${trip.ascentM != null ? `↑${formatDistance(trip.ascentM)}` : ''}</div>` : ''}`;
     card.addEventListener('click', () => selectRouteOption(i));
     el.routeOptionsRow.appendChild(card);
   });
@@ -6294,6 +6445,37 @@ async function renderRouteOptions() {
   updateSheetPeekHeight();
   updateAlternateRouteLines();
   refreshRouteOptionsTraffic(); // fire-and-forget: re-paints with live-traffic times/tag once resolved (no-ops entirely if TomTom is off or this isn't a drive)
+  updateRouteOptionElevationBadges();
+}
+
+/** Kicks off /height for every walk-mode route option that doesn't already
+ * carry elevation data, and patches an "↑34m" badge onto each corresponding
+ * card once it resolves — lets you see which alternative climbs less
+ * before committing to one, not just discover it after. Fire-and-forget,
+ * same staleness-guard idea as updateElevationProfileForRoute: captures
+ * state.routeOptions by reference, so a stale response from a route
+ * re-plan/re-select that happened in the meantime is silently discarded
+ * rather than patching the wrong (or since-removed) card. Driving/transit
+ * alternatives never show elevation at all today — extending that is out
+ * of scope here, same as the main chart being walk-only. */
+function updateRouteOptionElevationBadges() {
+  if (state.travelMode !== 'walk') return;
+  const options = state.routeOptions;
+  options.forEach((trip, i) => {
+    if (trip.ascentM != null) return; // already fetched — e.g. re-rendered after selecting an option
+    fetchElevationProfile(decodeTripCoords(trip))
+      .then((rangeHeight) => {
+        if (state.routeOptions !== options) return; // stale — options replaced meanwhile
+        Object.assign(trip, computeAscentDescent(rangeHeight));
+        const card = el.routeOptionsRow.children[i];
+        const badge = card && card.querySelector('.route-option-elevation');
+        if (badge) {
+          badge.textContent = `↑${formatDistance(trip.ascentM)}`;
+          badge.classList.remove('hidden');
+        }
+      })
+      .catch(() => {}); // best-effort — a missing badge is never worth surfacing an error over
+  });
 }
 
 /** Switches the active route to routeOptions[index] — no network call,
@@ -6325,6 +6507,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.spokenContinue = new Set();
+  state.spokenInclines = new Set();
   state.currentManeuverIdx = 0; // new maneuver array, entirely new startDistM boundaries — see updateActiveManeuver
   state.arrivedAnnounced = false;
   resetTrafficTracking(); // a (re)planned route invalidates any prior traffic sampling/cadence
@@ -6788,6 +6971,7 @@ function cancelPlannedRoute() {
   el.cancelRouteBtn.classList.add('hidden');
   el.shareRouteBtn.classList.add('hidden');
   hideRouteSearchFeature();
+  hideEffortFeature();
   hideRouteChipsInline();
   hideElevationProfile();
 
@@ -7241,8 +7425,10 @@ function updateActiveManeuver(traveledM, lngLat) {
   if (!state.arrivedAnnounced && state.arrivalCandidateStreak >= CONFIG.ARRIVAL_CONFIRM_FIXES) {
     state.arrivedAnnounced = true;
     speak('You have arrived at your destination.');
-    endNavigation(); // clears any status banner as part of its own cleanup — show the arrival message after, not before, so it isn't wiped
-    showStatus('You have arrived at your destination.', 'success');
+    // showSummary/arrived: true — the trip-summary panel now covers what a
+    // bare "You have arrived" toast used to (see endNavigation), with the
+    // actual distance/time/elevation to show for it.
+    endNavigation({ showSummary: true, arrived: true });
     return; // navigation just ended — nothing below is still meaningful
   }
 
@@ -7351,6 +7537,8 @@ function updateActiveManeuver(traveledM, lngLat) {
     el.navBannerDistance.textContent = 'Arriving';
   }
 
+  checkInclineAnnouncement(traveledM);
+
   // Live ETA line in the collapsed bottom sheet, replacing the static
   // total-trip summary shown before navigation started.
   let remainingTimeS = state.route.totalDistM > 0
@@ -7380,6 +7568,39 @@ function updateActiveManeuver(traveledM, lngLat) {
       etaText: `${formatDistance(remainingM)} left · ${formatDuration(remainingTimeS)}`,
     }).catch(() => {});
   }
+}
+
+/** Speaks a one-time heads-up ("Moderate incline for the next 200 meters")
+ * for the next upcoming sustained climb/descent in state.route.gradeSegments
+ * — walk mode only, mirroring the turn-by-turn far/near callout pattern
+ * right above: a speed-scaled lead distance (dynamicVoiceLeadM) and
+ * spoken-once tracking (state.spokenInclines), keyed by each segment's own
+ * startDistM rather than an array index — deriveGradeSegments' output is
+ * stable for the lifetime of a given state.route, so this is a reliable
+ * key. Gentle segments (below INCLINE_GRADE_MODERATE_PCT) are marked
+ * spoken without ever actually being announced — not worth mentioning, but
+ * still shouldn't be re-evaluated every tick either. */
+function checkInclineAnnouncement(traveledM) {
+  if (state.travelMode !== 'walk' || !state.route.gradeSegments) return;
+  const leadM = dynamicVoiceLeadM(CONFIG.INCLINE_LEAD_TIME_S, CONFIG.INCLINE_LEAD_MIN_M, CONFIG.INCLINE_LEAD_MAX_M);
+  const segment = state.route.gradeSegments.find((s) => (
+    s.startDistM >= traveledM && s.startDistM - traveledM <= leadM && !state.spokenInclines.has(s.startDistM)
+  ));
+  if (!segment) return;
+  state.spokenInclines.add(segment.startDistM);
+  const grade = Math.abs(segment.avgGradePct);
+  if (grade < CONFIG.INCLINE_GRADE_MODERATE_PCT) return; // too gentle to be worth a voice cue
+  const steepness = grade >= CONFIG.INCLINE_GRADE_STEEP_PCT ? 'Steep' : 'Moderate';
+  const direction = segment.netHeightM > 0 ? 'incline' : 'downhill';
+  const lengthM = segment.endDistM - segment.startDistM;
+  const distToStartM = Math.max(0, segment.startDistM - traveledM);
+  // Already at (or essentially at) the start of the hill — "for the next
+  // X" reads more naturally than "in 0 meters, for the next X".
+  const phrase = distToStartM <= 5
+    ? `${steepness} ${direction} for the next ${formatDistanceForSpeech(lengthM)}.`
+    : `${steepness} ${direction} in ${formatDistanceForSpeech(distToStartM)}, for the next ${formatDistanceForSpeech(lengthM)}.`;
+  resolverDebugLog(`Voice: incline segment at ${Math.round(segment.startDistM)}m (grade ${grade.toFixed(1)}%, length ${Math.round(lengthM)}m) — announcing "${phrase}"`);
+  speak(phrase, { queue: true });
 }
 
 /** Tracks how long the driver has been continuously off-route and triggers a
@@ -7556,11 +7777,53 @@ function onPositionUpdate(pos) {
   const offsetM = snapped.properties.dist;
   state.traveledM = traveledM;
   updateTraveledRouteSegment(traveledM);
+  updateLiveAscent(traveledM);
 
   updateActiveManeuver(traveledM, lngLat);
   checkDeviation(offsetM, lngLat);
   maybeCheckTraffic(traveledM);
   resaveNavigatingTripThrottled();
+}
+
+/** Linear interpolation of height at `distM` along `rangeHeight` (a
+ * [[cumulativeDistM, heightM], ...] array — see fetchElevationProfile) —
+ * samples are only ~30m apart, coarser than every GPS tick, so this tracks
+ * climb smoothly between them rather than only updating in ~30m-wide
+ * jumps. Clamps to the first/last sample for a distance outside the
+ * sampled range (shouldn't normally happen, but a live fix snapping just
+ * past the last sample due to floating-point noise is cheap to guard). */
+function interpolateHeightM(rangeHeight, distM) {
+  if (distM <= rangeHeight[0][0]) return rangeHeight[0][1];
+  const last = rangeHeight[rangeHeight.length - 1];
+  if (distM >= last[0]) return last[1];
+  for (let i = 1; i < rangeHeight.length; i++) {
+    const [d1, h1] = rangeHeight[i - 1];
+    const [d2, h2] = rangeHeight[i];
+    if (distM <= d2) {
+      const t = (distM - d1) / (d2 - d1 || 1);
+      return h1 + (h2 - h1) * t;
+    }
+  }
+  return last[1];
+}
+
+/** Accumulates state.liveAscentM/liveDescentM as the live position advances
+ * — the raw ingredients for the "Effort" readout on #effort-btn (see
+ * effortLevel; descent isn't part of that score, just carried through to
+ * the trip-summary panel) and for that panel's own elevation stats. Walk
+ * mode + a route actually carrying elevation data only (state.route.
+ * rangeHeight is only ever set once /height resolves — see
+ * updateElevationProfileForRoute — so this is naturally a no-op until then,
+ * same as the chart itself). */
+function updateLiveAscent(traveledM) {
+  if (state.travelMode !== 'walk' || !state.route.rangeHeight) return;
+  const heightM = interpolateHeightM(state.route.rangeHeight, traveledM);
+  if (state.lastElevationHeightM != null) {
+    const diff = heightM - state.lastElevationHeightM;
+    if (diff > 0) state.liveAscentM += diff; else state.liveDescentM += -diff;
+  }
+  state.lastElevationHeightM = heightM;
+  if (!el.effortBtn.classList.contains('hidden')) updateEffortBtnLabel();
 }
 
 let lastTripResaveAt = 0;
@@ -7745,12 +8008,17 @@ async function startNavigation({ resuming = false } = {}) {
     state.spokenFar = new Set();
     state.spokenNear = new Set();
     state.spokenContinue = new Set();
+    state.spokenInclines = new Set();
     state.currentManeuverIdx = 0; // covers the resume-after-reload path, which sets state.route directly without going through renderRoute
     state.arrivedAnnounced = false;
     state.arrivalCandidateStreak = 0;
     state.lastFix = null;
     resetTrafficTracking();
     state.lastTrafficRerouteAt = null; // a genuinely new trip — not reset by resetTrafficTracking itself, see its own comment
+    state.navigationStartedAt = Date.now(); // real wall-clock elapsed time for the trip-summary panel — see endNavigation
+    state.liveAscentM = 0; // accumulated live climb so far this trip — see onPositionUpdate/effortLevel
+    state.liveDescentM = 0;
+    state.lastElevationHeightM = null;
     acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
 
     // Confirms navigation is actually on, right away — otherwise the very
@@ -7818,6 +8086,7 @@ async function startNavigation({ resuming = false } = {}) {
     // floating FAB+popover, which is reachable without the search card on screen.
     hideRouteChipsInline();
     showRouteSearchFeature();
+    showEffortFeature(); // no-op outside walk mode
     el.routeOptionsRow.classList.add('hidden'); // no more switching routes once you're committed and driving
     map.getSource('route-alternates').setData(emptyFeatureCollection());
     el.endNavBtn.classList.remove('hidden');
@@ -7862,7 +8131,26 @@ async function startNavigation({ resuming = false } = {}) {
   }
 }
 
-function endNavigation() {
+/** `showSummary` is false for every "this ended because something went
+ * wrong" call site (a location error, a startup failure) — a trip-summary
+ * panel popping up right on top of an error toast would be jarring, not
+ * useful. Only the two genuinely-intentional stops (arrival, and a manual
+ * "End" tap) pass true. `arrived` just picks the panel's own wording. */
+function endNavigation({ showSummary = false, arrived = false } = {}) {
+  // Captured before any of the cleanup below resets/discards them — the
+  // real distance actually covered and real elapsed wall-clock time, not
+  // the originally *planned* totals renderRouteSummary below still shows
+  // (that call is about restoring the planning screen's own summary line,
+  // a separate and already-existing thing).
+  const summary = showSummary ? {
+    arrived,
+    distanceM: state.traveledM || 0,
+    elapsedS: state.navigationStartedAt ? (Date.now() - state.navigationStartedAt) / 1000 : 0,
+    ascentM: state.travelMode === 'walk' ? state.liveAscentM : null,
+    descentM: state.travelMode === 'walk' ? state.liveDescentM : null,
+    effort: state.travelMode === 'walk' ? effortLevel() : null,
+  } : null;
+
   // Direct call, not goBackInApp — this is the one explicit action allowed
   // to actually leave navigation; it restores the "route planned, not yet
   // driving" back-layer in its place rather than consuming a real back-press.
@@ -7886,6 +8174,7 @@ function endNavigation() {
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');
   hideRouteSearchFeature(); // endNavigation is only reachable from a drive-mode session
+  hideEffortFeature();
   showRouteChipsInline(); // back to "planned, not driving" — chips move back under the search card
   el.searchCard.classList.remove('hidden');
   renderRouteOptions(); // typically just re-hides the row: rerouting while driving collapses options down to one
@@ -7896,10 +8185,38 @@ function endNavigation() {
   clearStatus();
 
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
+
+  if (summary) renderTripSummary(summary);
+}
+
+/** Populates and opens the trip-summary panel (see endNavigation, the only
+ * caller) — reports what actually happened on the trip just ended rather
+ * than the originally planned totals. Elevation/effort rows are omitted
+ * entirely outside walk mode (ascentM/descentM/effort are null there) or
+ * if the route's own elevation data never resolved in time (ascentM stays
+ * 0 either way, which just reads as "no climbing" — indistinguishable from
+ * a genuinely flat walk, an acceptable ambiguity for a summary screen). */
+function renderTripSummary({ arrived, distanceM, elapsedS, ascentM, descentM, effort }) {
+  el.tripSummaryTitle.textContent = arrived ? 'You arrived!' : 'Trip ended';
+  const rows = [
+    { label: 'Distance', value: formatDistance(distanceM) },
+    { label: 'Time', value: formatDuration(elapsedS) },
+  ];
+  if (ascentM != null) {
+    rows.push({ label: 'Elevation', value: `↑${formatDistance(ascentM)}  ↓${formatDistance(descentM)}` });
+    rows.push({ label: 'Effort', value: effort });
+  }
+  el.tripSummaryStats.innerHTML = rows.map((r) => `
+    <div class="trip-summary-row">
+      <span class="trip-summary-label">${escapeHtml(r.label)}</span>
+      <span class="trip-summary-value">${escapeHtml(r.value)}</span>
+    </div>`).join('');
+  pushBackLayer(() => el.tripSummaryPanel.classList.add('hidden'));
+  el.tripSummaryPanel.classList.remove('hidden');
 }
 
 el.startNavBtn.addEventListener('click', startNavigation);
-el.endNavBtn.addEventListener('click', endNavigation);
+el.endNavBtn.addEventListener('click', () => endNavigation({ showSummary: true }));
 
 // ============================================================================
 // PWA installability

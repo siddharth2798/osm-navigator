@@ -361,6 +361,16 @@
        sheet appears" call sites. DOM order top-to-bottom matches visual
        stacking order (see #map-controls-left in style.css). -->
   <div id="map-controls-left">
+    <!-- Live effort readout — walk mode only, shown only once navigation has
+         actually started (same show/hide precedent as #route-search-btn:
+         see showEffortFeature/hideEffortFeature in app.js). Tapping it shows
+         a brief distance/climb breakdown; the label itself updates live as
+         you walk. -->
+    <button id="effort-btn" class="fab hidden" type="button" aria-label="Effort level so far">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 18 L9 11 L13 15 L20 6"/><path d="M15 6 h5 v5"/>
+      </svg>
+    </button>
     <button id="voice-mode-btn" class="fab small" type="button" aria-label="Voice guidance: on">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 9 v6 h4 l5 4 V5 l-5 4 Z"/><path d="M16.5 9 a5 5 0 0 1 0 8"/><path d="M19 7 a8.5 8.5 0 0 1 0 12"/>
@@ -612,6 +622,21 @@
       <p id="ev-details-panel-comments" class="ev-panel-comments"></p>
     </section>
     <p class="ev-panel-attribution">Data from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a>, a community-maintained database — details and status may be incomplete or out of date.</p>
+  </div>
+
+  <!-- ============ Trip summary — shown automatically once navigation ends
+       (arrival or a manual "End" tap), never opened from a button of its
+       own — see renderTripSummary in app.js. Reports what actually
+       happened (distance covered, time elapsed, elevation climbed) rather
+       than re-showing the originally planned totals. ============ -->
+  <div id="trip-summary-panel" class="hidden">
+    <div class="panel-header">
+      <div id="trip-summary-title" class="panel-title">Trip complete</div>
+      <button id="trip-summary-close-btn" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+    <div id="trip-summary-stats"></div>
   </div>
 
   <!-- ============ Help & documentation ============
