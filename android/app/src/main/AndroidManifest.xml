@@ -24,6 +24,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Makes this app a target in Android's system Share sheet — e.g.
+                 sharing a place straight from the Google Maps app. A separate
+                 intent-filter from the LAUNCHER one above, not merged into it,
+                 so this app still has exactly one unambiguous home-screen
+                 launcher entry. See MainActivity.handleShareIntent, which
+                 turns the incoming Intent's EXTRA_TEXT into the same
+                 ?text=/&title= URL shape app.js's parseShareTargetParam()
+                 already reads for the PWA's own Web Share Target
+                 (manifest.json) — one JS-side code path handles both. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
         </activity>
 
         <provider

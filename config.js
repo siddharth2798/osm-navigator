@@ -177,6 +177,23 @@ export const CONFIG = {
   // arrived at your destination" is spoken — see updateActiveManeuver.
   ARRIVAL_RADIUS_M: 10,
 
+  // How many consecutive GPS fixes in a row need to land within
+  // ARRIVAL_RADIUS_M before arrival is actually declared — a single stray
+  // fix isn't enough. traveledM is measured as distance along the route
+  // LINE to whichever point on it is nearest the live fix (turf's
+  // nearestPointOnLine), with no guarantee that's monotonic or nearby in
+  // reality: one noisy/multipath fix (confirmed disproportionately common
+  // while walking, where speed is low enough that a single bad fix is a
+  // large fraction of real progress) can snap to a point much further
+  // along the line than the walker actually is — especially on a winding
+  // route that passes close to itself — instantly satisfying the arrival
+  // check and ending navigation (removing the live GPS marker) mid-trip.
+  // Every other live-tracking decision in this app already requires this
+  // kind of hysteresis before acting (see MANEUVER_ADVANCE_HYSTERESIS_M,
+  // DEVIATION_CLEAR_THRESHOLD_M) — this is the same idea applied to the
+  // one decision that was missing it entirely.
+  ARRIVAL_CONFIRM_FIXES: 2,
+
   // Perpendicular distance (metres) from the route line beyond which the
   // driver is considered "off route". Lowered from the original 50m — user
   // feedback was that the app let you travel too far in the wrong direction

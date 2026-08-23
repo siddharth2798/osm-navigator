@@ -204,6 +204,7 @@ const state = {
   spokenContinue: new Set(), // "Continue straight for X km" — spoken once per long straight maneuver, on becoming current rather than approaching
   voiceMode: 'all', // 'all' | 'important' | 'off' — see the voice-mode toggle button
   arrivedAnnounced: false,
+  arrivalCandidateStreak: 0, // consecutive fixes in a row within ARRIVAL_RADIUS_M — see the arrival check in updateActiveManeuver
   lastFix: null,       // {lng, lat, t} of the previous GPS fix, for bearing fallback
   lastHeading: 0,
   offRouteSince: null, // timestamp when we first went off-route, or null
@@ -1323,9 +1324,10 @@ async function startIdleLocationShare({ silent = false } = {}) {
   );
 }
 
-/** Stops the idle share started above — a second tap on the locate button,
- * or real navigation starting and taking over live tracking with its own
- * watch (see startNavigation). */
+/** Stops the idle share started above — only ever called automatically,
+ * when real navigation starts and takes over live tracking with its own
+ * watch (see startNavigation). Not reachable from the locate button itself
+ * any more — see its click handler for why. */
 function stopIdleLocationShare() {
   if (state.idleLocationWatchId == null) return;
   navigator.geolocation.clearWatch(state.idleLocationWatchId);
@@ -1342,10 +1344,17 @@ el.locateBtn.addEventListener('click', async () => {
     if (state.lastFix) followCamera([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
     return;
   }
-  // A second tap while already sharing turns it back off, same as tapping
-  // any other toggled-on FAB a second time.
+  // Already sharing — re-center on the live position instead of stopping
+  // it. This used to call stopIdleLocationShare() here (a second tap
+  // toggling sharing back off, same as any other toggled-on FAB) — but
+  // confirmed live, that reads as "the app lost my GPS location" rather
+  // than a deliberate toggle: every other map app's own locate button
+  // (Google Maps, Apple Maps, ...) just re-centers on a repeat tap and
+  // never stops showing your position this way.
   if (state.idleLocationWatchId != null) {
-    stopIdleLocationShare();
+    if (state.myLocationMarker) {
+      map.flyTo({ center: state.myLocationMarker.getLngLat(), zoom: Math.max(map.getZoom(), 14), duration: 500 });
+    }
     return;
   }
   await startIdleLocationShare();
@@ -6342,7 +6351,16 @@ function updateActiveManeuver(traveledM) {
   // has reached the last maneuver" and "remainingM is small" don't always
   // line up — gating on nextIdx === null here could mean this never fires
   // at all on some real routes. Same action as tapping "End" yourself.
+  //
+  // Requires ARRIVAL_CONFIRM_FIXES consecutive fixes in a row within the
+  // radius, not just one — see the constant's own comment in config.js for
+  // why a single fix isn't trustworthy enough to end navigation over.
   if (!state.arrivedAnnounced && remainingM <= CONFIG.ARRIVAL_RADIUS_M) {
+    state.arrivalCandidateStreak += 1;
+  } else {
+    state.arrivalCandidateStreak = 0;
+  }
+  if (!state.arrivedAnnounced && state.arrivalCandidateStreak >= CONFIG.ARRIVAL_CONFIRM_FIXES) {
     state.arrivedAnnounced = true;
     speak('You have arrived at your destination.', { isImportant: true }); // important — still spoken in 'important' voice mode
     endNavigation(); // clears any status banner as part of its own cleanup — show the arrival message after, not before, so it isn't wiped
@@ -6833,6 +6851,7 @@ async function startNavigation({ resuming = false } = {}) {
     state.spokenContinue = new Set();
     state.currentManeuverIdx = 0; // covers the resume-after-reload path, which sets state.route directly without going through renderRoute
     state.arrivedAnnounced = false;
+    state.arrivalCandidateStreak = 0;
     state.lastFix = null;
     acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
 

@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Rational;
@@ -36,6 +37,7 @@ public class MainActivity extends BridgeActivity {
     // discovers/initializes plugins.
     registerPlugin(LocationSettingsPlugin.class);
     registerPlugin(NavPipPlugin.class);
+    registerPlugin(AudioFocusPlugin.class);
     super.onCreate(savedInstanceState);
 
     // Inflated once, kept hidden (GONE) until PiP actually starts — see
@@ -60,6 +62,52 @@ public class MainActivity extends BridgeActivity {
     // time to have anything to act on when the user actually leaves, not
     // just inside onUserLeaveHint itself.
     updatePipParams();
+
+    handleShareIntent(getIntent());
+  }
+
+  // ---- Incoming "Share" intents (e.g. sharing a place from Google Maps) ----
+  // android:launchMode="singleTask" (see AndroidManifest.xml) means a share
+  // arriving while this Activity is already running comes through here
+  // instead of a fresh onCreate — both paths funnel into the same
+  // handleShareIntent below. setIntent() keeps getIntent() consistent with
+  // what actually launched/resumed this Activity, matching the platform's
+  // own documented convention for singleTask activities.
+  @Override
+  public void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+    handleShareIntent(intent);
+  }
+
+  /** Turns an incoming ACTION_SEND text/plain Intent (see AndroidManifest.xml's
+   * second intent-filter) into the exact same `?text=&title=` URL shape
+   * app.js's parseShareTargetParam() already reads for the PWA's own Web
+   * Share Target (manifest.json's share_target) — one JS-side code path
+   * resolves a shared Google Maps link either way, native shell or plain
+   * browser install. Reloads the WebView to that URL rather than trying to
+   * hand the text to an already-running page live, so a share behaves
+   * identically whether the app was already open or not — the PWA path is
+   * itself always a fresh navigation, never a live hand-off, so this just
+   * matches it instead of adding a second, native-only delivery mechanism. */
+  private void handleShareIntent(Intent intent) {
+    if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return;
+    if (!"text/plain".equals(intent.getType())) return;
+    String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+    if (text == null || text.trim().isEmpty()) return;
+    String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+    Uri.Builder url = Uri.parse("https://localhost/index.html").buildUpon().appendQueryParameter("text", text);
+    if (title != null && !title.trim().isEmpty()) url.appendQueryParameter("title", title);
+    String finalUrl = url.build().toString();
+    // Posted rather than called directly — on the cold-start path (from
+    // onCreate, right after super.onCreate() above) Capacitor's bridge/
+    // WebView has only just begun its own initial load; queuing this on
+    // the WebView's own message loop lets that load actually start first; a
+    // second load then straight away replaces it with the share's URL,
+    // rather than risking a null WebView caught mid-initialization.
+    if (getBridge() != null && getBridge().getWebView() != null) {
+      getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(finalUrl));
+    }
   }
 
   // Capacitor's BridgeActivity.onPause() pauses its WebView, and
