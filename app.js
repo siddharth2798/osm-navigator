@@ -5845,18 +5845,89 @@ function updateElevationProfileForRoute() {
     });
 }
 
+// Route options vs. live in-navigation traffic (see fetchTomTomFlowRatio/
+// sampleTrafficAhead above) use different sampling: comparing alternates
+// before committing cares about the WHOLE route equally, not just what's
+// immediately ahead, so this is a flat average, not near-term-weighted.
+const routeTrafficRatioCache = new WeakMap(); // trip object -> resolved ratio (or null) — trip objects in state.routeOptions are stable across a reselect (see selectRouteOption), so switching which card is active never re-fetches the same option's traffic twice
+
+// Coarser than TRAFFIC_SAMPLE_POINTS's live-navigation density — this can
+// run once per alternate every time route options render (each replan, not
+// just every TRAFFIC_CHECK_MIN_INTERVAL_MS/_DISTANCE_M during an active
+// drive), so it stays modest to avoid burning through TomTom's free tier
+// on route planning alone.
+function routeTrafficSampleCount(totalDistM) {
+  if (totalDistM < 10000) return 3;
+  if (totalDistM < 30000) return 5;
+  return 8;
+}
+
+/** Flat average currentSpeed/freeFlowSpeed ratio across a route option's
+ * entire length — used by refreshRouteOptionsTraffic to compare alternates
+ * against each other before committing to one. Returns null if TomTom is
+ * off, the trip has no usable length, or every sample failed/was filtered
+ * out for low confidence (see fetchTomTomFlowRatio) — callers fall back to
+ * Valhalla's own (traffic-blind) time estimate in that case, same as
+ * before this existed. */
+async function estimateRouteTrafficRatio(trip) {
+  if (routeTrafficRatioCache.has(trip)) return routeTrafficRatioCache.get(trip);
+  const totalDistM = trip.summary && trip.summary.length ? trip.summary.length * 1000 : 0;
+  if (totalDistM <= 0) return null;
+  const lineFeature = turf.lineString(decodeTripCoords(trip));
+  const n = routeTrafficSampleCount(totalDistM);
+  const ratios = await Promise.all(Array.from({ length: n }, (_, i) => {
+    const d = totalDistM * (i + 0.5) / n; // evenly-spaced midpoints, same spirit as sampleTrafficAhead
+    const [lon, lat] = turf.along(lineFeature, d, { units: 'meters' }).geometry.coordinates;
+    return fetchTomTomFlowRatio(lat, lon);
+  }));
+  const valid = ratios.filter((r) => typeof r === 'number' && Number.isFinite(r));
+  const ratio = valid.length ? valid.reduce((sum, r) => sum + r, 0) / valid.length : null;
+  routeTrafficRatioCache.set(trip, ratio);
+  return ratio;
+}
+
+/** Kicks off traffic estimation for every current route option and
+ * re-paints the cards once it resolves — called fire-and-forget from
+ * renderRouteOptions right after the distance-only cards already painted,
+ * so live-traffic times/tag show up moments later instead of delaying the
+ * cards' first paint on every replan. Guards against a stale result
+ * landing after a newer plan/reselect replaced state.routeOptions with a
+ * different array while this was in flight. No-ops entirely (never even
+ * fetches) outside drive mode or with TomTom off. */
+async function refreshRouteOptionsTraffic() {
+  if (!tomtomFeaturesEnabled || state.travelMode !== 'drive') return;
+  const options = state.routeOptions;
+  if (options.length < 2) return;
+  const ratios = await Promise.all(options.map((t) => estimateRouteTrafficRatio(t)));
+  if (state.routeOptions !== options) return; // stale — a newer plan/reselect already replaced this array
+  const trafficTimes = options.map((t, i) => (ratios[i] != null ? t.summary.time / ratios[i] : null));
+  if (trafficTimes.every((t) => t == null)) return; // no usable data anywhere — leave the distance-only cards as they are
+  paintRouteOptionCards(trafficTimes);
+  // The extra "~X min in traffic" line changes card height — re-measure the
+  // sheet's peek height now, the same fix already applied for the walk-mode
+  // elevation chart appearing after the initial measurement (see its own
+  // comment in updateSheetPeekHeight's call sites) applied here too.
+  updateSheetPeekHeight();
+}
+
 /** One label per option in state.routeOptions: "Fastest"/"Shortest" (won't
  * both appear on the same card unless they're the same option), or a
  * toll callout when the options actually differ on that — no point saying
- * "No tolls" on every card when none of them have tolls anyway. */
-function buildRouteOptionTags(trips) {
-  const minTime = Math.min(...trips.map((t) => t.summary.time));
+ * "No tolls" on every card when none of them have tolls anyway.
+ * `trafficTimes` (same length as `trips`, elements possibly null) — when
+ * given, an option's live-traffic-adjusted time (see
+ * refreshRouteOptionsTraffic) decides "Fastest" instead of Valhalla's own
+ * traffic-blind estimate; an option with no resolved traffic time falls
+ * back to its own Valhalla estimate for this comparison only. */
+function buildRouteOptionTags(trips, trafficTimes) {
+  const effectiveTimes = trips.map((t, i) => (trafficTimes && trafficTimes[i] != null ? trafficTimes[i] : t.summary.time));
+  const minTime = Math.min(...effectiveTimes);
   const minDist = Math.min(...trips.map((t) => t.summary.length));
   const anyToll = trips.some((t) => t.summary.has_toll);
   const notAllSameToll = anyToll && trips.some((t) => !t.summary.has_toll);
 
-  return trips.map((t) => {
-    if (t.summary.time === minTime) return 'Fastest';
+  return trips.map((t, i) => {
+    if (effectiveTimes[i] === minTime) return 'Fastest';
     if (t.summary.length === minDist) return 'Shortest';
     if (state.travelMode !== 'walk' && notAllSameToll) return t.summary.has_toll ? 'Has tolls' : 'No tolls'; // toll callouts don't apply to a pedestrian trip
     return '';
@@ -5879,6 +5950,35 @@ async function updateAlternateRouteLines() {
   map.getSource('route-alternates').setData({ type: 'FeatureCollection', features });
 }
 
+/** Builds/replaces the route-option cards themselves — split out from
+ * renderRouteOptions so refreshRouteOptionsTraffic can re-paint just the
+ * cards (with live-traffic times/tag) once that resolves, without redoing
+ * the map's alternate-line source or the visibility/peek-height work below,
+ * which don't change based on traffic data. `trafficTimes` — see
+ * buildRouteOptionTags/refreshRouteOptionsTraffic. */
+function paintRouteOptionCards(trafficTimes) {
+  el.routeOptionsRow.innerHTML = '';
+  const tags = buildRouteOptionTags(state.routeOptions, trafficTimes);
+  state.routeOptions.forEach((trip, i) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'route-option-card' + (i === state.selectedRouteIndex ? ' active' : '');
+    // Distance, not Valhalla's time estimate, is the headline number here —
+    // that estimate is derived from road speed limits/class alone, with no
+    // live-traffic signal behind it by default (this app has none
+    // configured, by design — see README). A live-traffic-backed estimate
+    // (trafficTimes, from TomTom — see refreshRouteOptionsTraffic) is
+    // trustworthy enough to show once it's actually resolved for this
+    // option; Valhalla's own traffic-blind number never is.
+    const trafficTimeS = trafficTimes && trafficTimes[i];
+    card.innerHTML = `<div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
+      ${trafficTimeS != null ? `<div class="route-option-time">~${formatDuration(trafficTimeS)} in traffic</div>` : ''}
+      ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}`;
+    card.addEventListener('click', () => selectRouteOption(i));
+    el.routeOptionsRow.appendChild(card);
+  });
+}
+
 /** Populates the route-option cards and the map's gray alternate lines.
  * Hides both entirely when there's nothing to choose between (0 or 1
  * option) — most trips never show this UI at all, only ones where Valhalla
@@ -5895,24 +5995,11 @@ async function renderRouteOptions() {
     map.getSource('route-alternates').setData(emptyFeatureCollection());
     return;
   }
-  const tags = buildRouteOptionTags(state.routeOptions);
-  state.routeOptions.forEach((trip, i) => {
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'route-option-card' + (i === state.selectedRouteIndex ? ' active' : '');
-    // Distance, not Valhalla's time estimate, is the headline number here —
-    // that estimate is derived from road speed limits/class alone, with no
-    // live-traffic signal behind it at all (this app has none configured,
-    // by design — see README), so a "31 min" claim on the option cards
-    // would read as far more precise/reliable than it actually is.
-    card.innerHTML = `<div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
-      ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}`;
-    card.addEventListener('click', () => selectRouteOption(i));
-    el.routeOptionsRow.appendChild(card);
-  });
+  paintRouteOptionCards(null); // immediate: distance + Valhalla-only tags, never delayed waiting on a network round-trip
   el.routeOptionsRow.classList.remove('hidden');
   updateSheetPeekHeight();
   updateAlternateRouteLines();
+  refreshRouteOptionsTraffic(); // fire-and-forget: re-paints with live-traffic times/tag once resolved (no-ops entirely if TomTom is off or this isn't a drive)
 }
 
 /** Switches the active route to routeOptions[index] — no network call,
