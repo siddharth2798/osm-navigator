@@ -352,14 +352,22 @@ export const CONFIG = {
   TRAFFIC_STOP_CHECKING_REMAINING_M: 1000,
 
   // How many points to sample ahead of the live position on each check-in,
-  // evenly spaced over the next TRAFFIC_SAMPLE_AHEAD_M metres of the
-  // *remaining* route (fewer/closer together if less than that remains).
-  // One Flow Segment Data request per point, fired in parallel — each
-  // successful one also draws a short colored dash on the map (see
+  // evenly spaced over the lookahead window (see TRAFFIC_SAMPLE_AHEAD_TIME_S
+  // below). One Flow Segment Data request per point, fired in parallel —
+  // each successful one also draws a short colored dash on the map (see
   // route-traffic-line), so this also controls how dense that overlay looks.
   // 6 stays nowhere near the 20K/month free cap even for a long daily drive.
   TRAFFIC_SAMPLE_POINTS: 6,
-  TRAFFIC_SAMPLE_AHEAD_M: 5000,
+
+  // The lookahead window is speed-scaled (same dynamicVoiceLeadM pattern the
+  // turn-by-turn voice cues already use, see app.js), not a flat distance —
+  // a fixed 5km covers ~3 minutes of driving at highway speed but much more
+  // at city speed, so a flat value either over-samples empty highway ahead
+  // or under-covers what's actually about to be driven at low speed.
+  // ~4 minutes ahead at current speed, clamped to a sane range either way.
+  TRAFFIC_SAMPLE_AHEAD_TIME_S: 240,
+  TRAFFIC_SAMPLE_AHEAD_MIN_M: 2000,
+  TRAFFIC_SAMPLE_AHEAD_MAX_M: 8000,
 
   // Each colored dash on the map is our own route line sliced this many
   // metres to either side of the sample point it's centered on (so a 150
@@ -368,11 +376,47 @@ export const CONFIG = {
   // visibly land on a nearby-but-different road in dense areas.
   TRAFFIC_DASH_HALF_WIDTH_M: 150,
 
-  // If the average of (currentSpeed / freeFlowSpeed) across all samples that
-  // succeeded drops below this, show the "Heavy traffic ahead" indicator and
-  // scale the live ETA line's remaining time by the inverse of that ratio.
-  // At/above threshold: no indicator, no ETA adjustment.
+  // Flow Segment Data's own data-quality signal (0–1, see TomTom's docs) —
+  // when a road has too little real-time probe data, TomTom silently falls
+  // back to a historical average instead of leaving the field empty, with
+  // confidence as the only signal that happened. A sample below this is
+  // dropped entirely (treated the same as a failed request) rather than
+  // averaged in as if it were an equally trustworthy live reading — this
+  // matters most on minor roads and smaller cities, where live probe
+  // coverage is thin even in markets TomTom otherwise covers well.
+  TRAFFIC_MIN_CONFIDENCE: 0.5,
+
+  // If the distance-weighted average of (currentSpeed / freeFlowSpeed)
+  // across all samples that succeeded drops below this, show the "Heavy
+  // traffic ahead" indicator and scale the live ETA line's remaining time
+  // by the inverse of that ratio. At/above threshold: no indicator, no ETA
+  // adjustment. Weighted rather than a flat average — see
+  // sampleTrafficAhead in app.js — so a bad patch just ahead isn't diluted
+  // into invisibility by clear road further out in the same window.
   TRAFFIC_HEAVY_THRESHOLD: 0.6,
+
+  // Once a check-in confirms heavy traffic ahead, how often a traffic-
+  // triggered reroute attempt is allowed to fire — deliberately much longer
+  // than TRAFFIC_CHECK_MIN_INTERVAL_MS, since comparing alternates against
+  // live flow data is heavier than a single check-in, and actually changing
+  // the driver's route is more disruptive than just updating a badge.
+  TRAFFIC_REROUTE_MIN_INTERVAL_MS: 600000, // 10 min
+
+  // An alternate's own near-term ratio must beat the current route's by at
+  // least this much to be worth switching to — without this, noise-level
+  // differences between two roads that are both fine would cause pointless
+  // rerouting. Valhalla itself has no notion of live traffic, so asking it
+  // to "reroute" without this comparison would almost always just return
+  // the same route back.
+  TRAFFIC_REROUTE_MIN_IMPROVEMENT: 0.15,
+
+  // How far ahead (metres) and how many points to compare the current route
+  // against each alternate when deciding whether to reroute for traffic —
+  // deliberately much shorter than the full check-in lookahead window: only
+  // the immediate stretch matters for "is there a faster way past THIS jam
+  // specifically", not the whole remaining trip.
+  TRAFFIC_REROUTE_COMPARE_AHEAD_M: 2500,
+  TRAFFIC_REROUTE_COMPARE_POINTS: 3,
 
   // Search radius (metres) for the TomTom Places Search fallback — only
   // tried after Nominatim's own default + wide radius category search both

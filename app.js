@@ -220,6 +220,11 @@ const state = {
   lastTrafficCheckDistM: null,  // state.traveledM at the last check-in, or null before the first one
   trafficCheckInFlight: false,  // guards against a slow check-in overlapping the next one
   trafficRatio: null,           // last averaged currentSpeed/freeFlowSpeed, or null if no data yet / all samples failed
+  // Cooldown for maybeRerouteForTraffic — deliberately NOT reset by
+  // resetTrafficTracking (which fires on every reroute, including a
+  // traffic one's own); only startNavigation/endNavigation clear this, see
+  // maybeRerouteForTraffic's own comment for why.
+  lastTrafficRerouteAt: null,
 };
 
 // ============================================================================
@@ -2379,10 +2384,14 @@ el.weatherBadge.addEventListener('keydown', (e) => {
 
 /** One Flow Segment Data request for a single point. Returns the
  * currentSpeed/freeFlowSpeed ratio, or null on any failure — network error,
- * timeout, non-200 (including HTTP 429 quota-exceeded), or a
- * malformed/missing body. Callers simply exclude a null from the average:
- * same quiet-degrade treatment as fetchWeather above, and navigation is
- * never affected by this failing.
+ * timeout, non-200 (including HTTP 429 quota-exceeded), a malformed/missing
+ * body, or a confidence below CONFIG.TRAFFIC_MIN_CONFIDENCE (see that
+ * constant's own comment — a low-confidence reading is TomTom's own signal
+ * that it fell back to a historical average rather than real live probe
+ * data, so it's excluded the same as a failed request rather than averaged
+ * in as if it were equally trustworthy). Callers simply exclude a null from
+ * the average: same quiet-degrade treatment as fetchWeather above, and
+ * navigation is never affected by this failing.
  *
  * Calls this app's own /api/traffic route (a Cloudflare Pages Function —
  * see functions/api/traffic.js) rather than TomTom directly, so the real
@@ -2393,9 +2402,9 @@ el.weatherBadge.addEventListener('keydown', (e) => {
  * TomTom's map data, which is a different dataset than the OSM/Valhalla
  * route actually being drawn. In a dense area with parallel or crossing
  * roads it can snap to a nearby-but-different road, drawing a colored dash
- * that's visibly off the route. runTrafficCheckin instead slices our own
- * route.lineFeature around the queried point, so any dash is guaranteed to
- * land exactly on the line already on screen. */
+ * that's visibly off the route. sampleTrafficAhead instead slices our own
+ * route line around the queried point, so any dash is guaranteed to land
+ * exactly on the line already on screen. */
 async function fetchTomTomFlowRatio(lat, lon) {
   try {
     const url = `/api/traffic?lat=${lat}&lon=${lon}`;
@@ -2406,10 +2415,48 @@ async function fetchTomTomFlowRatio(lat, lon) {
     const current = seg && seg.currentSpeed;
     const freeFlow = seg && seg.freeFlowSpeed;
     if (typeof current !== 'number' || typeof freeFlow !== 'number' || freeFlow <= 0) return null;
+    // Missing confidence (shouldn't happen per TomTom's own schema, but
+    // never assumed) is treated as "no reason to distrust it" rather than
+    // dropped outright.
+    const confidence = typeof seg.confidence === 'number' ? seg.confidence : 1;
+    if (confidence < CONFIG.TRAFFIC_MIN_CONFIDENCE) return null;
     return current / freeFlow;
   } catch (err) {
     return null; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — all treated the same
   }
+}
+
+/** Fires one Flow Segment Data request per point, evenly spaced over
+ * `aheadM` metres of `lineFeature` starting at `startM` along it, and
+ * returns a distance-weighted average currentSpeed/freeFlowSpeed ratio —
+ * nearer samples count more (weight 1/(1 + kilometres from the start of
+ * the window)), so a bad patch right ahead isn't diluted into invisibility
+ * by clear road further out in the same window, the way a flat average
+ * would. Shared by runTrafficCheckin (the live route's own lookahead) and
+ * maybeRerouteForTraffic (comparing the current route against alternates)
+ * — identical sampling/weighting logic either way, just a different
+ * lineFeature/window. Returns `{ ratio: null, samples: [] }` if `aheadM` is
+ * non-positive or every sample failed/was filtered out. */
+async function sampleTrafficAhead(lineFeature, startM, aheadM, n) {
+  if (aheadM <= 0) return { ratio: null, samples: [] };
+  const points = [];
+  for (let i = 0; i < n; i++) {
+    // Midpoints of n equal segments across the sampled window — spreads
+    // samples evenly without wasting one right at the window's own start
+    // (already known) or right at its far edge.
+    const d = Math.min(aheadM * (i + 0.5) / n, aheadM);
+    const [lon, lat] = turf.along(lineFeature, startM + d, { units: 'meters' }).geometry.coordinates;
+    points.push({ lon, lat, d }); // d: distance from the START of this window (not the full route) — see callers for how that's turned into an absolute route distance
+  }
+  const ratios = await Promise.all(points.map((p) => fetchTomTomFlowRatio(p.lat, p.lon)));
+  const valid = points
+    .map((p, i) => ({ ...p, ratio: ratios[i] }))
+    .filter((p) => typeof p.ratio === 'number' && Number.isFinite(p.ratio));
+  if (!valid.length) return { ratio: null, samples: [] };
+  const weightOf = (s) => 1 / (1 + s.d / 1000);
+  const totalWeight = valid.reduce((sum, s) => sum + weightOf(s), 0);
+  const ratio = valid.reduce((sum, s) => sum + s.ratio * weightOf(s), 0) / totalWeight;
+  return { ratio, samples: valid };
 }
 
 /** Single source of truth for the "Heavy traffic ahead" indicator: visible
@@ -2440,39 +2487,32 @@ function resetTrafficTracking() {
   if (trafficSource) trafficSource.setData(emptyFeatureCollection());
 }
 
-/** Samples CONFIG.TRAFFIC_SAMPLE_POINTS points evenly spaced over the next
- * CONFIG.TRAFFIC_SAMPLE_AHEAD_M metres of the *remaining* route (or less, if
- * less than that remains — never past the destination), fires one Flow
- * Segment Data request per point in parallel, and averages
- * currentSpeed/freeFlowSpeed across whichever succeed. Same
- * turf.lineSliceAlong/turf.along usage as routeSearchScope above — nothing
- * new. If every sample fails, state.trafficRatio becomes null ("no data"),
- * never something alarming. Each successful sample that also returned usable
- * road-segment geometry becomes one colored dash on the route-traffic map
- * layer — a response missing that but still owning valid speeds still counts
- * toward the ratio average, it just draws nothing. */
+/** Samples the live route's own near-term lookahead (see
+ * sampleTrafficAhead), sized to CONFIG.TRAFFIC_SAMPLE_AHEAD_TIME_S at
+ * current speed — clamped between TRAFFIC_SAMPLE_AHEAD_MIN_M/_MAX_M, and
+ * never past the destination — via the same dynamicVoiceLeadM helper the
+ * turn-by-turn voice cues already use, so a highway cruise and a slow city
+ * crawl each get a lookahead window that actually covers a similar amount
+ * of real driving time. If every sample fails, state.trafficRatio becomes
+ * null ("no data"), never something alarming. Each successful sample also
+ * becomes one colored dash on the route-traffic map layer.
+ *
+ * Once a valid ratio comes back below CONFIG.TRAFFIC_HEAVY_THRESHOLD, hands
+ * off to maybeRerouteForTraffic to decide whether a genuinely better
+ * alternate exists — fire-and-forget, so a reroute attempt (which itself
+ * makes further network calls) never delays this check-in's own return. */
 async function runTrafficCheckin(traveledM, remainingM) {
   state.trafficCheckInFlight = true;
   try {
-    const aheadM = Math.min(CONFIG.TRAFFIC_SAMPLE_AHEAD_M, remainingM);
+    const aheadM = Math.min(
+      dynamicVoiceLeadM(CONFIG.TRAFFIC_SAMPLE_AHEAD_TIME_S, CONFIG.TRAFFIC_SAMPLE_AHEAD_MIN_M, CONFIG.TRAFFIC_SAMPLE_AHEAD_MAX_M),
+      remainingM,
+    );
     if (aheadM <= 0) return;
     const sliceEndM = Math.min(traveledM + aheadM, state.route.totalDistM);
     const ahead = turf.lineSliceAlong(state.route.lineFeature, traveledM, sliceEndM, { units: 'meters' });
-    const n = Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS);
-    const samples = [];
-    for (let i = 0; i < n; i++) {
-      // Midpoints of n equal segments across the sampled window — spreads
-      // samples evenly without wasting one right at the live position
-      // (already known) or right at the far cap edge.
-      const d = Math.min(aheadM * (i + 0.5) / n, aheadM);
-      const [lon, lat] = turf.along(ahead, d, { units: 'meters' }).geometry.coordinates;
-      samples.push({ lon, lat, absoluteM: traveledM + d }); // absoluteM: this sample's distance along the FULL route, for dash placement below
-    }
-    const ratios = await Promise.all(samples.map((s) => fetchTomTomFlowRatio(s.lat, s.lon)));
-    const valid = samples
-      .map((s, i) => ({ ...s, ratio: ratios[i] }))
-      .filter((s) => typeof s.ratio === 'number' && Number.isFinite(s.ratio));
-    state.trafficRatio = valid.length ? valid.reduce((sum, s) => sum + s.ratio, 0) / valid.length : null;
+    const { ratio, samples } = await sampleTrafficAhead(ahead, 0, aheadM, Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS));
+    state.trafficRatio = ratio;
     refreshTrafficBadge();
 
     // Each dash is a short slice of OUR OWN route line centered on the
@@ -2480,15 +2520,105 @@ async function runTrafficCheckin(traveledM, remainingM) {
     // fetchTomTomFlowRatio's comment) — so it's always exactly on the route
     // actually drawn on screen, never a nearby-but-different road.
     const half = CONFIG.TRAFFIC_DASH_HALF_WIDTH_M;
-    const lineFeatures = valid.map((s) => {
-      const from = Math.max(0, s.absoluteM - half);
-      const to = Math.min(state.route.totalDistM, s.absoluteM + half);
+    const lineFeatures = samples.map((s) => {
+      const absoluteM = traveledM + s.d; // s.d is relative to the sampled window's own start (traveledM), not the full route
+      const from = Math.max(0, absoluteM - half);
+      const to = Math.min(state.route.totalDistM, absoluteM + half);
       const dash = turf.lineSliceAlong(state.route.lineFeature, from, to, { units: 'meters' });
       return { type: 'Feature', properties: { ratio: s.ratio }, geometry: dash.geometry };
     });
     map.getSource('route-traffic').setData({ type: 'FeatureCollection', features: lineFeatures });
+
+    if (ratio != null && ratio < CONFIG.TRAFFIC_HEAVY_THRESHOLD) {
+      maybeRerouteForTraffic(traveledM);
+    }
   } finally {
     state.trafficCheckInFlight = false;
+  }
+}
+
+/** Only ever called right after a check-in confirms heavy traffic ahead
+ * (see runTrafficCheckin) — requests alternates from the live position and
+ * compares each one's own near-term traffic ratio against the current
+ * route's, switching only if a genuinely better option exists. Unlike a
+ * deviation reroute, Valhalla itself has no notion that traffic exists at
+ * all — its routing graph only knows static road speeds/class, so asking
+ * it to "reroute" with no comparison against real flow data would almost
+ * always just hand back the exact same route. Shares state.isRerouting
+ * with checkDeviation/triggerReroute so the two can never fire at once —
+ * a genuinely off-route driver takes priority over a traffic comparison. */
+async function maybeRerouteForTraffic(traveledM) {
+  if (state.isRerouting || !state.navigating || state.travelMode !== 'drive' || !state.route) return;
+  const now = Date.now();
+  if (state.lastTrafficRerouteAt != null && now - state.lastTrafficRerouteAt < CONFIG.TRAFFIC_REROUTE_MIN_INTERVAL_MS) return;
+  // Claimed up front, deliberately NOT reset by resetTrafficTracking (which
+  // fires on every reroute, including this one's own) — this cooldown is
+  // meant to survive the very reroute it causes, so a route that still
+  // looks bad right after switching doesn't immediately trigger another
+  // one. Only startNavigation/endNavigation clear it (a genuinely new trip).
+  state.lastTrafficRerouteAt = now;
+  if (!state.lastFix) return;
+  const currentLngLat = [state.lastFix.lng, state.lastFix.lat];
+
+  state.isRerouting = true;
+  try {
+    const from = { lat: currentLngLat[1], lon: currentLngLat[0] };
+    if (typeof state.lastHeading === 'number' && !Number.isNaN(state.lastHeading)) {
+      from.heading = Math.round(state.lastHeading);
+      from.heading_tolerance = 45;
+    }
+    const remainingStops = state.route.stops.slice(state.currentLegIndex);
+    const { alternates } = await requestRoute(from, state.to, remainingStops, 2, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways });
+    if (!alternates.length) {
+      resolverDebugLog('Traffic reroute: Valhalla returned no meaningfully different alternates — staying on the current route.');
+      return;
+    }
+
+    const compareAheadM = CONFIG.TRAFFIC_REROUTE_COMPARE_AHEAD_M;
+    const comparePoints = Math.max(1, CONFIG.TRAFFIC_REROUTE_COMPARE_POINTS);
+    // Clamped to what's actually left on each line before sampling it, not
+    // just when slicing it — sampleTrafficAhead's own turf.along calls
+    // would otherwise be asked to sample past a short slice's real length
+    // (turf.along silently clamps to the line's last point rather than
+    // throwing, but that would just repeat-sample the same endpoint).
+    const currentAheadM = Math.min(compareAheadM, state.route.totalDistM - traveledM);
+    const currentAhead = turf.lineSliceAlong(state.route.lineFeature, traveledM, traveledM + currentAheadM, { units: 'meters' });
+    const [currentResult, ...alternateResults] = await Promise.all([
+      sampleTrafficAhead(currentAhead, 0, currentAheadM, comparePoints),
+      ...alternates.map((alt) => {
+        const altTotalM = alt.summary && alt.summary.length ? alt.summary.length * 1000 : compareAheadM;
+        const altLine = turf.lineString(decodeTripCoords(alt));
+        return sampleTrafficAhead(altLine, 0, Math.min(compareAheadM, altTotalM), comparePoints);
+      }),
+    ]);
+
+    if (currentResult.ratio == null) {
+      resolverDebugLog('Traffic reroute: no usable flow data for the current route’s near-term stretch — skipping comparison.');
+      return;
+    }
+
+    let best = null;
+    alternateResults.forEach((result, i) => {
+      if (result.ratio == null) return;
+      if (!best || result.ratio > best.result.ratio) best = { trip: alternates[i], result };
+    });
+
+    if (!best || best.result.ratio - currentResult.ratio < CONFIG.TRAFFIC_REROUTE_MIN_IMPROVEMENT) {
+      resolverDebugLog(`Traffic reroute: best alternate ratio ${best ? best.result.ratio.toFixed(2) : 'n/a'} vs. current ${currentResult.ratio.toFixed(2)} — not enough improvement to switch.`);
+      return;
+    }
+
+    resolverDebugLog(`Traffic reroute: switching route — alternate ratio ${best.result.ratio.toFixed(2)} vs. current ${currentResult.ratio.toFixed(2)}.`, 'success');
+    state.routeOptions = [best.trip];
+    state.selectedRouteIndex = 0;
+    await renderRouteOptions();
+    await renderRoute(best.trip, { fitView: false, stops: remainingStops }); // camera keeps following the puck, same as triggerReroute
+    speak('Rerouting to avoid traffic ahead.', { isImportant: true });
+    showStatus('Rerouting to avoid traffic ahead.', 'info');
+  } catch (err) {
+    resolverDebugLog(`Traffic reroute attempt failed: ${err.message}`, 'error');
+  } finally {
+    state.isRerouting = false;
   }
 }
 
@@ -7211,6 +7341,7 @@ async function startNavigation({ resuming = false } = {}) {
     state.arrivalCandidateStreak = 0;
     state.lastFix = null;
     resetTrafficTracking();
+    state.lastTrafficRerouteAt = null; // a genuinely new trip — not reset by resetTrafficTracking itself, see its own comment
     acquireWakeLock(); // fire-and-forget — see the Screen Wake Lock section above
 
     // Confirms navigation is actually on, right away — otherwise the very
@@ -7337,6 +7468,7 @@ function endNavigation() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   clearTraveledRouteSegment();
   resetTrafficTracking();
+  state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
 
   el.navBanner.classList.add('hidden');
   el.navSpeed.classList.add('hidden');
