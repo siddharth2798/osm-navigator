@@ -37,6 +37,7 @@ const el = {
   resolverDebugEndBtn: document.getElementById('resolver-debug-end'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
+  tomtomToggle: document.getElementById('tomtom-toggle'),
   voiceSelect: document.getElementById('voice-select'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
@@ -935,9 +936,11 @@ mapLoad.then(() => {
     paint: { 'line-color': '#5b6472', 'line-width': 5, 'line-opacity': 0.85 },
   });
   // A handful of colored dashes over the road ahead — see runTrafficCheckin.
-  // Only ever populated during drive-mode navigation with
-  // CONFIG.TOMTOM_FEATURES_ENABLED true; empty (and so invisible) otherwise.
-  // Added after route-traveled-line so it always draws on top.
+  // Only ever populated during drive-mode navigation with TomTom features
+  // turned on (CONFIG.TOMTOM_FEATURES_ENABLED, overridable per device via
+  // the Settings toggle — see tomtomFeaturesEnabled); empty (and so
+  // invisible) otherwise. Added after route-traveled-line so it always
+  // draws on top.
   map.addSource('route-traffic', { type: 'geojson', data: emptyFeatureCollection() });
   map.addLayer({
     id: 'route-traffic-line',
@@ -2126,10 +2129,12 @@ const TOMTOM_CATEGORY_TERM = {
 /** Fallback for when Nominatim's OSM-tag search comes back empty at both
  * radii — real for categories with genuinely sparse OSM coverage in India
  * (EV charging especially, see README's "Known limitations"). Only ever
- * called with CONFIG.TOMTOM_FEATURES_ENABLED true (same flag the traffic
- * feature uses; false means this fallback never fires either, and behaviour
- * is unchanged from before it existed). Calls this app's own /api/places
- * route (a Cloudflare Pages Function — see functions/api/places.js) rather
+ * called with tomtomFeaturesEnabled true (same flag the traffic feature
+ * uses, defaulting to CONFIG.TOMTOM_FEATURES_ENABLED and overridable per
+ * device via the Settings toggle; false means this fallback never fires
+ * either, and behaviour is unchanged from before it existed). Calls this
+ * app's own /api/places route (a Cloudflare Pages Function — see
+ * functions/api/places.js) rather
  * than TomTom directly, so the real API key never reaches the client.
  * Degrades quietly on any failure — network error, timeout, non-200,
  * malformed body — same as every other optional integration in this file: a
@@ -2137,7 +2142,7 @@ const TOMTOM_CATEGORY_TERM = {
  * non-critical path. */
 async function tomtomCategorySearchNear(tag, lat, lon) {
   const term = TOMTOM_CATEGORY_TERM[tag];
-  if (!term || !CONFIG.TOMTOM_FEATURES_ENABLED) return [];
+  if (!term || !tomtomFeaturesEnabled) return [];
   try {
     const url = `/api/places?term=${encodeURIComponent(term)}&lat=${lat}&lon=${lon}&radius=${CONFIG.TOMTOM_PLACES_FALLBACK_RADIUS_M}`;
     const res = await fetchWithTimeout(url);
@@ -2377,7 +2382,8 @@ el.weatherBadge.addEventListener('keydown', (e) => {
 // routing (Valhalla remains the only routing engine). A handful of samples
 // fired a few times per drive stays nowhere near either cap.
 //
-// CONFIG.TOMTOM_FEATURES_ENABLED false (the shipped default) disables this
+// CONFIG.TOMTOM_FEATURES_ENABLED false (the shipped default, overridable per
+// device via the Settings toggle — see tomtomFeaturesEnabled) disables this
 // entirely: maybeCheckTraffic bails before any fetch. See config.js for the
 // full cadence/sampling/threshold tunables.
 // ============================================================================
@@ -2625,13 +2631,14 @@ async function maybeRerouteForTraffic(traveledM) {
 /** Gates and paces TomTom check-ins from onPositionUpdate: only while
  * actually driving with the feature enabled (never planning, walking, or
  * transit — and never at all with the shipped CONFIG.TOMTOM_FEATURES_ENABLED
- * = false default), at most once both CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS
+ * = false default, unless overridden per device via the Settings toggle —
+ * see tomtomFeaturesEnabled), at most once both CONFIG.TRAFFIC_CHECK_MIN_INTERVAL_MS
  * and CONFIG.TRAFFIC_CHECK_MIN_DISTANCE_M have elapsed since the last one,
  * and never once under CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M from the
  * destination. Fire-and-forget, like refreshWeatherBadge — this must never
  * hold up maneuver-advance or deviation checks on the same GPS callback. */
 function maybeCheckTraffic(traveledM) {
-  if (!state.navigating || state.travelMode !== 'drive' || !CONFIG.TOMTOM_FEATURES_ENABLED || !state.route) return;
+  if (!state.navigating || state.travelMode !== 'drive' || !tomtomFeaturesEnabled || !state.route) return;
   if (state.trafficCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
   const remainingM = state.route.totalDistM - traveledM;
   if (remainingM < CONFIG.TRAFFIC_STOP_CHECKING_REMAINING_M) return;
@@ -2859,6 +2866,27 @@ if (el.selfHostedValhallaToggle) {
     el.selfHostedValhallaToggle.classList.toggle('active', useSelfHostedValhalla);
     el.selfHostedValhallaToggle.setAttribute('aria-checked', String(useSelfHostedValhalla));
     resolverDebugLog(`Valhalla: self-hosted routing turned ${useSelfHostedValhalla ? 'on' : 'off'} via the Settings toggle.`);
+  });
+}
+
+// Same per-device-override pattern as useSelfHostedValhalla above: lets the
+// "TomTom live traffic" Settings toggle override CONFIG.TOMTOM_FEATURES_ENABLED
+// without editing config.js. Toggling this on does nothing by itself if this
+// deployment never configured a TomTom API key server-side — /api/traffic
+// and /api/places just keep returning errors, the same as if the flag were
+// still off (see fetchTomTomFlowRatio/tomtomCategorySearchNear).
+const TOMTOM_FEATURES_STORAGE_KEY = 'tomtomFeaturesEnabled';
+const storedTomtomFeatures = localStorage.getItem(TOMTOM_FEATURES_STORAGE_KEY);
+let tomtomFeaturesEnabled = storedTomtomFeatures !== null ? storedTomtomFeatures === '1' : CONFIG.TOMTOM_FEATURES_ENABLED;
+if (el.tomtomToggle) {
+  el.tomtomToggle.classList.toggle('active', tomtomFeaturesEnabled);
+  el.tomtomToggle.setAttribute('aria-checked', String(tomtomFeaturesEnabled));
+  el.tomtomToggle.addEventListener('click', () => {
+    tomtomFeaturesEnabled = !tomtomFeaturesEnabled;
+    localStorage.setItem(TOMTOM_FEATURES_STORAGE_KEY, tomtomFeaturesEnabled ? '1' : '0');
+    el.tomtomToggle.classList.toggle('active', tomtomFeaturesEnabled);
+    el.tomtomToggle.setAttribute('aria-checked', String(tomtomFeaturesEnabled));
+    resolverDebugLog(`TomTom: live traffic/places turned ${tomtomFeaturesEnabled ? 'on' : 'off'} via the Settings toggle.`);
   });
 }
 
