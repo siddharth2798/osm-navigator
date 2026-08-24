@@ -18,6 +18,28 @@ import { requestDucking, releaseDucking } from './native-audio-focus.js';
 const QUEUE_STRATEGY_FLUSH = 0;
 const QUEUE_STRATEGY_ADD = 1;
 
+// Keep this in sync with VOICE_URI_STORAGE_KEY in app.js — this module has
+// no import of app.js's constants (it's loaded standalone), so the literal
+// key is duplicated deliberately, same pattern as TILE_CACHE_NAME between
+// config.js and sw.js.
+const VOICE_URI_STORAGE_KEY = 'preferredVoiceURI';
+
+// getSupportedVoices() returns { voices }, each carrying a voiceURI the
+// Settings picker in app.js stores by — but TTSOptions.speak() only accepts
+// a voice *index* into this exact array, not a URI, so the array itself
+// has to be cached and re-searched by URI at speak() time.
+let cachedNativeVoices = [];
+
+/** Fetches and caches the device's available TTS voices — called once at
+ * startup (see app.js) so both the Settings picker and speakNative() below
+ * have a populated list as early as possible, mirroring primeSpeechVoices()
+ * on the web path. */
+export async function primeNativeVoices() {
+  const { voices } = await TextToSpeech.getSupportedVoices();
+  cachedNativeVoices = voices || [];
+  return cachedNativeVoices;
+}
+
 // Every in-flight speak() call's own ducking-release callback, keyed by
 // nothing but Set membership — needed because a Flush-strategy call can
 // silently strand whatever was still speaking. Confirmed by reading the
@@ -48,7 +70,11 @@ export function speakNative(text, { queue = false } = {}) {
     releaseDucking();
   };
   pendingReleases.add(release);
-  const promise = TextToSpeech.speak({ text, queueStrategy: queue ? QUEUE_STRATEGY_ADD : QUEUE_STRATEGY_FLUSH });
+  const speakOptions = { text, queueStrategy: queue ? QUEUE_STRATEGY_ADD : QUEUE_STRATEGY_FLUSH };
+  const preferredURI = localStorage.getItem(VOICE_URI_STORAGE_KEY);
+  const voiceIndex = preferredURI ? cachedNativeVoices.findIndex((v) => v.voiceURI === preferredURI) : -1;
+  if (voiceIndex !== -1) speakOptions.voice = voiceIndex; // index into getSupportedVoices()'s array — see TTSOptions.voice
+  const promise = TextToSpeech.speak(speakOptions);
   // Deliberately not returned — this is a side-effect chain that always
   // releases ducking once this call settles (however it ends), completely
   // independent of whether the caller below ever awaits/catches `promise`

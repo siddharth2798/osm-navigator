@@ -8,7 +8,7 @@ import {
   setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocationEnabled } from './native-location.js';
-import { speakNative } from './native-tts.js';
+import { speakNative, primeNativeVoices } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
@@ -37,6 +37,7 @@ const el = {
   resolverDebugEndBtn: document.getElementById('resolver-debug-end'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
+  voiceSelect: document.getElementById('voice-select'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
   placeInput: document.getElementById('place-input'),
@@ -2408,8 +2409,8 @@ const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com'
 // screenshot taken to report an unrelated bug, or someone glancing at the
 // phone mid-paste, would otherwise see it every single time. Two ways to
 // turn it on, both backed by the same localStorage flag so either sticks
-// across reloads: the "Debug mode" toggle in the docs panel's Developer
-// tools section (see below), or ?debug=resolver in the address bar
+// across reloads: the "Debug mode" toggle in the docs panel's Settings
+// section (see below), or ?debug=resolver in the address bar
 // (?debug=off turns it back off). console.log stays unconditional either
 // way, so a connected remote-debugger session always sees the trace
 // regardless of whether the on-screen panel is enabled.
@@ -2419,7 +2420,7 @@ if (debugParam === 'resolver') localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, 
 else if (debugParam === 'off') localStorage.removeItem(RESOLVER_DEBUG_STORAGE_KEY);
 let resolverDebugEnabled = localStorage.getItem(RESOLVER_DEBUG_STORAGE_KEY) === '1';
 
-/** Single place that turns Debug mode on/off — keeps the Developer tools
+/** Single place that turns Debug mode on/off — keeps the Settings section's
  * toggle and the debug panel's own visibility in sync, rather than each
  * call site touching a subset of them separately. Turning off also hides
  * the panel itself — this is a real "stop debug mode" action, not just
@@ -2441,7 +2442,7 @@ if (el.debugModeToggle) {
   el.debugModeToggle.addEventListener('click', () => setResolverDebugEnabled(!resolverDebugEnabled));
 }
 
-// Lets the "Self-hosted Valhalla" Developer tools toggle override
+// Lets the "Self-hosted Valhalla" Settings toggle override
 // CONFIG.USE_SELF_HOSTED_VALHALLA per device without editing config.js —
 // handy for flipping it on/off while testing. localStorage wins once set;
 // with nothing stored yet, the toggle reflects (and this app instance
@@ -2457,7 +2458,7 @@ if (el.selfHostedValhallaToggle) {
     localStorage.setItem(SELF_HOSTED_VALHALLA_STORAGE_KEY, useSelfHostedValhalla ? '1' : '0');
     el.selfHostedValhallaToggle.classList.toggle('active', useSelfHostedValhalla);
     el.selfHostedValhallaToggle.setAttribute('aria-checked', String(useSelfHostedValhalla));
-    resolverDebugLog(`Valhalla: self-hosted routing turned ${useSelfHostedValhalla ? 'on' : 'off'} via the Developer tools toggle.`);
+    resolverDebugLog(`Valhalla: self-hosted routing turned ${useSelfHostedValhalla ? 'on' : 'off'} via the Settings toggle.`);
   });
 }
 
@@ -6161,9 +6162,50 @@ function primeSpeechVoices() {
   window.speechSynthesis.addEventListener('voiceschanged', () => {
     cachedVoices = window.speechSynthesis.getVoices();
     resolverDebugLog(`speechSynthesis: voiceschanged fired, ${cachedVoices.length} voice(s) now available.`);
+    populateVoiceSelect(cachedVoices);
   });
 }
 primeSpeechVoices();
+
+// Which voice speak() should prefer, chosen from the Settings dropdown —
+// stored by voiceURI (a stable per-voice identifier both the web
+// speechSynthesis API and the native TextToSpeech plugin's
+// getSupportedVoices() expose), not by index, since a device/browser's
+// voice list order isn't guaranteed stable across reloads. Empty/unset
+// means "no preference", falling through to speak()'s existing heuristic.
+// native-tts.js duplicates this exact key literal — keep both in sync.
+const VOICE_URI_STORAGE_KEY = 'preferredVoiceURI';
+
+/** Fills the Settings panel's voice `<select>` with "System default" plus
+ * one option per available voice, and selects whichever one is currently
+ * preferred (falling back to "System default" if the stored voiceURI no
+ * longer matches any available voice — e.g. after an OS voice pack
+ * change). Called once voices are known on both platforms, and again
+ * whenever the web path's voice list changes (voiceschanged, above). */
+function populateVoiceSelect(voices) {
+  if (!el.voiceSelect) return;
+  const preferred = localStorage.getItem(VOICE_URI_STORAGE_KEY) || '';
+  el.voiceSelect.innerHTML = ['<option value="">System default</option>']
+    .concat(voices.map((v) => `<option value="${escapeHtml(v.voiceURI)}">${escapeHtml(v.name)} (${escapeHtml(v.lang)})</option>`))
+    .join('');
+  el.voiceSelect.value = voices.some((v) => v.voiceURI === preferred) ? preferred : '';
+}
+
+if (isNativePlatform()) {
+  primeNativeVoices()
+    .then((voices) => populateVoiceSelect(voices))
+    .catch((err) => resolverDebugLog(`Voice picker: failed to load native voices — ${err.message}`, 'error'));
+} else {
+  populateVoiceSelect(cachedVoices); // may still be empty here — voiceschanged repopulates once the browser's list is ready
+}
+
+if (el.voiceSelect) {
+  el.voiceSelect.addEventListener('change', () => {
+    if (el.voiceSelect.value) localStorage.setItem(VOICE_URI_STORAGE_KEY, el.voiceSelect.value);
+    else localStorage.removeItem(VOICE_URI_STORAGE_KEY);
+    resolverDebugLog(`Voice: preferred voice set to "${el.voiceSelect.value || '(system default)'}" via the Settings dropdown.`);
+  });
+}
 
 function speak(text, { isImportant = false, queue = false } = {}) {
   if (state.voiceMode === 'off') return;
@@ -6210,7 +6252,10 @@ function speak(text, { isImportant = false, queue = false } = {}) {
     // otherwise just the first available voice. Leaves the browser's own
     // default in place (no functional change) when no voices are known at
     // all, which is the normal case on the web build.
-    const voice = cachedVoices.find((v) => v.lang && v.lang.startsWith('en')) || cachedVoices[0];
+    const preferredVoiceURI = localStorage.getItem(VOICE_URI_STORAGE_KEY);
+    const voice = (preferredVoiceURI && cachedVoices.find((v) => v.voiceURI === preferredVoiceURI))
+      || cachedVoices.find((v) => v.lang && v.lang.startsWith('en'))
+      || cachedVoices[0];
     if (voice) utterance.voice = voice;
     utterance.onerror = (e) => resolverDebugLog(`speak(): utterance error "${e.error}" for "${text}"`, 'error');
     resolverDebugLog(`speak(): "${text}" (voice=${voice ? voice.name : '(default, none resolved)'}, ${cachedVoices.length} voice(s) known)`);

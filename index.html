@@ -617,6 +617,34 @@
     </div>
 
     <section class="docs-section docs-section-first">
+      <h3 class="docs-section-title">Settings</h3>
+      <p class="docs-blurb">Voice choice and diagnostic tools — the toggles below are off by default, since some of this can show sensitive details (like exact GPS coordinates) on screen.</p>
+      <div class="docs-group">
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Voice</div>
+            <div class="docs-toggle-hint">Which voice speaks turn-by-turn instructions. "System default" leaves the choice to your browser or device.</div>
+          </div>
+          <select id="voice-select" class="docs-select" aria-label="Voice"></select>
+        </div>
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Debug mode</div>
+            <div class="docs-toggle-hint">On-screen trace of every log and error in the app — useful when something fails silently and there's no browser console handy (e.g. on a phone). Same as adding <code>?debug=resolver</code> to the URL. While it's on, the debug console's own "End" button turns it off again; its "✕" button just dismisses the console for now and it'll reopen on the next log line.</div>
+          </div>
+          <button id="debug-mode-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle debug mode"></button>
+        </div>
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Self-hosted Valhalla</div>
+            <div class="docs-toggle-hint">Attempt routing through a self-hosted Valhalla instance instead of the public server. Only does anything if this deployment has one configured server-side — otherwise (or outside its coverage area) it falls back to the public server automatically.</div>
+          </div>
+          <button id="self-hosted-valhalla-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle self-hosted Valhalla"></button>
+        </div>
+      </div>
+    </section>
+
+    <section class="docs-section">
       <h3 class="docs-section-title">Getting started</h3>
       <p class="docs-blurb">Search for a place, plan a trip, and pick how you're getting there.</p>
       <div class="docs-group">
@@ -641,7 +669,7 @@
           <summary>Pasting a Google Maps link<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body">
             <p>Paste a Google Maps link (full <em>google.com/maps</em> or short <em>maps.app.goo.gl</em>) into any search box to resolve it directly — useful when OpenStreetMap doesn't have the place yet. It's saved to a "To add to OSM" list with the original link, so you can add it to OSM later. On Android, it also works from the share sheet.</p>
-            <p>A place with no street address (e.g. "R72F+2J") is a Plus Code and decodes automatically. If a link fails to resolve, turn on Debug mode (Developer tools, below) and retry for a copyable trace.</p>
+            <p>A place with no street address (e.g. "R72F+2J") is a Plus Code and decodes automatically. If a link fails to resolve, turn on Debug mode (Settings, above) and retry for a copyable trace.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -695,7 +723,7 @@
           <summary>Voice guidance &amp; alerts<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
           <div class="docs-item-body">
             <p>Tapping Start plays an immediate "Starting navigation" call-out with the first instruction, so you get audible confirmation right away instead of waiting for the first GPS fix. Turn prompts scale to your driving speed — earlier at highway speed, later in slow traffic — with a plain reminder just before the turn. Roundabout exits, "slight" turns, and flyovers are called out by name, and two turns too close together to announce separately are combined into one prompt. Going off route plays a distinct alert tone while the app recalculates.</p>
-            <p>The speaker button above the weather badge cycles full voice, important alerts only, and muted.</p>
+            <p>The speaker button above the weather badge cycles full voice, important alerts only, and muted. Which voice speaks is a separate choice — pick one from Settings, above.</p>
           </div>
         </details>
         <details class="docs-item">
@@ -763,27 +791,6 @@
           <div class="panel-section-title">A personal project</div>
           <p>Built as a self-hosted, single-user navigation app — no accounts, no tracking, no server beyond the open services listed above. Source on <a href="https://github.com/siddharth2798/osm-navigator" target="_blank" rel="noopener">GitHub</a>.</p>
           <p>For location tracking with the screen off or the app backgrounded &#8212; a limitation of web pages on Android, not something this site can fix &#8212; there's a native Android app built from this project: <a href="https://github.com/siddharth2798/osm-navigator/releases/latest/download/osm-navigator.apk" target="_blank" rel="noopener">download the APK</a> (Android will ask permission to install it, since it isn't from the Play Store &#8212; only allow that for a source you trust), or build it yourself from the <a href="https://github.com/siddharth2798/osm-navigator/blob/main/docs/ANDROID.md" target="_blank" rel="noopener">project docs</a>.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="docs-section">
-      <h3 class="docs-section-title">Developer tools</h3>
-      <p class="docs-blurb">Diagnostic tools for troubleshooting — off by default, since some of this can show sensitive details (like exact GPS coordinates) on screen.</p>
-      <div class="docs-group">
-        <div class="docs-toggle-row">
-          <div class="docs-toggle-text">
-            <div class="docs-toggle-label">Debug mode</div>
-            <div class="docs-toggle-hint">On-screen trace of every log and error in the app — useful when something fails silently and there's no browser console handy (e.g. on a phone). Same as adding <code>?debug=resolver</code> to the URL. While it's on, the debug console's own "End" button turns it off again; its "✕" button just dismisses the console for now and it'll reopen on the next log line.</div>
-          </div>
-          <button id="debug-mode-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle debug mode"></button>
-        </div>
-        <div class="docs-toggle-row">
-          <div class="docs-toggle-text">
-            <div class="docs-toggle-label">Self-hosted Valhalla</div>
-            <div class="docs-toggle-hint">Attempt routing through a self-hosted Valhalla instance instead of the public server. Only does anything if this deployment has one configured server-side — otherwise (or outside its coverage area) it falls back to the public server automatically.</div>
-          </div>
-          <button id="self-hosted-valhalla-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle self-hosted Valhalla"></button>
         </div>
       </div>
     </section>
