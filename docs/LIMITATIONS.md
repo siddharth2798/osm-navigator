@@ -1,0 +1,9 @@
+# Known limitations
+
+- **Ferry-only-access landmarks**: some pedestrianized OSM landmarks (Gateway of India in Mumbai is the confirmed example) have no drivable road access in Valhalla's graph at all except tourist ferry piers — the app warns rather than silently showing an absurd route, but can't route around a gap in the underlying map data.
+- **EV charging search is genuinely sparse** in India's current OSM coverage — turn on `OPENCHARGEMAP_ENABLED` (needs a Cloudflare secret, see [Setup](SETUP.md)) for real connector/power/operator/cost/status detail from a dedicated EV charging database instead. Even then, "status" is Open Charge Map's own community-maintained operational flag, not live occupancy — no data source accessible to a personal project has that.
+- **Transit mode** covers planning/rendering only, not live GPS-guided transit navigation.
+- **Elevation profile** depends on Valhalla's `/height` action being enabled on whichever server you point at. If a self-hosted server's tiles were built without elevation data, the app detects the resulting flat profile and automatically retries that chart against the public server (see [Troubleshooting](TROUBLESHOOTING.md)) — a fallback, not a fix for the self-hosted server itself.
+- **Android shell** — built and running on a real device, including working voice guidance and background tracking/guidance with the screen off or the app minimized.
+- **Picture-in-Picture mini view** (this branch only, not `main` — an experimental feature not yet promoted): while actively navigating, leaving the app automatically drops into a small floating window showing the next instruction, distance, and ETA, matching Google Maps' own PiP behavior.
+- **The idle location marker's compass wedge** needs a real magnetometer — without one (or if permission is denied), it falls back to GPS-derived heading.

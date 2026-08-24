@@ -1,6 +1,6 @@
 # Contributing
 
-This is a personal, single-user navigation app — see the README's opening paragraph and its [Privacy](README.md#privacy) section for the full philosophy. That shapes what kind of contribution fits here.
+This is a personal, single-user navigation app — see the README's opening paragraph and [Privacy](docs/PRIVACY.md) for the full philosophy. That shapes what kind of contribution fits here.
 
 ## Reporting a bug
 
@@ -8,7 +8,7 @@ Open a [GitHub issue](https://github.com/siddharth2798/osm-navigator/issues). Us
 
 - What you did, what you expected, what actually happened.
 - Browser/OS (or Android shell version) and whether it reproduces on the live deployment or only your own self-hosted instance.
-- If it's related to the Google Maps link resolver, the on-screen debug log's contents (open the app with `?debug=resolver` appended to the URL, retry, then copy the panel — see the README's [Troubleshooting](README.md#troubleshooting) section).
+- If it's related to the Google Maps link resolver, the on-screen debug log's contents (open the app with `?debug=resolver` appended to the URL, retry, then copy the panel — see [Troubleshooting](docs/TROUBLESHOOTING.md)).
 - Console errors, if any (browser DevTools → Console).
 
 ## Proposing a change
