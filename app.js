@@ -8186,7 +8186,9 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
 
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
 
-  if (summary) renderTripSummary(summary);
+  // Disabled: end-of-trip summary panel. Left commented out (not removed)
+  // in case it's re-enabled later.
+  // if (summary) renderTripSummary(summary);
 }
 
 /** Populates and opens the trip-summary panel (see endNavigation, the only
