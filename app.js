@@ -6300,7 +6300,7 @@ function clearTraveledRouteSegment() {
  * prompt once within a speed-scaled lead distance of it (see
  * dynamicVoiceLeadM). state.currentManeuverIdx is a forward-only ratchet,
  * not a fresh scan each call — see the hysteresis comment below. */
-function updateActiveManeuver(traveledM) {
+function updateActiveManeuver(traveledM, lngLat) {
   const maneuvers = state.route.maneuvers;
   // Raw, unfiltered read of "which maneuver does the live position fall
   // under right now" — GPS jitter (commonly ±5-15m fix-to-fix) means this
@@ -6355,7 +6355,18 @@ function updateActiveManeuver(traveledM) {
   // Requires ARRIVAL_CONFIRM_FIXES consecutive fixes in a row within the
   // radius, not just one — see the constant's own comment in config.js for
   // why a single fix isn't trustworthy enough to end navigation over.
-  if (!state.arrivedAnnounced && remainingM <= CONFIG.ARRIVAL_RADIUS_M) {
+  //
+  // remainingM alone isn't enough: turf.nearestPointOnLine is a pure 2D
+  // planar snap with no elevation/level awareness, and on a driving network
+  // (overpass/underpass pairs, cloverleaf ramps, a parallel service road)
+  // the route can pass within ARRIVAL_RADIUS_M of itself somewhere far from
+  // the actual destination. A couple of ordinary noisy fixes near one of
+  // those spots could otherwise satisfy the streak and end the trip early
+  // (the puck disappearing mid-drive). Also requiring the live fix to be
+  // genuinely close to the destination coordinates itself — not just close
+  // in route-progress terms — rules that out.
+  const straightLineToDestM = lngLat ? turf.distance(lngLat, [state.to.lon, state.to.lat], { units: 'meters' }) : 0;
+  if (!state.arrivedAnnounced && remainingM <= CONFIG.ARRIVAL_RADIUS_M && straightLineToDestM <= CONFIG.ARRIVAL_RADIUS_M * 2) {
     state.arrivalCandidateStreak += 1;
   } else {
     state.arrivalCandidateStreak = 0;
@@ -6436,6 +6447,14 @@ function updateActiveManeuver(traveledM) {
         // never separately fires for this same maneuver — Valhalla's
         // phrase already covers it.
         speak(next.verbalPreTransition, { queue: true });
+        state.spokenNear.add(nextIdx);
+      } else if (distToNextM < 10) {
+        // formatDistanceForSpeech floors to the nearest 10m, so anything
+        // under 10m would otherwise read as "In 0 meters, turn left" — a
+        // coarse/late GPS fix can land distToNextM this close on the very
+        // first tick that crosses farLeadM (see the skip-collapse comment
+        // above). Speak the bare instruction instead, same as the near cue.
+        speak(next.instruction, { queue: true });
         state.spokenNear.add(nextIdx);
       } else {
         speak(`In ${formatDistanceForSpeech(distToNextM)}, ${next.instruction}`, { queue: true });
@@ -6662,7 +6681,7 @@ function onPositionUpdate(pos) {
   state.traveledM = traveledM;
   updateTraveledRouteSegment(traveledM);
 
-  updateActiveManeuver(traveledM);
+  updateActiveManeuver(traveledM, lngLat);
   checkDeviation(offsetM, lngLat);
   resaveNavigatingTripThrottled();
 }
