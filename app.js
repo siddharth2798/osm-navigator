@@ -179,6 +179,7 @@ const state = {
   to: null,            // {label, lat, lon} chosen from suggestions
   route: null,         // {coords, maneuvers, totalDistM, totalTimeS, lineFeature}
   routeOptions: [],    // raw Valhalla trip objects: [primary, ...meaningfully-different alternates]
+  routeOptionDetourTrips: new Set(), // subset of routeOptions added by maybeAddTrafficDetourOption — tagged "Avoids traffic" instead of the normal Fastest/Shortest/tolls logic (see buildRouteOptionTags), reset on every renderRouteOptions
   selectedRouteIndex: 0, // which entry of routeOptions is currently drawn/active
   travelMode: 'drive', // 'drive' | 'walk' | 'transit' — transit has no live-navigation counterpart
   avoidTolls: false,   // drive-only; see costingOptionsFor()
@@ -5448,8 +5449,15 @@ function filterMeaningfulAlternates(primaryTrip, alternateTrips) {
  * none passed the meaningful-difference filter above), so every caller has
  * one consistent shape regardless of whether it asked for alternates. */
 async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 'auto', avoidOpts = {}) {
+  // A congestion-specific detour (avoidOpts.excludePolygon — see
+  // estimateDetourRoute) is a one-off tied to wherever traffic happened to
+  // be jammed right now; the cache key otherwise ignores it entirely, so
+  // serving/storing it here could hand a later, differently-congested
+  // request the wrong detour back. Bypass the cache in both directions
+  // instead of trying to fold a whole polygon into the key.
   const cacheKey = routeCacheKey(from, to, stops, wantAlternates, costing, avoidOpts.avoidTolls, avoidOpts.avoidHighways);
-  if (valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
+  const useCache = !avoidOpts.excludePolygon;
+  if (useCache && valhallaCache.has(cacheKey)) return valhallaCache.get(cacheKey);
 
   const waypoints = [from, ...stops, to];
   const body = {
@@ -5472,6 +5480,12 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   const costingOptions = costingOptionsFor(costing, avoidOpts);
   if (costingOptions) body.costing_options = costingOptions;
   if (wantAlternates > 0) body.alternates = wantAlternates;
+  // A single ring of [lon, lat] pairs (see buildExcludePolygon) — Valhalla
+  // drops any edge intersecting it from the graph for this request only,
+  // which is the only way to force a path through roads it would otherwise
+  // never consider (its own alternates are traffic-blind, see
+  // filterMeaningfulAlternates).
+  if (avoidOpts.excludePolygon) body.exclude_polygons = [avoidOpts.excludePolygon];
   let res;
   try {
     // text/plain, not application/json: Valhalla parses the body as JSON
@@ -5507,8 +5521,10 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   const rawAlternates = (data.alternates || []).map((a) => a.trip);
   const alternates = wantAlternates > 0 ? filterMeaningfulAlternates(data.trip, rawAlternates) : [];
   const result = { trip: data.trip, alternates };
-  valhallaCache.set(cacheKey, result);
-  capValhallaCache();
+  if (useCache) {
+    valhallaCache.set(cacheKey, result);
+    capValhallaCache();
+  }
   return result;
 }
 
@@ -5849,7 +5865,7 @@ function updateElevationProfileForRoute() {
 // sampleTrafficAhead above) use different sampling: comparing alternates
 // before committing cares about the WHOLE route equally, not just what's
 // immediately ahead, so this is a flat average, not near-term-weighted.
-const routeTrafficRatioCache = new WeakMap(); // trip object -> resolved ratio (or null) — trip objects in state.routeOptions are stable across a reselect (see selectRouteOption), so switching which card is active never re-fetches the same option's traffic twice
+const routeTrafficRatioCache = new WeakMap(); // trip object -> resolved { ratio, samples } — trip objects in state.routeOptions are stable across a reselect (see selectRouteOption), so switching which card is active never re-fetches the same option's traffic twice
 
 // Coarser than TRAFFIC_SAMPLE_POINTS's live-navigation density — this can
 // run once per alternate every time route options render (each replan, not
@@ -5864,26 +5880,162 @@ function routeTrafficSampleCount(totalDistM) {
 
 /** Flat average currentSpeed/freeFlowSpeed ratio across a route option's
  * entire length — used by refreshRouteOptionsTraffic to compare alternates
- * against each other before committing to one. Returns null if TomTom is
- * off, the trip has no usable length, or every sample failed/was filtered
- * out for low confidence (see fetchTomTomFlowRatio) — callers fall back to
- * Valhalla's own (traffic-blind) time estimate in that case, same as
- * before this existed. */
+ * against each other before committing to one, and by
+ * maybeAddTrafficDetourOption to find where along the route it's actually
+ * congested. `samples` (each `{ lon, lat, d, ratio }`, `d` = distance in
+ * metres from the route start) is every sample that succeeded, in route
+ * order — always `[]` when `ratio` is null. Returns `{ ratio: null, samples:
+ * [] }` if TomTom is off, the trip has no usable length, or every sample
+ * failed/was filtered out for low confidence (see fetchTomTomFlowRatio) —
+ * callers fall back to Valhalla's own (traffic-blind) time estimate in that
+ * case, same as before this existed. */
 async function estimateRouteTrafficRatio(trip) {
   if (routeTrafficRatioCache.has(trip)) return routeTrafficRatioCache.get(trip);
   const totalDistM = trip.summary && trip.summary.length ? trip.summary.length * 1000 : 0;
-  if (totalDistM <= 0) return null;
+  const empty = { ratio: null, samples: [] };
+  if (totalDistM <= 0) return empty;
   const lineFeature = turf.lineString(decodeTripCoords(trip));
   const n = routeTrafficSampleCount(totalDistM);
-  const ratios = await Promise.all(Array.from({ length: n }, (_, i) => {
+  const points = Array.from({ length: n }, (_, i) => {
     const d = totalDistM * (i + 0.5) / n; // evenly-spaced midpoints, same spirit as sampleTrafficAhead
     const [lon, lat] = turf.along(lineFeature, d, { units: 'meters' }).geometry.coordinates;
-    return fetchTomTomFlowRatio(lat, lon);
-  }));
-  const valid = ratios.filter((r) => typeof r === 'number' && Number.isFinite(r));
-  const ratio = valid.length ? valid.reduce((sum, r) => sum + r, 0) / valid.length : null;
-  routeTrafficRatioCache.set(trip, ratio);
-  return ratio;
+    return { lon, lat, d };
+  });
+  const ratios = await Promise.all(points.map((p) => fetchTomTomFlowRatio(p.lat, p.lon)));
+  const samples = points
+    .map((p, i) => ({ ...p, ratio: ratios[i] }))
+    .filter((p) => typeof p.ratio === 'number' && Number.isFinite(p.ratio));
+  const result = samples.length
+    ? { ratio: samples.reduce((sum, s) => sum + s.ratio, 0) / samples.length, samples }
+    : empty;
+  routeTrafficRatioCache.set(trip, result);
+  return result;
+}
+
+/** Groups a route's congested samples (ratio below TRAFFIC_HEAVY_THRESHOLD)
+ * into contiguous spans along the route, each extended half a sample-gap on
+ * either side of its worst point (the gap between evenly-spaced samples —
+ * see estimateRouteTrafficRatio) so the excluded stretch actually covers the
+ * jammed road rather than just a single point on it. Adjacent/overlapping
+ * bad samples merge into one span. Returns the single worst span (lowest
+ * ratio) since finding and validating a detour is expensive (a whole extra
+ * Valhalla + TomTom round-trip — see estimateDetourRoute); returns null if
+ * nothing is congested at all. */
+function findWorstCongestedSpan(samples, totalDistM, n) {
+  const gap = totalDistM / n;
+  const bad = samples
+    .filter((s) => s.ratio < CONFIG.TRAFFIC_HEAVY_THRESHOLD)
+    .sort((a, b) => a.d - b.d);
+  if (!bad.length) return null;
+  const spans = [];
+  bad.forEach((s) => {
+    const startM = Math.max(0, s.d - gap / 2);
+    const endM = Math.min(totalDistM, s.d + gap / 2);
+    const last = spans[spans.length - 1];
+    if (last && startM <= last.endM) {
+      last.endM = Math.max(last.endM, endM);
+      last.ratio = Math.min(last.ratio, s.ratio);
+    } else {
+      spans.push({ startM, endM, ratio: s.ratio });
+    }
+  });
+  return spans.reduce((worst, s) => (s.ratio < worst.ratio ? s : worst));
+}
+
+/** Buffers a slice of `lineFeature` between `startM`/`endM` (metres along
+ * it) into the single-ring polygon shape Valhalla's `exclude_polygons`
+ * expects: a plain array of [lon, lat] pairs, no nested ring-of-rings
+ * wrapper (see requestRoute). turf.buffer normally returns a Polygon for a
+ * short line slice; falling back to its first ring covers the rare
+ * MultiPolygon case (a self-intersecting buffer on a tight curve) without
+ * needing to handle multiple exclude regions. */
+function buildExcludePolygon(lineFeature, startM, endM) {
+  const slice = turf.lineSliceAlong(lineFeature, Math.max(0, startM), Math.max(startM + 1, endM), { units: 'meters' });
+  const buffered = turf.buffer(slice, CONFIG.TRAFFIC_DETOUR_BUFFER_M, { units: 'meters' });
+  const { geometry } = buffered;
+  return geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates[0][0];
+}
+
+/** Forces Valhalla around `span` (see findWorstCongestedSpan) via
+ * exclude_polygons and, if that actually produced a meaningfully different
+ * route, samples its own traffic and returns `{ trip, trafficTimeS }` —
+ * this is the only way to see a side-road path here at all, since
+ * Valhalla's plain alternates (filterMeaningfulAlternates) have no notion
+ * that live congestion exists and so never route around it specifically.
+ * Returns null if the request fails (e.g. no drivable way around it, or
+ * the server rejects the polygon), if exclude_polygons made no real
+ * difference (no viable parallel road — same near-duplicate check as
+ * filterMeaningfulAlternates), or if the detour's own traffic can't be
+ * resolved. */
+async function estimateDetourRoute(trip, from, to, stops, costing, avoidOpts, span) {
+  const lineFeature = turf.lineString(decodeTripCoords(trip));
+  const polygon = buildExcludePolygon(lineFeature, span.startM, span.endM);
+  let detourTrip;
+  try {
+    ({ trip: detourTrip } = await requestRoute(from, to, stops, 0, costing, { ...avoidOpts, excludePolygon: polygon }));
+  } catch (err) {
+    return null;
+  }
+  const dDist = Math.abs(detourTrip.summary.length - trip.summary.length) / trip.summary.length;
+  const dTime = Math.abs(detourTrip.summary.time - trip.summary.time) / trip.summary.time;
+  if (dDist < 0.05 && dTime < 0.05) return null;
+  const { ratio } = await estimateRouteTrafficRatio(detourTrip);
+  if (ratio == null) return null;
+  return { trip: detourTrip, trafficTimeS: detourTrip.summary.time / ratio };
+}
+
+const routeDetourCache = new WeakMap(); // trip -> resolved detour candidate ({ trip, trafficTimeS }) or null — same reasoning as routeTrafficRatioCache: avoids re-requesting Valhalla+TomTom every time the cards repaint for the same options
+
+/** After refreshRouteOptionsTraffic resolves the normal traffic-adjusted
+ * times, checks whether the currently-fastest option has a congested
+ * stretch worth routing around (see findWorstCongestedSpan/
+ * estimateDetourRoute) and, if a detour clears
+ * TRAFFIC_REROUTE_MIN_IMPROVEMENT, adds it as a genuinely new card tagged
+ * "Avoids traffic" (see buildRouteOptionTags/insertDetourOption). Most
+ * trips never trigger anything past the congestion check — no span found,
+ * or no viable parallel road. Fire-and-forget, same staleness-guard pattern
+ * as refreshRouteOptionsTraffic itself. */
+async function maybeAddTrafficDetourOption(options, results, trafficTimes) {
+  let fastestIdx = -1, fastestTime = Infinity;
+  trafficTimes.forEach((t, i) => {
+    const effective = t != null ? t : options[i].summary.time;
+    if (effective < fastestTime) { fastestTime = effective; fastestIdx = i; }
+  });
+  const trip = options[fastestIdx];
+  const result = results[fastestIdx];
+  if (!trip || !result.samples.length) return;
+
+  let detour = routeDetourCache.get(trip);
+  if (detour === undefined) {
+    const totalDistM = trip.summary.length * 1000;
+    const n = routeTrafficSampleCount(totalDistM);
+    const span = findWorstCongestedSpan(result.samples, totalDistM, n);
+    detour = span
+      ? await estimateDetourRoute(trip, state.from, state.to, getStops(), COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways }, span)
+      : null;
+    routeDetourCache.set(trip, detour);
+  }
+  if (state.routeOptions !== options || !detour) return; // stale, or no worthwhile detour found
+  // Same "is this actually worth switching for" bar as live traffic
+  // rerouting (TRAFFIC_REROUTE_MIN_IMPROVEMENT), just expressed as a
+  // fraction of time saved here rather than a ratio-point difference —
+  // both exist to keep a marginal gain from surfacing as a whole new option.
+  if ((fastestTime - detour.trafficTimeS) / fastestTime < CONFIG.TRAFFIC_REROUTE_MIN_IMPROVEMENT) return;
+  insertDetourOption(options, trafficTimes, detour.trip, detour.trafficTimeS);
+}
+
+/** Splices a validated detour (see maybeAddTrafficDetourOption) into
+ * state.routeOptions as a new card and repaints — separate from the normal
+ * paintRouteOptionCards(trafficTimes) call in refreshRouteOptionsTraffic
+ * since this can resolve well after that (an extra Valhalla + TomTom round
+ * trip deep), on its own delay. */
+function insertDetourOption(options, trafficTimes, detourTrip, detourTrafficTimeS) {
+  if (state.routeOptions !== options) return; // stale — a newer plan/reselect already replaced this array
+  state.routeOptions = [...options, detourTrip];
+  state.routeOptionDetourTrips.add(detourTrip);
+  paintRouteOptionCards([...trafficTimes, detourTrafficTimeS]);
+  updateAlternateRouteLines();
+  updateSheetPeekHeight();
 }
 
 /** Kicks off traffic estimation for every current route option and
@@ -5898,9 +6050,9 @@ async function refreshRouteOptionsTraffic() {
   if (!tomtomFeaturesEnabled || state.travelMode !== 'drive') return;
   const options = state.routeOptions;
   if (options.length < 1) return;
-  const ratios = await Promise.all(options.map((t) => estimateRouteTrafficRatio(t)));
+  const results = await Promise.all(options.map((t) => estimateRouteTrafficRatio(t)));
   if (state.routeOptions !== options) return; // stale — a newer plan/reselect already replaced this array
-  const trafficTimes = options.map((t, i) => (ratios[i] != null ? t.summary.time / ratios[i] : null));
+  const trafficTimes = options.map((t, i) => (results[i].ratio != null ? t.summary.time / results[i].ratio : null));
   if (trafficTimes.every((t) => t == null)) return; // no usable data anywhere — leave the distance-only cards as they are
   paintRouteOptionCards(trafficTimes);
   // The extra "~X min in traffic" line changes card height — re-measure the
@@ -5908,13 +6060,17 @@ async function refreshRouteOptionsTraffic() {
   // elevation chart appearing after the initial measurement (see its own
   // comment in updateSheetPeekHeight's call sites) applied here too.
   updateSheetPeekHeight();
+  maybeAddTrafficDetourOption(options, results, trafficTimes); // fire-and-forget: may add one more card, well after this — see its own doc comment
 }
 
-/** One label per option in state.routeOptions: "Fastest"/"Shortest" (won't
- * both appear on the same card unless they're the same option), or a
- * toll callout when the options actually differ on that — no point saying
- * "No tolls" on every card when none of them have tolls anyway. With a
- * single trip there's nothing to compare against, so every tag is blank —
+/** One label per option in state.routeOptions: "Avoids traffic" for a card
+ * added by maybeAddTrafficDetourOption (takes priority over every other
+ * tag below — why it exists is the more useful thing to know, even though
+ * it's also usually the fastest), else "Fastest"/"Shortest" (won't both
+ * appear on the same card unless they're the same option), or a toll
+ * callout when the options actually differ on that — no point saying "No
+ * tolls" on every card when none of them have tolls anyway. With a single
+ * trip there's nothing to compare against, so every tag is blank —
  * "Fastest" on a lone card would be trivially true and misleading, not an
  * actual comparison.
  * `trafficTimes` (same length as `trips`, elements possibly null) — when
@@ -5931,6 +6087,7 @@ function buildRouteOptionTags(trips, trafficTimes) {
   const notAllSameToll = anyToll && trips.some((t) => !t.summary.has_toll);
 
   return trips.map((t, i) => {
+    if (state.routeOptionDetourTrips.has(t)) return 'Avoids traffic';
     if (effectiveTimes[i] === minTime) return 'Fastest';
     if (t.summary.length === minDist) return 'Shortest';
     if (state.travelMode !== 'walk' && notAllSameToll) return t.summary.has_toll ? 'Has tolls' : 'No tolls'; // toll callouts don't apply to a pedestrian trip
@@ -5995,6 +6152,7 @@ function paintRouteOptionCards(trafficTimes) {
  * loading. */
 async function renderRouteOptions() {
   el.routeOptionsRow.innerHTML = '';
+  state.routeOptionDetourTrips = new Set(); // fresh options array — any previous detour card no longer applies (see maybeAddTrafficDetourOption)
   if (state.routeOptions.length < 1) {
     el.routeOptionsRow.classList.add('hidden');
     updateSheetPeekHeight();

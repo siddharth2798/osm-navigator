@@ -418,6 +418,14 @@ export const CONFIG = {
   TRAFFIC_REROUTE_COMPARE_AHEAD_M: 2500,
   TRAFFIC_REROUTE_COMPARE_POINTS: 3,
 
+  // Radius (metres) buffered around a congested stretch before asking
+  // Valhalla to route around it entirely via exclude_polygons — see
+  // buildExcludePolygon/estimateDetourRoute in app.js. Wide enough to
+  // actually exclude the jammed road's own edges (not just its centerline),
+  // narrow enough to stay well under Valhalla's own max-polygon-area limit
+  // and avoid accidentally excluding a genuinely useful parallel road too.
+  TRAFFIC_DETOUR_BUFFER_M: 200,
+
   // Search radius (metres) for the TomTom Places Search fallback — only
   // tried after Nominatim's own default + wide radius category search both
   // come back empty. Wider than Nominatim's wide radius on purpose, since
