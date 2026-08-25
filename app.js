@@ -936,12 +936,17 @@ mapLoad.then(() => {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#5b6472', 'line-width': 5, 'line-opacity': 0.85 },
   });
-  // A handful of colored dashes over the road ahead — see runTrafficCheckin.
-  // Only ever populated during drive-mode navigation with TomTom features
+  // Colors the route by how busy TomTom found it — two different shapes
+  // depending on when it's populated: a handful of short dashes over just
+  // the road ahead during live navigation (see runTrafficCheckin), or full
+  // gap-free coverage of every option shown at planning time (see
+  // paintRouteOptionsTrafficOverlay) so a busy stretch is visible on the
+  // selected line and the gray alternates alike, not just called out in
+  // the cards below. Either way, only populated with TomTom features
   // turned on (CONFIG.TOMTOM_FEATURES_ENABLED, overridable per device via
-  // the Settings toggle — see tomtomFeaturesEnabled); empty (and so
-  // invisible) otherwise. Added after route-traveled-line so it always
-  // draws on top.
+  // the Settings toggle — see tomtomFeaturesEnabled) and drive mode; empty
+  // (and so invisible) otherwise. Added after route-traveled-line so it
+  // always draws on top.
   map.addSource('route-traffic', { type: 'geojson', data: emptyFeatureCollection() });
   map.addLayer({
     id: 'route-traffic-line',
@@ -2389,6 +2394,30 @@ el.weatherBadge.addEventListener('keydown', (e) => {
 // full cadence/sampling/threshold tunables.
 // ============================================================================
 
+// Short-TTL cache keyed by a coarse lat/lon grid cell (see
+// TRAFFIC_CACHE_GRID_DECIMALS) — route options routinely share a stretch
+// near a common start/end point, a detour candidate re-samples ground a
+// sibling option already covered, and a check-in during dead-stopped
+// traffic re-queries almost the same spot every cycle. This collapses those
+// into one real call instead of re-asking a question already answered
+// (see fetchTomTomFlowRatio for which responses are actually cached).
+const trafficRatioCache = new Map(); // gridKey -> { ratio, expiresAt }
+// Expired entries aren't actively pruned (checked lazily on next lookup, if
+// any), so a long drive covering mostly-new ground could otherwise grow
+// this without bound. Plain FIFO cap, same reasoning as capValhallaCache
+// below — this only ever saves a genuinely-nearby-in-time repeat query, not
+// a working set worth optimizing real LRU eviction order for.
+const TRAFFIC_RATIO_CACHE_MAX_ENTRIES = 500;
+function capTrafficRatioCache() {
+  while (trafficRatioCache.size > TRAFFIC_RATIO_CACHE_MAX_ENTRIES) {
+    trafficRatioCache.delete(trafficRatioCache.keys().next().value);
+  }
+}
+function trafficCacheKey(lat, lon) {
+  const factor = 10 ** CONFIG.TRAFFIC_CACHE_GRID_DECIMALS;
+  return `${Math.round(lat * factor)},${Math.round(lon * factor)}`;
+}
+
 /** One Flow Segment Data request for a single point. Returns the
  * currentSpeed/freeFlowSpeed ratio, or null on any failure — network error,
  * timeout, non-200 (including HTTP 429 quota-exceeded), a malformed/missing
@@ -2399,6 +2428,15 @@ el.weatherBadge.addEventListener('keydown', (e) => {
  * in as if it were equally trustworthy). Callers simply exclude a null from
  * the average: same quiet-degrade treatment as fetchWeather above, and
  * navigation is never affected by this failing.
+ *
+ * Checks trafficRatioCache first and, on a real (non-network-error) answer,
+ * writes back into it — see that cache's own comment above for why. Only a
+ * well-formed response gets cached, whether that's a usable ratio or a
+ * confidently-filtered null (low confidence/missing data — TomTom's own
+ * answer, unlikely to change within the TTL); a genuine fetch failure
+ * (bad HTTP status, network error, timeout, malformed body) is deliberately
+ * never cached, since that's worth retrying next time, not remembering as
+ * "no data" for the whole window.
  *
  * Calls this app's own /api/traffic route (a Cloudflare Pages Function —
  * see functions/api/traffic.js) rather than TomTom directly, so the real
@@ -2413,23 +2451,33 @@ el.weatherBadge.addEventListener('keydown', (e) => {
  * route line around the queried point, so any dash is guaranteed to land
  * exactly on the line already on screen. */
 async function fetchTomTomFlowRatio(lat, lon) {
+  const cacheKey = trafficCacheKey(lat, lon);
+  const cached = trafficRatioCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.ratio;
+
+  const cacheAndReturn = (ratio) => {
+    trafficRatioCache.set(cacheKey, { ratio, expiresAt: Date.now() + CONFIG.TRAFFIC_CACHE_TTL_MS });
+    capTrafficRatioCache();
+    return ratio;
+  };
+
   try {
     const url = `/api/traffic?lat=${lat}&lon=${lon}`;
     const res = await fetchWithTimeout(url);
-    if (!res.ok) return null; // covers 429 and any other non-200
+    if (!res.ok) return null; // covers 429 and any other non-200 — not cached, worth retrying
     const data = await res.json();
     const seg = data && data.flowSegmentData;
     const current = seg && seg.currentSpeed;
     const freeFlow = seg && seg.freeFlowSpeed;
-    if (typeof current !== 'number' || typeof freeFlow !== 'number' || freeFlow <= 0) return null;
+    if (typeof current !== 'number' || typeof freeFlow !== 'number' || freeFlow <= 0) return cacheAndReturn(null);
     // Missing confidence (shouldn't happen per TomTom's own schema, but
     // never assumed) is treated as "no reason to distrust it" rather than
     // dropped outright.
     const confidence = typeof seg.confidence === 'number' ? seg.confidence : 1;
-    if (confidence < CONFIG.TRAFFIC_MIN_CONFIDENCE) return null;
-    return current / freeFlow;
+    if (confidence < CONFIG.TRAFFIC_MIN_CONFIDENCE) return cacheAndReturn(null);
+    return cacheAndReturn(current / freeFlow);
   } catch (err) {
-    return null; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — all treated the same
+    return null; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — not cached, worth retrying
   }
 }
 
@@ -6024,6 +6072,35 @@ async function maybeAddTrafficDetourOption(options, results, trafficTimes) {
   insertDetourOption(options, trafficTimes, detour.trip, detour.trafficTimeS);
 }
 
+/** Colors every option currently shown — the selected line and the gray
+ * alternates alike — by how busy TomTom found it, reusing the exact same
+ * route-traffic source/layer (and red/amber/green paint expression) that
+ * runTrafficCheckin uses for live-driving dashes. Unlike that near-term,
+ * sparse-dash use, this covers each option's ENTIRE length with no gaps:
+ * every sample "owns" the stretch of route from the midpoint before it to
+ * the midpoint after (same half-a-sample-gap windowing as
+ * findWorstCongestedSpan), since with as few as 3 samples for a whole
+ * route, isolated 300m ticks would barely be visible and wouldn't answer
+ * "where exactly" the way full coverage does. Costs zero extra TomTom
+ * calls — `results` is whatever refreshRouteOptionsTraffic/
+ * maybeAddTrafficDetourOption already fetched for the ETA numbers. */
+function paintRouteOptionsTrafficOverlay(options, results) {
+  const features = options.flatMap((trip, i) => {
+    const samples = results[i] && results[i].samples;
+    if (!samples || !samples.length) return [];
+    const totalDistM = trip.summary.length * 1000;
+    const gap = totalDistM / routeTrafficSampleCount(totalDistM);
+    const lineFeature = turf.lineString(decodeTripCoords(trip));
+    return samples.map((s) => {
+      const from = Math.max(0, s.d - gap / 2);
+      const to = Math.min(totalDistM, s.d + gap / 2);
+      const dash = turf.lineSliceAlong(lineFeature, from, to, { units: 'meters' });
+      return { type: 'Feature', properties: { ratio: s.ratio }, geometry: dash.geometry };
+    });
+  });
+  map.getSource('route-traffic').setData({ type: 'FeatureCollection', features });
+}
+
 /** Splices a validated detour (see maybeAddTrafficDetourOption) into
  * state.routeOptions as a new card and repaints — separate from the normal
  * paintRouteOptionCards(trafficTimes) call in refreshRouteOptionsTraffic
@@ -6036,6 +6113,10 @@ function insertDetourOption(options, trafficTimes, detourTrip, detourTrafficTime
   paintRouteOptionCards([...trafficTimes, detourTrafficTimeS]);
   updateAlternateRouteLines();
   updateSheetPeekHeight();
+  // Every trip here has already been through estimateRouteTrafficRatio (the
+  // originals via refreshRouteOptionsTraffic, the detour itself inside
+  // estimateDetourRoute), so this is a pure cache read — no new calls.
+  paintRouteOptionsTrafficOverlay(state.routeOptions, state.routeOptions.map((t) => routeTrafficRatioCache.get(t)));
 }
 
 /** Kicks off traffic estimation for every current route option and
@@ -6060,6 +6141,7 @@ async function refreshRouteOptionsTraffic() {
   // elevation chart appearing after the initial measurement (see its own
   // comment in updateSheetPeekHeight's call sites) applied here too.
   updateSheetPeekHeight();
+  paintRouteOptionsTrafficOverlay(options, results);
   maybeAddTrafficDetourOption(options, results, trafficTimes); // fire-and-forget: may add one more card, well after this — see its own doc comment
 }
 
@@ -6138,6 +6220,23 @@ function paintRouteOptionCards(trafficTimes) {
     card.addEventListener('click', () => selectRouteOption(i));
     el.routeOptionsRow.appendChild(card);
   });
+  // Keeps the sheet's top summary line in sync with whichever number the
+  // active card is now showing. Without this, the summary (set by
+  // renderRouteSummary from Valhalla's traffic-blind estimate, before this
+  // ever resolves) would keep showing a different, contradicting time for
+  // the exact same selected route once a traffic-adjusted one exists —
+  // confusing rather than two intentionally different numbers. Only when
+  // it's actually resolved for the active option; otherwise the
+  // traffic-blind summary from renderRouteSummary stands, same fallback
+  // used everywhere else in this file. Guarded on !state.navigating since
+  // updateActiveManeuver owns this line during an active drive instead (see
+  // renderRouteSummary's own comment) — this can still run mid-navigation
+  // via maybeRerouteForTraffic's own renderRouteOptions() call.
+  const activeTrafficTimeS = trafficTimes && trafficTimes[state.selectedRouteIndex];
+  const activeTrip = state.routeOptions[state.selectedRouteIndex];
+  if (activeTrafficTimeS != null && activeTrip && !state.navigating) {
+    el.sheetSummary.textContent = `${formatDistance(activeTrip.summary.length * 1000)} · ~${formatDuration(activeTrafficTimeS)} in traffic`;
+  }
 }
 
 /** Populates the route-option card(s) and the map's gray alternate lines.
@@ -6158,6 +6257,7 @@ async function renderRouteOptions() {
     updateSheetPeekHeight();
     await awaitMapLoad();
     map.getSource('route-alternates').setData(emptyFeatureCollection());
+    map.getSource('route-traffic').setData(emptyFeatureCollection());
     return;
   }
   paintRouteOptionCards(null); // immediate: distance + Valhalla-only tags, never delayed waiting on a network round-trip

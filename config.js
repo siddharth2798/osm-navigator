@@ -386,6 +386,24 @@ export const CONFIG = {
   // coverage is thin even in markets TomTom otherwise covers well.
   TRAFFIC_MIN_CONFIDENCE: 0.5,
 
+  // fetchTomTomFlowRatio caches each response by a coarse lat/lon grid cell
+  // for this long — route options routinely share a stretch near a common
+  // start/end point (each sampling it independently), a detour candidate
+  // re-samples ground a sibling option already covered, and a check-in
+  // during dead-stopped traffic re-queries almost the same spot every
+  // cycle. Traffic doesn't meaningfully change faster than this, so caching
+  // collapses those into one real call — pure savings, not a precision
+  // tradeoff. A genuine fetch failure (network/timeout/bad HTTP status) is
+  // deliberately never cached — that's worth retrying next time, not
+  // remembering as "no data" for the whole window.
+  TRAFFIC_CACHE_TTL_MS: 150000, // 2.5 min
+  // Decimal places lat/lon are rounded to before being used as the cache
+  // key — 3 is roughly a 100-150m grid cell at most latitudes. Coarser than
+  // this risks merging two genuinely different roads' readings together;
+  // finer defeats the point (two calls a few metres apart rarely share a
+  // cache hit).
+  TRAFFIC_CACHE_GRID_DECIMALS: 3,
+
   // If the distance-weighted average of (currentSpeed / freeFlowSpeed)
   // across all samples that succeeded drops below this, show the "Heavy
   // traffic ahead" indicator and scale the live ETA line's remaining time
