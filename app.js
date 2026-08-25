@@ -203,7 +203,7 @@ const state = {
   spokenFar: new Set(),
   spokenNear: new Set(),
   spokenContinue: new Set(), // "Continue straight for X km" — spoken once per long straight maneuver, on becoming current rather than approaching
-  voiceMode: 'all', // 'all' | 'important' | 'off' — see the voice-mode toggle button
+  voiceMode: 'all', // 'all' | 'off' — see the voice-mode toggle button
   arrivedAnnounced: false,
   arrivalCandidateStreak: 0, // consecutive fixes in a row within ARRIVAL_RADIUS_M — see the arrival check in updateActiveManeuver
   lastFix: null,       // {lng, lat, t} of the previous GPS fix, for bearing fallback
@@ -2117,19 +2117,24 @@ async function categorySearchNear(tag, lat, lon) {
 }
 
 // ============================================================================
-// Voice mode toggle — cycles state.voiceMode through 'all' -> 'important' ->
-// 'off' -> 'all', same three-way choice Google Maps offers. speak() (above,
-// in the live-tracking section) is what actually reads this; this block is
-// just the button and its icon/label per state. Not persisted across a
-// reload — a session preference, same as the avoid-tolls/avoid-highways
-// toggles elsewhere in this app.
+// Voice mode toggle — cycles state.voiceMode through 'all' -> 'off' -> 'all'.
+// speak() (above, in the live-tracking section) is what actually reads this;
+// this block is just the button and its icon/label per state. Not persisted
+// across a reload — a session preference, same as the avoid-tolls/avoid-
+// highways toggles elsewhere in this app.
+//
+// Used to be a three-way all/important/off choice, meant to mirror Google
+// Maps' own alerts-only mode. Removed rather than fixed: "important" only
+// ever spoke one rare event (arrival) while silencing every turn-by-turn
+// instruction — the opposite of an alerts-only mode, and actively harmful
+// for actual driving (no turn guidance at all). On/off is the whole
+// meaningful choice here.
 // ============================================================================
-const VOICE_MODE_ORDER = ['all', 'important', 'off'];
-const VOICE_MODE_LABEL = { all: 'Voice guidance: on', important: 'Voice guidance: important only', off: 'Voice guidance: off' };
+const VOICE_MODE_ORDER = ['all', 'off'];
+const VOICE_MODE_LABEL = { all: 'Voice guidance: on', off: 'Voice guidance: off' };
 function voiceModeIcon(mode) {
   const speaker = '<path d="M4 9 v6 h4 l5 4 V5 l-5 4 Z"/>';
   if (mode === 'off') return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M15 9 L20 15 M20 9 L15 15"/></svg>`;
-  if (mode === 'important') return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M16.5 10.5 a3 3 0 0 1 0 5"/></svg>`;
   return `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${speaker}<path d="M16.5 9 a5 5 0 0 1 0 8"/><path d="M19 7 a8.5 8.5 0 0 1 0 12"/></svg>`;
 }
 function renderVoiceModeBtn() {
@@ -2140,7 +2145,7 @@ el.voiceModeBtn.addEventListener('click', () => {
   const nextIdx = (VOICE_MODE_ORDER.indexOf(state.voiceMode) + 1) % VOICE_MODE_ORDER.length;
   state.voiceMode = VOICE_MODE_ORDER[nextIdx];
   renderVoiceModeBtn();
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // switching to important/off mid-sentence shouldn't let the old prompt keep talking
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // switching to off mid-sentence shouldn't let the old prompt keep talking
   showStatus(VOICE_MODE_LABEL[state.voiceMode], 'info');
 });
 renderVoiceModeBtn();
@@ -6245,9 +6250,8 @@ if (el.voiceSelect) {
   });
 }
 
-function speak(text, { isImportant = false, queue = false } = {}) {
+function speak(text, { queue = false } = {}) {
   if (state.voiceMode === 'off') return;
-  if (state.voiceMode === 'important' && !isImportant) return;
 
   if (isNativePlatform()) {
     // Confirmed live via the on-screen debug log: 'speechSynthesis' in
@@ -6456,7 +6460,7 @@ function updateActiveManeuver(traveledM, lngLat) {
   }
   if (!state.arrivedAnnounced && state.arrivalCandidateStreak >= CONFIG.ARRIVAL_CONFIRM_FIXES) {
     state.arrivedAnnounced = true;
-    speak('You have arrived at your destination.', { isImportant: true }); // important — still spoken in 'important' voice mode
+    speak('You have arrived at your destination.');
     endNavigation(); // clears any status banner as part of its own cleanup — show the arrival message after, not before, so it isn't wiped
     showStatus('You have arrived at your destination.', 'success');
     return; // navigation just ended — nothing below is still meaningful

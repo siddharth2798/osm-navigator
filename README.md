@@ -40,7 +40,7 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, shown automatically as soon as GPS resolves, toggleable from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes.
 - **Turn-by-turn navigation** — live position arrow, traveled-route dulling, screen stays awake, automatic arrival detection, survives a mid-drive reload, reroutes onto whatever road you actually took. Auto-enters **Picture-in-Picture** on the [Android shell](docs/ANDROID.md) when minimized mid-drive.
-- **Voice guidance** — early and near turn prompts scaled to your actual speed, natural phrasing, a mute/important-only/full toggle, a distinct alert tone on deviation, combined prompts for closely-spaced turns.
+- **Voice guidance** — early and near turn prompts scaled to your actual speed, natural phrasing, an on/off toggle, a distinct alert tone on deviation, combined prompts for closely-spaced turns.
 - **Weather at a glance**, **search along the route**, **favorites & recent trips**, **offline map tiles**, **shareable route links** (no backend involved), **street-level imagery** via Mapillary when configured.
 - Works with the screen off via the [optional Android shell](docs/ANDROID.md).
 
