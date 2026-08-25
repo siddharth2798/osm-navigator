@@ -2668,7 +2668,7 @@ async function maybeRerouteForTraffic(traveledM) {
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
     await renderRoute(best.trip, { fitView: false, stops: remainingStops }); // camera keeps following the puck, same as triggerReroute
-    speak('Rerouting to avoid traffic ahead.', { isImportant: true });
+    speak('Rerouting to avoid traffic ahead.');
     showStatus('Rerouting to avoid traffic ahead.', 'info');
   } catch (err) {
     resolverDebugLog(`Traffic reroute attempt failed: ${err.message}`, 'error');
