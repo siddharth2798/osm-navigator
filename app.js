@@ -7425,9 +7425,10 @@ function updateActiveManeuver(traveledM, lngLat) {
   if (!state.arrivedAnnounced && state.arrivalCandidateStreak >= CONFIG.ARRIVAL_CONFIRM_FIXES) {
     state.arrivedAnnounced = true;
     speak('You have arrived at your destination.');
-    // showSummary/arrived: true — the trip-summary panel now covers what a
-    // bare "You have arrived" toast used to (see endNavigation), with the
-    // actual distance/time/elevation to show for it.
+    // showSummary/arrived: true — with the trip-summary panel currently
+    // disabled, endNavigation falls back to a plain arrival toast instead
+    // (see its own comment); passing these through keeps that working
+    // automatically if the panel is ever re-enabled later.
     endNavigation({ showSummary: true, arrived: true });
     return; // navigation just ended — nothing below is still meaningful
   }
@@ -8186,9 +8187,25 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
 
   clearCurrentTrip().catch(() => { /* non-fatal: a stale resume record just won't restore next launch */ });
 
-  // Disabled: end-of-trip summary panel. Left commented out (not removed)
-  // in case it's re-enabled later.
-  // if (summary) renderTripSummary(summary);
+  // Disabled: end-of-trip summary panel. Flip this back to true to
+  // re-enable it — the fallback toast right below then stops firing on its
+  // own, so re-enabling never leaves both showing at once.
+  const TRIP_SUMMARY_PANEL_ENABLED = false;
+  if (summary) {
+    if (TRIP_SUMMARY_PANEL_ENABLED) {
+      renderTripSummary(summary);
+    } else {
+      // Without the panel, arrival (and a manual "End") would otherwise
+      // give no visual confirmation at all that the trip actually ended —
+      // the spoken arrival announcement alone isn't reliable (muted
+      // device, hearing impaired, noisy environment, or even cut short by
+      // this function's own speechSynthesis.cancel() above, confirmed
+      // live: the utterance can get canceled just milliseconds after it
+      // starts, before finishing). Same plain toast this app showed before
+      // the summary panel existed.
+      showStatus(summary.arrived ? 'You have arrived at your destination.' : 'Trip ended.', 'success');
+    }
+  }
 }
 
 /** Populates and opens the trip-summary panel (see endNavigation, the only
