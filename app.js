@@ -2414,6 +2414,18 @@ const GOOGLE_MAPS_HOSTS = new Set(['maps.app.goo.gl', 'goo.gl', 'www.google.com'
 // (?debug=off turns it back off). console.log stays unconditional either
 // way, so a connected remote-debugger session always sees the trace
 // regardless of whether the on-screen panel is enabled.
+//
+// resolverDebugLog() records every line into resolverDebugHistory below
+// REGARDLESS of whether Debug mode is on — otherwise turning it on mid-
+// session would only start showing whatever logs next, silently missing
+// everything that already happened (the moment you'd most want to see:
+// something already went wrong before you thought to turn this on).
+// setResolverDebugEnabled(true) replays the whole buffered history into the
+// panel immediately, so flipping the toggle always shows the full session
+// trace from the start, not just new activity from that point on. Capped so
+// a long session can't grow this unboundedly.
+const RESOLVER_DEBUG_HISTORY_MAX = 1000;
+const resolverDebugHistory = []; // { text, kind } entries, oldest first — see resolverDebugLog/setResolverDebugEnabled
 const RESOLVER_DEBUG_STORAGE_KEY = 'resolverDebugEnabled';
 const debugParam = new URLSearchParams(location.search).get('debug');
 if (debugParam === 'resolver') localStorage.setItem(RESOLVER_DEBUG_STORAGE_KEY, '1');
@@ -2434,7 +2446,20 @@ function setResolverDebugEnabled(enabled) {
     el.debugModeToggle.classList.toggle('active', enabled);
     el.debugModeToggle.setAttribute('aria-checked', String(enabled));
   }
-  if (!enabled && el.resolverDebugPanel) el.resolverDebugPanel.classList.add('hidden');
+  if (enabled) {
+    // Replay the full session history immediately (see resolverDebugHistory
+    // above) and show the panel right away — turning Debug mode on should
+    // never leave you staring at an empty/hidden panel waiting for the next
+    // thing to happen to log.
+    if (el.resolverDebugLogEl) {
+      el.resolverDebugLogEl.innerHTML = '';
+      resolverDebugHistory.forEach(appendResolverDebugLine);
+      el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
+    }
+    if (el.resolverDebugPanel) el.resolverDebugPanel.classList.remove('hidden');
+  } else if (el.resolverDebugPanel) {
+    el.resolverDebugPanel.classList.add('hidden');
+  }
 }
 setResolverDebugEnabled(resolverDebugEnabled); // paints the toggle's initial state on load
 
@@ -2477,14 +2502,27 @@ function resolverDebugReset() {
   resolverDebugStartTs = Date.now();
   if (resolverDebugEnabled && el.resolverDebugLogEl) el.resolverDebugLogEl.innerHTML = '';
 }
+/** Appends one already-formatted history entry ({ text, kind } — see
+ * resolverDebugLog) to the on-screen panel. Split out so
+ * setResolverDebugEnabled can replay the whole buffered history in one
+ * pass without duplicating the DOM-building logic. */
+function appendResolverDebugLine(entry) {
+  const lineEl = document.createElement('div');
+  lineEl.className = entry.kind ? `resolver-debug-line ${entry.kind}` : 'resolver-debug-line';
+  lineEl.textContent = entry.text;
+  el.resolverDebugLogEl.appendChild(lineEl);
+}
 function resolverDebugLog(message, kind = '') {
   if (resolverDebugStartTs == null) resolverDebugStartTs = Date.now();
   nativeConsole.log('[resolver]', message);
+  // Recorded unconditionally, Debug mode on or off — see resolverDebugHistory
+  // above for why: otherwise turning it on mid-session would only surface
+  // whatever logs next, missing everything that already happened.
+  const entry = { text: `[+${Date.now() - resolverDebugStartTs}ms] ${message}`, kind };
+  resolverDebugHistory.push(entry);
+  if (resolverDebugHistory.length > RESOLVER_DEBUG_HISTORY_MAX) resolverDebugHistory.shift();
   if (!resolverDebugEnabled || !el.resolverDebugLogEl) return;
-  const line = document.createElement('div');
-  line.className = kind ? `resolver-debug-line ${kind}` : 'resolver-debug-line';
-  line.textContent = `[+${Date.now() - resolverDebugStartTs}ms] ${message}`;
-  el.resolverDebugLogEl.appendChild(line);
+  appendResolverDebugLine(entry);
   el.resolverDebugLogEl.scrollTop = el.resolverDebugLogEl.scrollHeight;
   // Deliberately NOT pushBackLayer()'d — this panel needs to stay
   // dismissable no matter what else is open (a place card, active
