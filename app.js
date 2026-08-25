@@ -5897,7 +5897,7 @@ async function estimateRouteTrafficRatio(trip) {
 async function refreshRouteOptionsTraffic() {
   if (!tomtomFeaturesEnabled || state.travelMode !== 'drive') return;
   const options = state.routeOptions;
-  if (options.length < 2) return;
+  if (options.length < 1) return;
   const ratios = await Promise.all(options.map((t) => estimateRouteTrafficRatio(t)));
   if (state.routeOptions !== options) return; // stale — a newer plan/reselect already replaced this array
   const trafficTimes = options.map((t, i) => (ratios[i] != null ? t.summary.time / ratios[i] : null));
@@ -5913,13 +5913,17 @@ async function refreshRouteOptionsTraffic() {
 /** One label per option in state.routeOptions: "Fastest"/"Shortest" (won't
  * both appear on the same card unless they're the same option), or a
  * toll callout when the options actually differ on that — no point saying
- * "No tolls" on every card when none of them have tolls anyway.
+ * "No tolls" on every card when none of them have tolls anyway. With a
+ * single trip there's nothing to compare against, so every tag is blank —
+ * "Fastest" on a lone card would be trivially true and misleading, not an
+ * actual comparison.
  * `trafficTimes` (same length as `trips`, elements possibly null) — when
  * given, an option's live-traffic-adjusted time (see
  * refreshRouteOptionsTraffic) decides "Fastest" instead of Valhalla's own
  * traffic-blind estimate; an option with no resolved traffic time falls
  * back to its own Valhalla estimate for this comparison only. */
 function buildRouteOptionTags(trips, trafficTimes) {
+  if (trips.length < 2) return trips.map(() => '');
   const effectiveTimes = trips.map((t, i) => (trafficTimes && trafficTimes[i] != null ? trafficTimes[i] : t.summary.time));
   const minTime = Math.min(...effectiveTimes);
   const minDist = Math.min(...trips.map((t) => t.summary.length));
@@ -5979,16 +5983,19 @@ function paintRouteOptionCards(trafficTimes) {
   });
 }
 
-/** Populates the route-option cards and the map's gray alternate lines.
- * Hides both entirely when there's nothing to choose between (0 or 1
- * option) — most trips never show this UI at all, only ones where Valhalla
- * actually found a meaningfully different second route. Awaits the map's
- * own load before touching its sources — this can run as the very first
- * thing on a fresh page load (clearing stale options before a new plan
- * request), before the map has necessarily finished loading. */
+/** Populates the route-option card(s) and the map's gray alternate lines.
+ * Hides both entirely only when there's genuinely no planned route (0
+ * options) — a single option still gets its own card even though there's
+ * nothing to choose between, because that card is also how a live-traffic
+ * ETA gets shown (see refreshRouteOptionsTraffic/buildRouteOptionTags,
+ * which already know to skip the "Fastest"/"Shortest" tag with only one
+ * trip). Awaits the map's own load before touching its sources — this can
+ * run as the very first thing on a fresh page load (clearing stale options
+ * before a new plan request), before the map has necessarily finished
+ * loading. */
 async function renderRouteOptions() {
   el.routeOptionsRow.innerHTML = '';
-  if (state.routeOptions.length < 2) {
+  if (state.routeOptions.length < 1) {
     el.routeOptionsRow.classList.add('hidden');
     updateSheetPeekHeight();
     await awaitMapLoad();
