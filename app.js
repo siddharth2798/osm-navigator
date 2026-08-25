@@ -5911,9 +5911,11 @@ function updateElevationProfileForRoute() {
 
 // Route options vs. live in-navigation traffic (see fetchTomTomFlowRatio/
 // sampleTrafficAhead above) use different sampling: comparing alternates
-// before committing cares about the WHOLE route equally, not just what's
-// immediately ahead, so this is a flat average, not near-term-weighted.
-const routeTrafficRatioCache = new WeakMap(); // trip object -> resolved { ratio, samples } — trip objects in state.routeOptions are stable across a reselect (see selectRouteOption), so switching which card is active never re-fetches the same option's traffic twice
+// before committing cares about the WHOLE route, not just what's
+// immediately ahead, so every sample here contributes (weighted by the
+// slice of the route it covers — see weightedTrafficTimeS), rather than
+// only the near-term ones mattering most.
+const routeTrafficTimeCache = new WeakMap(); // trip object -> resolved { trafficTimeS, samples } — trip objects in state.routeOptions are stable across a reselect (see selectRouteOption), so switching which card is active never re-fetches the same option's traffic twice
 
 // Coarser than TRAFFIC_SAMPLE_POINTS's live-navigation density — this can
 // run once per alternate every time route options render (each replan, not
@@ -5926,21 +5928,48 @@ function routeTrafficSampleCount(totalDistM) {
   return 8;
 }
 
-/** Flat average currentSpeed/freeFlowSpeed ratio across a route option's
- * entire length — used by refreshRouteOptionsTraffic to compare alternates
- * against each other before committing to one, and by
- * maybeAddTrafficDetourOption to find where along the route it's actually
- * congested. `samples` (each `{ lon, lat, d, ratio }`, `d` = distance in
- * metres from the route start) is every sample that succeeded, in route
- * order — always `[]` when `ratio` is null. Returns `{ ratio: null, samples:
- * [] }` if TomTom is off, the trip has no usable length, or every sample
- * failed/was filtered out for low confidence (see fetchTomTomFlowRatio) —
- * callers fall back to Valhalla's own (traffic-blind) time estimate in that
- * case, same as before this existed. */
-async function estimateRouteTrafficRatio(trip) {
-  if (routeTrafficRatioCache.has(trip)) return routeTrafficRatioCache.get(trip);
+/** Segment-weighted total trip time under current traffic — each sample
+ * "owns" the same distance slice used elsewhere for this route (half a
+ * sample-gap either side, see findWorstCongestedSpan/
+ * paintRouteOptionsTrafficOverlay): that slice's share of Valhalla's
+ * traffic-blind time, divided by that slice's own ratio, summed across all
+ * slices. Deliberately NOT a flat average ratio applied to the whole
+ * trip's time — that would let one bad/good sample skew stretches it
+ * doesn't actually cover (a 2km jam inflating the estimate for an entire
+ * 40km highway trip, say). Any distance no valid sample covers (filtered
+ * out for low confidence, or a failed request) keeps its base time
+ * unadjusted — no ratio to apply, so no adjustment rather than a guess. */
+function weightedTrafficTimeS(trip, samples, n) {
+  const totalDistM = trip.summary.length * 1000;
+  const totalTimeS = trip.summary.time;
+  const gap = totalDistM / n;
+  let time = 0;
+  let coveredDistM = 0;
+  samples.forEach((s) => {
+    const sliceDistM = Math.max(0, Math.min(totalDistM, s.d + gap / 2) - Math.max(0, s.d - gap / 2));
+    coveredDistM += sliceDistM;
+    time += totalTimeS * (sliceDistM / totalDistM) / s.ratio;
+  });
+  const uncoveredDistM = Math.max(0, totalDistM - coveredDistM);
+  time += totalTimeS * (uncoveredDistM / totalDistM); // no sample here — no adjustment, not a guess
+  return time;
+}
+
+/** Traffic-adjusted total time for a route option — used by
+ * refreshRouteOptionsTraffic to compare alternates against each other
+ * before committing to one, and by maybeAddTrafficDetourOption to find
+ * where along the route it's actually congested. `samples` (each `{ lon,
+ * lat, d, ratio }`, `d` = distance in metres from the route start) is
+ * every sample that succeeded, in route order — always `[]` when
+ * `trafficTimeS` is null. Returns `{ trafficTimeS: null, samples: [] }` if
+ * TomTom is off, the trip has no usable length, or every sample failed/was
+ * filtered out for low confidence (see fetchTomTomFlowRatio) — callers
+ * fall back to Valhalla's own (traffic-blind) time estimate in that case,
+ * same as before this existed. */
+async function estimateRouteTrafficTime(trip) {
+  if (routeTrafficTimeCache.has(trip)) return routeTrafficTimeCache.get(trip);
   const totalDistM = trip.summary && trip.summary.length ? trip.summary.length * 1000 : 0;
-  const empty = { ratio: null, samples: [] };
+  const empty = { trafficTimeS: null, samples: [] };
   if (totalDistM <= 0) return empty;
   const lineFeature = turf.lineString(decodeTripCoords(trip));
   const n = routeTrafficSampleCount(totalDistM);
@@ -5954,16 +5983,16 @@ async function estimateRouteTrafficRatio(trip) {
     .map((p, i) => ({ ...p, ratio: ratios[i] }))
     .filter((p) => typeof p.ratio === 'number' && Number.isFinite(p.ratio));
   const result = samples.length
-    ? { ratio: samples.reduce((sum, s) => sum + s.ratio, 0) / samples.length, samples }
+    ? { trafficTimeS: weightedTrafficTimeS(trip, samples, n), samples }
     : empty;
-  routeTrafficRatioCache.set(trip, result);
+  routeTrafficTimeCache.set(trip, result);
   return result;
 }
 
 /** Groups a route's congested samples (ratio below TRAFFIC_HEAVY_THRESHOLD)
  * into contiguous spans along the route, each extended half a sample-gap on
  * either side of its worst point (the gap between evenly-spaced samples —
- * see estimateRouteTrafficRatio) so the excluded stretch actually covers the
+ * see estimateRouteTrafficTime) so the excluded stretch actually covers the
  * jammed road rather than just a single point on it. Adjacent/overlapping
  * bad samples merge into one span. Returns the single worst span (lowest
  * ratio) since finding and validating a detour is expensive (a whole extra
@@ -6027,12 +6056,12 @@ async function estimateDetourRoute(trip, from, to, stops, costing, avoidOpts, sp
   const dDist = Math.abs(detourTrip.summary.length - trip.summary.length) / trip.summary.length;
   const dTime = Math.abs(detourTrip.summary.time - trip.summary.time) / trip.summary.time;
   if (dDist < 0.05 && dTime < 0.05) return null;
-  const { ratio } = await estimateRouteTrafficRatio(detourTrip);
-  if (ratio == null) return null;
-  return { trip: detourTrip, trafficTimeS: detourTrip.summary.time / ratio };
+  const { trafficTimeS } = await estimateRouteTrafficTime(detourTrip);
+  if (trafficTimeS == null) return null;
+  return { trip: detourTrip, trafficTimeS };
 }
 
-const routeDetourCache = new WeakMap(); // trip -> resolved detour candidate ({ trip, trafficTimeS }) or null — same reasoning as routeTrafficRatioCache: avoids re-requesting Valhalla+TomTom every time the cards repaint for the same options
+const routeDetourCache = new WeakMap(); // trip -> resolved detour candidate ({ trip, trafficTimeS }) or null — same reasoning as routeTrafficTimeCache: avoids re-requesting Valhalla+TomTom every time the cards repaint for the same options
 
 /** After refreshRouteOptionsTraffic resolves the normal traffic-adjusted
  * times, checks whether the currently-fastest option has a congested
@@ -6113,10 +6142,10 @@ function insertDetourOption(options, trafficTimes, detourTrip, detourTrafficTime
   paintRouteOptionCards([...trafficTimes, detourTrafficTimeS]);
   updateAlternateRouteLines();
   updateSheetPeekHeight();
-  // Every trip here has already been through estimateRouteTrafficRatio (the
+  // Every trip here has already been through estimateRouteTrafficTime (the
   // originals via refreshRouteOptionsTraffic, the detour itself inside
   // estimateDetourRoute), so this is a pure cache read — no new calls.
-  paintRouteOptionsTrafficOverlay(state.routeOptions, state.routeOptions.map((t) => routeTrafficRatioCache.get(t)));
+  paintRouteOptionsTrafficOverlay(state.routeOptions, state.routeOptions.map((t) => routeTrafficTimeCache.get(t)));
 }
 
 /** Kicks off traffic estimation for every current route option and
@@ -6131,9 +6160,9 @@ async function refreshRouteOptionsTraffic() {
   if (!tomtomFeaturesEnabled || state.travelMode !== 'drive') return;
   const options = state.routeOptions;
   if (options.length < 1) return;
-  const results = await Promise.all(options.map((t) => estimateRouteTrafficRatio(t)));
+  const results = await Promise.all(options.map((t) => estimateRouteTrafficTime(t)));
   if (state.routeOptions !== options) return; // stale — a newer plan/reselect already replaced this array
-  const trafficTimes = options.map((t, i) => (results[i].ratio != null ? t.summary.time / results[i].ratio : null));
+  const trafficTimes = results.map((r) => r.trafficTimeS);
   if (trafficTimes.every((t) => t == null)) return; // no usable data anywhere — leave the distance-only cards as they are
   paintRouteOptionCards(trafficTimes);
   // The extra "~X min in traffic" line changes card height — re-measure the
