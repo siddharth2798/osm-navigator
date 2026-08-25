@@ -8,7 +8,7 @@ import {
   setQuickPlace, getQuickPlace,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocationEnabled } from './native-location.js';
-import { speakNative, primeNativeVoices } from './native-tts.js';
+import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
@@ -2257,7 +2257,16 @@ el.voiceModeBtn.addEventListener('click', () => {
   const nextIdx = (VOICE_MODE_ORDER.indexOf(state.voiceMode) + 1) % VOICE_MODE_ORDER.length;
   state.voiceMode = VOICE_MODE_ORDER[nextIdx];
   renderVoiceModeBtn();
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // switching to off mid-sentence shouldn't let the old prompt keep talking
+  // Switching to off mid-sentence shouldn't let the old prompt keep
+  // talking — speechSynthesis.cancel() only ever silences the web path;
+  // on the native shell it's a silent no-op (confirmed live: toggling
+  // voice off during a walk left the in-progress instruction playing out
+  // regardless), so that platform needs its own explicit stop() instead.
+  if (isNativePlatform()) {
+    stopNative().catch((err) => resolverDebugLog(`Voice mode toggle: stopNative() threw "${err.message}"`, 'error'));
+  } else if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
   showStatus(VOICE_MODE_LABEL[state.voiceMode], 'info');
 });
 renderVoiceModeBtn();
@@ -7214,8 +7223,35 @@ if (el.voiceSelect) {
   });
 }
 
+// See CONFIG.VOICE_MIN_GAP_MS — the earliest time the next QUEUED spoken
+// line is allowed to actually dispatch. Not exact end-of-speech timing
+// (this app doesn't track that for either the web or native TTS path);
+// just a practical stagger that's already enough to fix independent voice
+// cues (an incline heads-up and a turn prompt, say) landing on the same
+// GPS tick and running together with zero gap between them.
+let voiceNextAvailableAt = 0;
+
 function speak(text, { queue = false } = {}) {
   if (state.voiceMode === 'off') return;
+  const now = Date.now();
+  if (!queue) {
+    // A flush always dispatches immediately (it's meant to interrupt right
+    // away), but still pushes the gap forward so anything queued right
+    // behind it still waits its own turn rather than piling on top.
+    voiceNextAvailableAt = now + CONFIG.VOICE_MIN_GAP_MS;
+    dispatchSpeak(text, queue);
+    return;
+  }
+  const startAt = Math.max(now, voiceNextAvailableAt);
+  voiceNextAvailableAt = startAt + CONFIG.VOICE_MIN_GAP_MS;
+  if (startAt <= now) dispatchSpeak(text, queue);
+  else setTimeout(() => dispatchSpeak(text, queue), startAt - now);
+}
+
+/** The actual speak-it-now logic, split out from speak() above so the
+ * min-gap scheduling there can delay a call without duplicating this. */
+function dispatchSpeak(text, queue) {
+  if (state.voiceMode === 'off') return; // may have been turned off while this queued line was waiting its turn
 
   if (isNativePlatform()) {
     // Confirmed live via the on-screen debug log: 'speechSynthesis' in
@@ -8163,7 +8199,12 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   if (isNativePlatform()) setPipNavigating(false).catch(() => {}); // see the matching call in startNavigation
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  // Stops whatever's still speaking (the arrival/deviation/turn prompt
+  // that triggered this call, most often) — same native-vs-web split as
+  // the voice-mode toggle above; speechSynthesis.cancel() alone is a
+  // silent no-op on the native shell.
+  if (isNativePlatform()) stopNative().catch(() => {}); // best-effort — ending navigation shouldn't be blocked by this
+  else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   clearTraveledRouteSegment();
   resetTrafficTracking();
   state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
@@ -8199,10 +8240,10 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
       // give no visual confirmation at all that the trip actually ended —
       // the spoken arrival announcement alone isn't reliable (muted
       // device, hearing impaired, noisy environment, or even cut short by
-      // this function's own speechSynthesis.cancel() above, confirmed
-      // live: the utterance can get canceled just milliseconds after it
-      // starts, before finishing). Same plain toast this app showed before
-      // the summary panel existed.
+      // this function's own cancel/stopNative() above, confirmed live: the
+      // utterance can get canceled just milliseconds after it starts,
+      // before finishing). Same plain toast this app showed before the
+      // summary panel existed.
       showStatus(summary.arrived ? 'You have arrived at your destination.' : 'Trip ended.', 'success');
     }
   }

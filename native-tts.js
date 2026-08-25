@@ -84,3 +84,24 @@ export function speakNative(text, { queue = false } = {}) {
   promise.finally(release).catch(() => {});
   return promise;
 }
+
+/** Immediately stops whatever the native TTS engine is currently speaking
+ * and clears anything still queued behind it — the native counterpart to
+ * window.speechSynthesis.cancel(), which only ever silences the web path
+ * and is a silent no-op here (Android's WebView has no Web Speech
+ * Synthesis API at all — see speak() in app.js). Without this, turning
+ * voice guidance off mid-sentence (the Settings/map-corner toggle) left
+ * whatever was already playing keep going regardless on the native shell.
+ * Also releases every currently-pending ducking request, mirroring the
+ * flush-strategy path above: the plugin's own stop() clears its request
+ * queue with no onDone/onError for whatever was mid-flight, so that
+ * utterance's JS promise would otherwise never settle on its own, leaking
+ * a ducking request that never gets released. */
+export async function stopNative() {
+  try {
+    await TextToSpeech.stop();
+  } finally {
+    pendingReleases.forEach((release) => release());
+    pendingReleases.clear();
+  }
+}

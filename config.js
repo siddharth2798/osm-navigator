@@ -172,6 +172,16 @@ export const CONFIG = {
   // far callout → 140m, near callout → 50m.
   VOICE_DEFAULT_SPEED_MPS: 10,
 
+  // Minimum silence enforced between two separate QUEUED spoken lines (see
+  // speak() in app.js) — independent voice cues (a walk-mode incline
+  // heads-up and a turn prompt, say) can each decide to speak on the very
+  // same GPS tick with no coordination between them; without this, the
+  // TTS engine plays them back to back with literally zero gap, which
+  // reads as one garbled run-on line rather than two separate prompts.
+  // Doesn't apply to a flush (queue: false) — those interrupt immediately
+  // by design.
+  VOICE_MIN_GAP_MS: 2000,
+
   // Once the live position is within this many metres of the destination,
   // navigation ends automatically (same as tapping "End") and "You have
   // arrived at your destination" is spoken — see updateActiveManeuver.
