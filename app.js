@@ -4577,8 +4577,9 @@ async function appendQuickPicks(listEl, onChanged) {
 /** Focus handler shared by the search box and the from/to fields: shown only
  * when the field is genuinely empty, so it can never clobber an existing
  * pick or interrupt someone mid-search. `locationOptionSide` ('from' | 'to'
- * | null) controls whether a "Use my current location" row is prepended,
- * and which side it applies to when tapped. */
+ * | 'search' | null) controls whether a "Use my current location" row is
+ * prepended, and which side it applies to when tapped — see
+ * useCurrentLocationFor. */
 async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } = {}) {
   if (inputEl.value.trim()) return;
   const render = () => showQuickPicksFor(inputEl, listEl, { locationOptionSide });
@@ -4596,12 +4597,13 @@ async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } 
   if (listEl.children.length) showSuggestionList(listEl);
 }
 
-/** Fetches a fresh GPS fix and applies it to whichever side is asked for —
- * shared by the from-field and to-field "Use my current location" quick
- * picks (previously two near-duplicate functions, one from-only). */
-function useCurrentLocationFor(side) {
-  const inputEl = side === 'from' ? el.fromInput : el.toInput;
-  const suggestionsEl = side === 'from' ? el.fromSuggestions : el.toSuggestions;
+/** Fetches a fresh GPS fix into `inputEl`, then hands the resulting place to
+ * `apply` — shared by the from-field/to-field directions quick picks and
+ * the main search box's own "Use my current location" quick pick (see
+ * useCurrentLocationFor below). getCurrentPosition() is what actually
+ * triggers the browser/OS location-permission prompt the first time it's
+ * called — nothing extra needed here to ask for it. */
+function useCurrentLocationInto(inputEl, suggestionsEl, apply) {
   hideSuggestionList(suggestionsEl); // not a direct classList toggle — needs to forgetBackLayerIfTop() too, see showSuggestionList
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location.', 'error');
@@ -4611,14 +4613,30 @@ function useCurrentLocationFor(side) {
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       const place = { label: CURRENT_LOCATION_LABEL, lat: pos.coords.latitude, lon: pos.coords.longitude };
-      if (side === 'from') state.from = place; else state.to = place;
       inputEl.value = CURRENT_LOCATION_LABEL;
-      updatePlanningMarkers();
+      apply(place);
       clearStatus();
     },
     () => showStatus('Could not get your location. Check location permissions.', 'error'),
     CONFIG.GEOLOCATION_OPTIONS,
   );
+}
+
+/** `side` is 'from'/'to' (a directions field — see showQuickPicksFor's
+ * locationOptionSide) or 'search' (the plain single search box): pins your
+ * current GPS location as the picked place, exactly like tapping any other
+ * search result would, instead of filling in a directions field. */
+function useCurrentLocationFor(side) {
+  if (side === 'search') {
+    useCurrentLocationInto(el.placeInput, el.placeSuggestions, (place) => selectPlace(place));
+    return;
+  }
+  const inputEl = side === 'from' ? el.fromInput : el.toInput;
+  const suggestionsEl = side === 'from' ? el.fromSuggestions : el.toSuggestions;
+  useCurrentLocationInto(inputEl, suggestionsEl, (place) => {
+    if (side === 'from') state.from = place; else state.to = place;
+    updatePlanningMarkers();
+  });
 }
 
 /** Recent trips whose origin/destination was "Your location" at save time
@@ -4642,7 +4660,7 @@ function resolvePlaceForReuse(label, lat, lon) {
   });
 }
 
-el.placeInput.addEventListener('focus', () => showQuickPicksFor(el.placeInput, el.placeSuggestions));
+el.placeInput.addEventListener('focus', () => showQuickPicksFor(el.placeInput, el.placeSuggestions, { locationOptionSide: 'search' }));
 el.toInput.addEventListener('focus', () => showQuickPicksFor(el.toInput, el.toSuggestions, { locationOptionSide: 'to' }));
 el.fromInput.addEventListener('focus', () => showQuickPicksFor(el.fromInput, el.fromSuggestions, { locationOptionSide: 'from' }));
 
@@ -7225,7 +7243,19 @@ function populateVoiceSelect(voices) {
 if (isNativePlatform()) {
   primeNativeVoices()
     .then((voices) => populateVoiceSelect(voices))
-    .catch((err) => resolverDebugLog(`Voice picker: failed to load native voices — ${err.message}`, 'error'));
+    .catch((err) => {
+      resolverDebugLog(`Voice picker: failed to load native voices — ${err.message}`, 'error');
+      // Seen on some OEM builds: the device's TTS engine returns a null
+      // voice set instead of an empty one, which the native plugin can only
+      // surface as a rejected promise here — there's no voice list to ever
+      // populate, so the dropdown would otherwise just sit empty forever.
+      // Turn-by-turn voice guidance itself is unaffected (speakNative()
+      // doesn't need this list — it just falls back to the device's own
+      // default voice); only the ability to pick a different one is
+      // unavailable on a device like this, so the whole row is hidden
+      // instead of showing a picker with nothing in it.
+      el.voiceSelect?.closest('.docs-toggle-row')?.classList.add('hidden');
+    });
 } else {
   populateVoiceSelect(cachedVoices); // may still be empty here — voiceschanged repopulates once the browser's list is ready
 }
