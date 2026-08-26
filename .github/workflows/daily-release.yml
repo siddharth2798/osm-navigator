@@ -1,14 +1,12 @@
-name: Daily Release
+name: Release
 
 on:
-  schedule:
-    # GitHub Actions uses UTC.
-    # If you want 5:00 PM IST: '30 11 * * *'
-    - cron: '30 11 * * *'
+  push:
+    branches: [main]
   workflow_dispatch: # Allows you to trigger it manually for testing
 
 jobs:
-  create-daily-release:
+  create-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Required for GitHub Actions to create a release
@@ -17,57 +15,37 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required to fetch git history so we can check past commits
-
-      - name: Check for commits in the last 24 hours
-        id: check_commits
-        run: |
-          # Look for commits in the last 24 hours
-          COMMITS=$(git log --since="24 hours ago" --oneline)
-
-          if [ -z "$COMMITS" ]; then
-            echo "No new commits in the last 24 hours. Skipping release."
-            echo "has_commits=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Found new commits:"
-            echo "$COMMITS"
-            echo "has_commits=true" >> "$GITHUB_OUTPUT"
-          fi
+          fetch-depth: 0 # Required so gh release's --generate-notes can diff against the previous tag
 
       - name: Generate Tag Name
-        if: steps.check_commits.outputs.has_commits == 'true'
         id: tag
         run: |
-          # Creates a tag like "v2023-10-25"
+          # Creates a tag like "v2023-10-25" — same-day pushes land on the
+          # same tag/release (see the "Create GitHub Release" step below,
+          # which uploads onto the existing release instead of failing).
           echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
-        if: steps.check_commits.outputs.has_commits == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22 # @capacitor/cli 8.x requires >=22
 
       - name: Install npm dependencies
-        if: steps.check_commits.outputs.has_commits == 'true'
         run: npm ci
 
       - name: Sync web assets into the Android shell
-        if: steps.check_commits.outputs.has_commits == 'true'
         run: npm run cap:sync
 
       - name: Set up JDK 21
-        if: steps.check_commits.outputs.has_commits == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21' # @capacitor/android 8.x's own build.gradle requires Java 21 source/target compatibility
 
       - name: Set up Android SDK
-        if: steps.check_commits.outputs.has_commits == 'true'
         uses: android-actions/setup-android@v3
 
       - name: Set up Gradle
-        if: steps.check_commits.outputs.has_commits == 'true'
         uses: gradle/actions/setup-gradle@v4
 
       # Only present on this repo (not on a fork) — see the "Building a
@@ -76,7 +54,7 @@ jobs:
       # created, just without an APK attached.
       - name: Decode the release keystore
         id: keystore
-        if: steps.check_commits.outputs.has_commits == 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -96,7 +74,6 @@ jobs:
           ./gradlew assembleRelease --no-daemon -PappVersionCode=${{ github.run_number }}
 
       - name: Create GitHub Release
-        if: steps.check_commits.outputs.has_commits == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -111,16 +88,15 @@ jobs:
 
           TAG="v${{ steps.tag.outputs.date }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-running workflow_dispatch on a day the cron already ran
-            # (or a retry after a failed attempt) would otherwise collide
-            # on the date-based tag — update the existing release's asset
-            # instead of failing.
+            # A day with more than one push (or a manual workflow_dispatch
+            # re-run) would otherwise collide on the date-based tag —
+            # update the existing release's asset instead of failing.
             if [ ${#ASSETS[@]} -gt 0 ]; then
               gh release upload "$TAG" "${ASSETS[@]}" --clobber
             fi
           else
             gh release create "$TAG" \
-              --title "Daily Release ${{ steps.tag.outputs.date }}" \
+              --title "Release ${{ steps.tag.outputs.date }}" \
               --generate-notes \
               "${ASSETS[@]}"
           fi

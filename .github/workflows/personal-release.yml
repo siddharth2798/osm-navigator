@@ -2,8 +2,8 @@ name: Self-Hosted Valhalla Release
 
 # Manual only, deliberately — this branch changes far less often than main
 # (a personal config override, not day-to-day feature work), so there's no
-# cron/daily trigger here the way main's daily-release.yml has. Trigger
-# with: gh workflow run personal-release.yml --ref personal/self-hosted-valhalla
+# push trigger here the way main's daily-release.yml has. Trigger with:
+# gh workflow run personal-release.yml --ref personal/self-hosted-valhalla
 # (the --ref matters — workflow_dispatch defaults to the repo's default
 # branch otherwise, which would build main's config instead of this one).
 on:

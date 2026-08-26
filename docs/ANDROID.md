@@ -16,7 +16,7 @@ npx cap open android         # opens the project in Android Studio
 
 **Producing a release build**: `npx cap open android` gives a debug build for USB/emulator testing. A signed release APK needs your own keystore — this repo doesn't include one (never commit a keystore). Use Android Studio's **Build → Generate Signed Bundle/APK** wizard, or see [Capacitor's guide](https://capacitorjs.com/docs/android/deploying-to-google-play).
 
-**CI-built APK** (`.github/workflows/daily-release.yml`): builds and attaches `osm-navigator.apk` to each day's release automatically — this is what the download link above always points at. Signs with the same keystore you'd use locally, read from four repo secrets so the keystore itself is never committed:
+**CI-built APK** (`.github/workflows/daily-release.yml`): builds and attaches `osm-navigator.apk` to a release on every push to `main` — this is what the download link above always points at. Multiple pushes on the same day update that same day's release rather than creating a new one. Signs with the same keystore you'd use locally, read from four repo secrets so the keystore itself is never committed:
 
 ```
 base64 -i your-release-key.jks | gh secret set ANDROID_KEYSTORE_BASE64
@@ -25,7 +25,7 @@ gh secret set ANDROID_KEY_ALIAS --body "..."
 gh secret set ANDROID_KEY_PASSWORD --body "..."
 ```
 
-Without these, the daily release is still created, just without an APK attached.
+Without these, the release is still created, just without an APK attached.
 
 Also worth knowing: `@capacitor-community/background-geolocation`'s notification text is set once and can't update live afterward — [`@transistorsoft/capacitor-background-geolocation`](https://github.com/transistorsoft/capacitor-background-geolocation) supports that, at the cost of being a commercial plugin.
 
