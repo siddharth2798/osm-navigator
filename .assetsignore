@@ -18,6 +18,14 @@ package.json
 package-lock.json
 .git/
 
+# Local dev state — Miniflare's cache/state directory and the file that
+# actually holds real API keys for local `wrangler dev` testing (see
+# README). Neither is meant to exist at deploy time, but excluding them
+# here means a deploy run from a directory that still has one can't
+# accidentally publish it as a static asset.
+.wrangler/
+.dev.vars
+
 # worker.js is bundled directly via wrangler.jsonc's "main" field, and
 # functions/ + lib/ are server-side source (a Pages Function entry point and
 # the module it shares with worker.js) — none of these are meant to be
