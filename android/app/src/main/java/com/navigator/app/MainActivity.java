@@ -90,12 +90,20 @@ public class MainActivity extends BridgeActivity {
    * identically whether the app was already open or not — the PWA path is
    * itself always a fresh navigation, never a live hand-off, so this just
    * matches it instead of adding a second, native-only delivery mechanism. */
+  // A real shared Google Maps link is at most a few hundred characters —
+  // this is just a sanity ceiling against whatever arbitrary text another
+  // app's Share sheet hands over, not a limit that legitimate shares ever
+  // approach.
+  private static final int MAX_SHARE_TEXT_LENGTH = 4096;
+
   private void handleShareIntent(Intent intent) {
     if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return;
     if (!"text/plain".equals(intent.getType())) return;
     String text = intent.getStringExtra(Intent.EXTRA_TEXT);
     if (text == null || text.trim().isEmpty()) return;
+    if (text.length() > MAX_SHARE_TEXT_LENGTH) text = text.substring(0, MAX_SHARE_TEXT_LENGTH);
     String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+    if (title != null && title.length() > MAX_SHARE_TEXT_LENGTH) title = title.substring(0, MAX_SHARE_TEXT_LENGTH);
     Uri.Builder url = Uri.parse("https://localhost/index.html").buildUpon().appendQueryParameter("text", text);
     if (title != null && !title.trim().isEmpty()) url.appendQueryParameter("title", title);
     String finalUrl = url.build().toString();

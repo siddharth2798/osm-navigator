@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Unused today — nothing in this app calls FileProvider.getUriForFile()
+     yet (Capacitor boilerplate, kept for a future GPX-export/share-a-
+     screenshot feature). Scoped to dedicated subdirectories rather than the
+     stock template's `path="."` (the entire external/cache storage root),
+     so whenever that feature lands it only ever exposes what it explicitly
+     writes there, not everything else on external/cache storage. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
-    <cache-path name="my_cache_images" path="." />
+    <external-path name="shared_files" path="shared/" />
+    <cache-path name="shared_cache_files" path="shared/" />
 </paths>

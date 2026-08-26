@@ -481,6 +481,20 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// escapeHtml() only escapes HTML metacharacters — it doesn't stop a
+// `javascript:` (or other non-http(s)) value from being written into an
+// href and executing on click. Used wherever a URL comes from a
+// community-editable upstream source (Open Charge Map operator links)
+// rather than this app's own code.
+function isSafeHttpUrl(value) {
+  try {
+    const url = new URL(value, location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // Valhalla's maneuver `type` is a numeric enum (kLeft, kSharpRight, kUturnLeft,
 // etc.) — map it to a small set of icon shapes so the turn list and the
 // "next turn" banner read at a glance, the way Google Maps' arrow icons do,
@@ -3834,7 +3848,7 @@ function renderEvDetailsCard(evDetails) {
     ? `Reported ${statusLabel.toLowerCase()} · ${statusAge ? `checked ${statusAge}` : 'check-in date unknown'}`
     : 'Status not recently reported';
 
-  if (operatorWebsite) {
+  if (operatorWebsite && isSafeHttpUrl(operatorWebsite)) {
     el.evOperatorLink.href = operatorWebsite;
     el.evOperatorLink.classList.remove('hidden');
   } else {
@@ -3875,7 +3889,8 @@ function renderEvDetailsPanel(label, evDetails) {
   const operatorLines = [];
   if (operatorName) operatorLines.push(escapeHtml(operatorName));
   if (operatorPhone) operatorLines.push(escapeHtml(operatorPhone));
-  if (operatorWebsite) operatorLines.push(`<a href="${escapeHtml(operatorWebsite)}" target="_blank" rel="noopener">${escapeHtml(operatorWebsite)}</a>`);
+  if (operatorWebsite && isSafeHttpUrl(operatorWebsite)) operatorLines.push(`<a href="${escapeHtml(operatorWebsite)}" target="_blank" rel="noopener">${escapeHtml(operatorWebsite)}</a>`);
+  else if (operatorWebsite) operatorLines.push(escapeHtml(operatorWebsite));
   el.evDetailsPanelOperator.innerHTML = operatorLines.length ? operatorLines.map((l) => `<div>${l}</div>`).join('') : '<div>Not reported</div>';
 
   const costLines = [];
