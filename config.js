@@ -172,14 +172,21 @@ export const CONFIG = {
   // far callout → 140m, near callout → 50m.
   VOICE_DEFAULT_SPEED_MPS: 10,
 
-  // Minimum silence enforced between two separate QUEUED spoken lines (see
-  // speak() in app.js) — independent voice cues (a walk-mode incline
-  // heads-up and a turn prompt, say) can each decide to speak on the very
-  // same GPS tick with no coordination between them; without this, the
-  // TTS engine plays them back to back with literally zero gap, which
-  // reads as one garbled run-on line rather than two separate prompts.
-  // Doesn't apply to a flush (queue: false) — those interrupt immediately
-  // by design.
+  // Minimum silence enforced AFTER one spoken line finishes before the next
+  // QUEUED line is allowed to start (see speak()/dispatchSpeak() in app.js)
+  // — independent voice cues (a walk-mode incline heads-up and a turn
+  // prompt, say) can each decide to speak on the very same GPS tick with no
+  // coordination between them; without this, the TTS engine plays them
+  // back to back with literally zero gap, which reads as one garbled
+  // run-on line rather than two separate prompts. Chained onto each
+  // utterance's real completion (native's onDone / the web path's onend),
+  // not a flat per-dispatch timer — a flat timer shorter than how long a
+  // real phrase takes to speak lets a backlog build silently across a
+  // whole drive, so what you actually hear ends up lagging further and
+  // further behind when it was supposed to play. Applies after a flush
+  // (queue: false) too — a flush's OWN dispatch is still immediate, but
+  // anything queued right behind it still waits this long past the
+  // flush's own completion before starting.
   VOICE_MIN_GAP_MS: 2000,
 
   // Once the live position is within this many metres of the destination,

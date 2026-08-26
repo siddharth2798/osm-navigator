@@ -7268,35 +7268,46 @@ if (el.voiceSelect) {
   });
 }
 
-// See CONFIG.VOICE_MIN_GAP_MS — the earliest time the next QUEUED spoken
-// line is allowed to actually dispatch. Not exact end-of-speech timing
-// (this app doesn't track that for either the web or native TTS path);
-// just a practical stagger that's already enough to fix independent voice
-// cues (an incline heads-up and a turn prompt, say) landing on the same
-// GPS tick and running together with zero gap between them.
-let voiceNextAvailableAt = 0;
+// See CONFIG.VOICE_MIN_GAP_MS for what this pause is for. Resolves it via
+// each utterance's REAL completion signal (dispatchSpeak's returned
+// promise), not a flat per-dispatch timer — a flat timer shorter than how
+// long a real phrase actually takes to speak let a backlog build silently
+// across a whole drive: each new line got handed to the TTS engine's own
+// queue before the previous one had actually finished, so what you
+// eventually heard lagged further and further behind when it was supposed
+// to play (confirmed as the cause of turn prompts arriving "at the last
+// minute" on a real multi-turn drive). Chaining onto real completion times
+// instead means the queue can never fall behind its own dispatch rate.
+function voiceGapDelay() {
+  return new Promise((resolve) => setTimeout(resolve, CONFIG.VOICE_MIN_GAP_MS));
+}
+
+// Every QUEUED voice line chains onto this — starts pre-resolved so the
+// very first call dispatches immediately. dispatchSpeak() always resolves
+// (never rejects, see below), so one failed utterance can never wedge
+// every queued line behind it forever.
+let voiceQueueTail = Promise.resolve();
 
 function speak(text, { queue = false } = {}) {
   if (state.voiceMode === 'off') return;
-  const now = Date.now();
   if (!queue) {
     // A flush always dispatches immediately (it's meant to interrupt right
-    // away), but still pushes the gap forward so anything queued right
-    // behind it still waits its own turn rather than piling on top.
-    voiceNextAvailableAt = now + CONFIG.VOICE_MIN_GAP_MS;
-    dispatchSpeak(text, queue);
+    // away) — but still resets the queue tail to wait for THIS utterance's
+    // real completion (plus the usual gap), so anything queued right
+    // behind it still waits its own turn rather than piling on top of it.
+    voiceQueueTail = dispatchSpeak(text, queue).then(voiceGapDelay);
     return;
   }
-  const startAt = Math.max(now, voiceNextAvailableAt);
-  voiceNextAvailableAt = startAt + CONFIG.VOICE_MIN_GAP_MS;
-  if (startAt <= now) dispatchSpeak(text, queue);
-  else setTimeout(() => dispatchSpeak(text, queue), startAt - now);
+  voiceQueueTail = voiceQueueTail.then(() => dispatchSpeak(text, queue)).then(voiceGapDelay);
 }
 
 /** The actual speak-it-now logic, split out from speak() above so the
- * min-gap scheduling there can delay a call without duplicating this. */
+ * queue-chaining there can wait on it without duplicating it. Returns a
+ * promise that resolves once the utterance has genuinely finished speaking
+ * (or failed, or was skipped) — never rejects, so speak()'s chain never
+ * gets stuck on a bad utterance. */
 function dispatchSpeak(text, queue) {
-  if (state.voiceMode === 'off') return; // may have been turned off while this queued line was waiting its turn
+  if (state.voiceMode === 'off') return Promise.resolve(); // may have been turned off while this queued line was waiting its turn
 
   if (isNativePlatform()) {
     // Confirmed live via the on-screen debug log: 'speechSynthesis' in
@@ -7306,13 +7317,17 @@ function dispatchSpeak(text, queue) {
     // deliberately left untouched and web/PWA-only; the shell always uses
     // real native TTS instead (see native-tts.js).
     resolverDebugLog(`speak() [native]: "${text}"${queue ? ' (queued)' : ''}`);
-    speakNative(text, { queue }).catch((err) => resolverDebugLog(`speak() [native]: threw "${err.message}" for "${text}"`, 'error'));
-    return;
+    // speakNative()'s promise resolves once the device has actually
+    // FINISHED speaking this line (the plugin's own onDone callback, fired
+    // by Android's UtteranceProgressListener — not merely "started" or
+    // "handed to the queue"), so chaining on it is a real completion
+    // signal, not a guess.
+    return speakNative(text, { queue }).catch((err) => resolverDebugLog(`speak() [native]: threw "${err.message}" for "${text}"`, 'error'));
   }
 
   if (!('speechSynthesis' in window)) {
     resolverDebugLog('speak(): speechSynthesis not supported on this WebView/browser — voice guidance unavailable.', 'error');
-    return; // silently unsupported, never crashes navigation
+    return Promise.resolve(); // silently unsupported, never crashes navigation
   }
   try {
     // Android has been observed leaving the synthesis queue stuck 'paused'
@@ -7344,11 +7359,20 @@ function dispatchSpeak(text, queue) {
       || cachedVoices.find((v) => v.lang && v.lang.startsWith('en'))
       || cachedVoices[0];
     if (voice) utterance.voice = voice;
-    utterance.onerror = (e) => resolverDebugLog(`speak(): utterance error "${e.error}" for "${text}"`, 'error');
     resolverDebugLog(`speak(): "${text}" (voice=${voice ? voice.name : '(default, none resolved)'}, ${cachedVoices.length} voice(s) known)`);
-    window.speechSynthesis.speak(utterance);
+    return new Promise((resolve) => {
+      // onend/onerror both resolve (never reject) — a cancelled or failed
+      // utterance shouldn't wedge every queued line behind it forever.
+      utterance.onend = () => resolve();
+      utterance.onerror = (e) => {
+        resolverDebugLog(`speak(): utterance error "${e.error}" for "${text}"`, 'error');
+        resolve();
+      };
+      window.speechSynthesis.speak(utterance);
+    });
   } catch (err) {
     resolverDebugLog(`speak(): threw "${err.message}" for "${text}"`, 'error');
+    return Promise.resolve();
   }
 }
 
