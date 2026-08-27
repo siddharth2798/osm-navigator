@@ -8086,8 +8086,37 @@ function releaseWakeLock() {
 // The browser automatically releases the wake lock the instant the tab is
 // backgrounded/minimized — re-acquire it the moment it's visible again, but
 // only if a drive is still actually in progress.
+//
+// This same "visible again" moment is also where the live nav puck has been
+// observed to come back missing after a minimize/restore on the Android
+// shell (reported bug: route line and turn banner both fine, but no puck).
+// Two backgrounding paths both end with the WebView's own visibility
+// toggling — plain Home-button/app-switch (MainActivity.onPause immediately
+// un-pauses the WebView so JS keeps running, but does nothing about the
+// WebView's own hidden/visible transition) and native Picture-in-Picture
+// (NavPipPlugin/MainActivity.onPictureInPictureModeChanged sets the WebView
+// to View.GONE then back to View.VISIBLE, which is exactly the kind of
+// hide/show cycle known to leave a WebView's *hardware-composited* layers
+// (this marker included — `.maplibregl-marker` is translated via a CSS
+// `transform`, which Chromium promotes to its own compositor layer) stale
+// or dropped until something explicitly forces a fresh paint. The map's
+// own GL canvas repaints fine on its regular render loop, which is why the
+// route line and instructions were never affected — this is specific to
+// the marker's own compositor layer, not a general render freeze.
+// map.resize() re-measures the (possibly stale) container size MapLibre
+// last saw, and re-driving the puck through its normal update path with the
+// last known fix (rather than waiting for the next real GPS update, which
+// could be a while if the vehicle is stationary when the app comes back)
+// forces MapLibre to recompute the marker's on-screen transform and
+// re-apply it — cheap, idempotent, and exactly what the next real fix would
+// have done anyway, just not delayed until one arrives.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.navigating && !wakeLockSentinel) acquireWakeLock();
+  if (document.visibilityState !== 'visible') return;
+  if (state.navigating && !wakeLockSentinel) acquireWakeLock();
+  if (state.navigating && state.puckMarker && state.lastFix) {
+    map.resize();
+    updatePuck([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
+  }
 });
 
 async function startNavigation({ resuming = false } = {}) {
