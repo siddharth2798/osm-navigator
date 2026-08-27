@@ -189,6 +189,14 @@ export const CONFIG = {
   // flush's own completion before starting.
   VOICE_MIN_GAP_MS: 2000,
 
+  // How recent the LAST voice-mode toggle (either direction) has to be for
+  // the next one to skip its own unmute confirmation (see
+  // describeCurrentManeuverForUnmuteConfirmation in app.js) — a quick
+  // mute/unmute flick would otherwise speak the confirmation right on top
+  // of whatever was just silenced, sounding exactly like two back-to-back
+  // navigation prompts instead of a deliberate one-off check.
+  VOICE_MODE_TOGGLE_DEBOUNCE_MS: 2000,
+
   // Once the live position is within this many metres of the destination,
   // navigation ends automatically (same as tapping "End") and "You have
   // arrived at your destination" is spoken — see updateActiveManeuver.

@@ -2267,8 +2267,45 @@ function renderVoiceModeBtn() {
   el.voiceModeBtn.innerHTML = voiceModeIcon(state.voiceMode);
   el.voiceModeBtn.setAttribute('aria-label', VOICE_MODE_LABEL[state.voiceMode]);
 }
+
+/** What to say the moment voice guidance is switched back on mid-trip —
+ * turning it off then back on otherwise gives total silence until the
+ * upcoming maneuver's own far/near cue happens to cross its distance
+ * threshold on its own schedule, which (confirmed as a real gap, not a
+ * "nothing to say yet" false alarm) could be minutes away, leaving no way
+ * to tell the toggle actually worked. Deliberately a one-off confirmation,
+ * not routed through state.spokenFar/spokenNear — it doesn't mark either
+ * as done, so the normal timed cues for this same maneuver still fire on
+ * their own schedule afterward, however near or far that turn actually is.
+ * Returns null when there's nothing meaningful to confirm with (not
+ * navigating, or already on the final "arriving" stretch with no further
+ * maneuver ahead) — the toggle's own status toast is enough on its own
+ * then. */
+function describeCurrentManeuverForUnmuteConfirmation() {
+  if (!state.navigating || !state.route || state.traveledM == null) return null;
+  const maneuvers = state.route.maneuvers;
+  const nextIdx = state.currentManeuverIdx + 1 < maneuvers.length ? state.currentManeuverIdx + 1 : null;
+  if (nextIdx == null) return null;
+  const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - state.traveledM);
+  const instruction = maneuvers[nextIdx].instruction;
+  // formatDistanceForSpeech floors to the nearest 10m — anything closer
+  // than that would otherwise read as "In 0 meters, turn left" (same
+  // rounding quirk the real far/near cues already work around).
+  return distToNextM < 10 ? instruction : `In ${formatDistanceForSpeech(distToNextM)}, ${instruction}`;
+}
+
+// Guards the unmute confirmation above against a quick mute/unmute flick
+// (double-tapping the button, or muting then immediately regretting it) —
+// without this, that would sound exactly like two back-to-back navigation
+// prompts, which is the opposite of the point of the confirmation. Tracks
+// the last toggle in EITHER direction, not just unmutes, so a rapid
+// off→on→off→on sequence stays quiet throughout rather than only skipping
+// every other one.
+let lastVoiceModeToggleAt = 0;
+
 el.voiceModeBtn.addEventListener('click', () => {
   const nextIdx = (VOICE_MODE_ORDER.indexOf(state.voiceMode) + 1) % VOICE_MODE_ORDER.length;
+  const previousMode = state.voiceMode;
   state.voiceMode = VOICE_MODE_ORDER[nextIdx];
   renderVoiceModeBtn();
   // Switching to off mid-sentence shouldn't let the old prompt keep
@@ -2282,6 +2319,14 @@ el.voiceModeBtn.addEventListener('click', () => {
     window.speechSynthesis.cancel();
   }
   showStatus(VOICE_MODE_LABEL[state.voiceMode], 'info');
+
+  const now = Date.now();
+  const isQuickFlick = now - lastVoiceModeToggleAt < CONFIG.VOICE_MODE_TOGGLE_DEBOUNCE_MS;
+  lastVoiceModeToggleAt = now;
+  if (state.voiceMode === 'all' && previousMode === 'off' && !isQuickFlick) {
+    const confirmation = describeCurrentManeuverForUnmuteConfirmation();
+    if (confirmation) speak(confirmation);
+  }
 });
 renderVoiceModeBtn();
 
