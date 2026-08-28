@@ -4,11 +4,15 @@ This is an experimental, personal-only feature that lives on `personal/flight-tr
 
 ## How it works
 
-- The toggle button sits with voice/satellite in the left-hand control stack (plane icon). It's a session-only preference — off again the next time you load the app, same as voice guidance.
+- The toggle button sits with voice/satellite in the left-hand control stack (plane icon). It's a per-trip preference: switching it on survives a mid-trip reload/resume (e.g. Android reclaiming a backgrounded tab), but a genuinely new trip always starts with it off again, same as voice guidance defaulting fresh each time.
 - Only active while you're actually navigating (source → destination, live GPS). It does nothing while just browsing/planning.
 - Every 15 seconds (`CONFIG.FLIGHT_POLL_INTERVAL_MS`), the app asks this deployment's own `/api/flights` route for aircraft near your live position.
 - **"Crossing above me"** means horizontal ground-track distance — the distance from you to the point on the ground directly below the aircraft, not true 3D distance including altitude. A 3D check would almost never fire for a cruising airliner (they fly 9-12km up, far beyond any sane metre threshold). Altitude is shown in the alert as extra context, not part of the trigger.
+- The distance check doesn't just look at where an aircraft is *right now* — it projects the aircraft's reported track/ground-speed forward across the next poll interval and measures against that whole path (`aircraftApproachDistM` in `app.js`). A fast jet can cover several kilometres in one 15-second poll gap, well more than the overhead radius's diameter — checking only the instantaneous position could miss it crossing directly overhead between two samples entirely.
+- A stale position report (adsb.lol's own `seen_pos` field older than `CONFIG.FLIGHT_MAX_POSITION_AGE_S`, 30s by default — common for MLAT-derived fixes lagging behind real ADS-B) is excluded outright rather than trusted as current.
 - Get within `CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M` (8km by default) of a bundled airport and the behavior switches: instead of only alerting on an overhead crossing, every aircraft the query returns gets plotted on the map — useful for watching approach/departure traffic near an airport rather than just the one plane that happens to pass over you.
+- Tap an aircraft marker for its full detail (registration, altitude, speed, distance) in the same badge slot — it reverts to the normal overhead-alert summary on its own after `CONFIG.FLIGHT_DETAIL_DISPLAY_MS` (8s by default).
+- If `/api/flights` fails several times in a row (`CONFIG.FLIGHT_CHECKIN_FAIL_WARN_THRESHOLD`, 3 by default), a status message says so once per outage — a single dropped request is ordinary network noise and isn't worth interrupting you about.
 
 ## Data source
 

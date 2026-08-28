@@ -243,6 +243,8 @@ const state = {
   lastFlightCheckAt: null,      // Date.now() of the last check-in, or null before the first one
   flightCheckInFlight: false,   // guards against a slow check-in overlapping the next one
   flightOverheadAircraft: [],   // aircraft currently within FLIGHT_OVERHEAD_RADIUS_M (or still inside the hysteresis clear radius) — drives the badge
+  flightCheckinFailStreak: 0,   // consecutive failed check-ins — see noteFlightCheckinFailure
+  flightCheckinWarned: false,   // whether the current outage (if any) has already been surfaced to the user
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -1067,6 +1069,13 @@ mapLoad.then(() => {
       'text-halo-width': 1.2,
     },
   });
+  // Tap an aircraft for its full detail — see showAircraftDetail. Same
+  // click/hover-cursor pattern as route-alternates-line above.
+  map.on('click', 'flight-aircraft-dot', (e) => {
+    if (e.features.length) showAircraftDetail(e.features[0].properties);
+  });
+  map.on('mouseenter', 'flight-aircraft-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'flight-aircraft-dot', () => { map.getCanvas().style.cursor = ''; });
 });
 map.on('error', (e) => {
   // Most commonly a tile/style load failure — surface it once, plainly.
@@ -2911,6 +2920,28 @@ function maybeCheckFlights(traveledM, lngLat) {
   runFlightCheckin(lngLat);
 }
 
+/** Distance (metres) from `lngLat` to where aircraft `a` will be at ANY
+ * point between now and the NEXT scheduled check-in — not just where it is
+ * right now. A fast jet (400kt ≈ 3km per 15s poll gap) can cross straight
+ * through a radius as small as FLIGHT_OVERHEAD_RADIUS_M well within one
+ * poll interval; checking only the instantaneous position could miss it
+ * arriving and leaving between two samples entirely. Projects the
+ * aircraft's own reported track/ground-speed forward by one poll interval
+ * and measures distance to that whole line segment instead of just the
+ * current point. Falls back to a plain point distance when track/speed
+ * aren't reported (adsb.lol omits them for some contacts) — nothing to
+ * project with in that case. */
+function aircraftApproachDistM(lngLat, a) {
+  const current = [a.lon, a.lat];
+  if (typeof a.track !== 'number' || typeof a.gs !== 'number' || a.gs <= 0) {
+    return turf.distance(lngLat, current, { units: 'meters' });
+  }
+  const aheadHours = (CONFIG.FLIGHT_POLL_INTERVAL_MS / 1000) / 3600;
+  const aheadKm = a.gs * 1.852 * aheadHours; // gs is knots (nautical miles/hour), the ADS-B convention
+  const projected = turf.destination(current, aheadKm, a.track, { units: 'kilometers' }).geometry.coordinates;
+  return turf.pointToLineDistance(lngLat, turf.lineString([current, projected]), { units: 'meters' });
+}
+
 async function runFlightCheckin(lngLat) {
   state.flightCheckInFlight = true;
   try {
@@ -2921,39 +2952,85 @@ async function runFlightCheckin(lngLat) {
     const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
     if (!res.ok) {
       resolverDebugLog(`Flight tracking: /api/flights returned HTTP ${res.status}.`, 'error');
+      noteFlightCheckinFailure();
       return;
     }
     const body = await res.json();
-    const aircraft = Array.isArray(body.ac) ? body.ac : [];
+    // The round trip to adsb.lol itself succeeded the moment the response
+    // parses — mark that now, before touching the badge/map layer below.
+    // Otherwise an unrelated rendering hiccup in refreshFlightBadge/
+    // updateFlightLayer would land in the catch block further down and get
+    // miscounted as a DATA-SOURCE failure, which is exactly the wrong
+    // signal to warn the user about.
+    noteFlightCheckinSuccess();
+    const aircraft = (Array.isArray(body.ac) ? body.ac : []).filter((a) => (
+      typeof a.lat === 'number' && typeof a.lon === 'number'
+      // seen_pos: seconds since THIS aircraft's position last actually
+      // updated — can lag behind the response's own timestamp, especially
+      // for MLAT-derived fixes. A stale one isn't trustworthy for
+      // "crossing right now", so it's excluded rather than shown as current.
+      && !(typeof a.seen_pos === 'number' && a.seen_pos > CONFIG.FLIGHT_MAX_POSITION_AGE_S)
+    ));
 
-    const overhead = [];
-    aircraft.forEach((a) => {
-      if (typeof a.lat !== 'number' || typeof a.lon !== 'number') return;
-      const distM = turf.distance(lngLat, [a.lon, a.lat], { units: 'meters' });
-      a._distM = distM; // stashed for refreshFlightBadge's "closest one" pick — local bookkeeping only, never sent anywhere
-      const wasOverhead = state.flightOverheadAircraft.some((o) => o.hex === a.hex);
-      // Hysteresis: once an aircraft is flagged overhead, it stays flagged
-      // until it's past the WIDER clear radius, not just back over the
-      // original threshold — stops the badge flickering on/off across
-      // consecutive polls for one hovering right at the boundary.
-      const radius = wasOverhead ? CONFIG.FLIGHT_OVERHEAD_CLEAR_RADIUS_M : CONFIG.FLIGHT_OVERHEAD_RADIUS_M;
-      if (distM <= radius) overhead.push(a);
-    });
-    state.flightOverheadAircraft = overhead;
-    refreshFlightBadge();
-    updateFlightLayer(nearAirport ? aircraft : overhead);
+    // Deliberately its own try/catch, not covered by the outer one above:
+    // by this point the round trip to adsb.lol has already succeeded (see
+    // noteFlightCheckinSuccess() above) — a bug in the local overhead/
+    // hysteresis math or the map/badge rendering below is a real problem
+    // worth logging, but it says nothing about whether the DATA SOURCE is
+    // reachable, so it must never feed noteFlightCheckinFailure/trigger the
+    // "having trouble reaching the data source" warning.
+    try {
+      const overhead = [];
+      aircraft.forEach((a) => {
+        const distM = aircraftApproachDistM(lngLat, a);
+        a._distM = distM; // stashed for refreshFlightBadge/updateFlightLayer — local bookkeeping only, never sent anywhere
+        const wasOverhead = state.flightOverheadAircraft.some((o) => o.hex === a.hex);
+        // Hysteresis: once an aircraft is flagged overhead, it stays
+        // flagged until it's past the WIDER clear radius, not just back
+        // over the original threshold — stops the badge flickering on/off
+        // across consecutive polls for one hovering right at the boundary.
+        const radius = wasOverhead ? CONFIG.FLIGHT_OVERHEAD_CLEAR_RADIUS_M : CONFIG.FLIGHT_OVERHEAD_RADIUS_M;
+        if (distM <= radius) overhead.push(a);
+      });
+      state.flightOverheadAircraft = overhead;
+      refreshFlightBadge();
+      updateFlightLayer(nearAirport ? aircraft : overhead);
+    } catch (err) {
+      resolverDebugLog(`Flight tracking: rendering the result failed — ${err.message}`, 'error');
+    }
   } catch (err) {
     resolverDebugLog(`Flight tracking check-in failed: ${err.message}`, 'error');
+    noteFlightCheckinFailure();
   } finally {
     state.flightCheckInFlight = false;
   }
 }
 
+/** Warns once per outage, not once per failed poll — a single dropped
+ * request every CONFIG.FLIGHT_POLL_INTERVAL_MS is ordinary network noise,
+ * not worth a toast; CONFIG.FLIGHT_CHECKIN_FAIL_WARN_THRESHOLD in a row
+ * means the feature has actually stopped working, and silence there would
+ * just look identical to "nothing nearby" instead of a real failure. */
+function noteFlightCheckinFailure() {
+  state.flightCheckinFailStreak += 1;
+  if (state.flightCheckinFailStreak >= CONFIG.FLIGHT_CHECKIN_FAIL_WARN_THRESHOLD && !state.flightCheckinWarned) {
+    state.flightCheckinWarned = true;
+    showStatus('Flight tracking: having trouble reaching the data source. Still trying…', 'error');
+  }
+}
+function noteFlightCheckinSuccess() {
+  state.flightCheckinFailStreak = 0;
+  state.flightCheckinWarned = false; // a NEW outage later warns again
+}
+
 /** Single source of truth for the "plane overhead" alert — visible only
  * while state.flightOverheadAircraft is non-empty. Shows the closest one
- * if more than one currently qualifies, same "don't drown the user in
- * every possibility" spirit as showing one traffic ETA rather than every
- * sampled point. */
+ * if more than one currently qualifies, plus a "+N more" count rather than
+ * silently dropping the others — same "don't drown the user in every
+ * possibility, but don't hide that there IS more" spirit as showing one
+ * traffic ETA rather than every sampled point. Whatever this sets can be
+ * temporarily overwritten by showAircraftDetail (tapping a marker); its own
+ * revert timer calls back in here once that detail view's time is up. */
 function refreshFlightBadge() {
   const list = state.flightOverheadAircraft;
   if (!list.length) {
@@ -2963,8 +3040,34 @@ function refreshFlightBadge() {
   const closest = list.reduce((a, b) => (a._distM <= b._distM ? a : b));
   const type = describeAircraftType(closest.t);
   const altText = typeof closest.alt_baro === 'number' ? `, overhead at ${Math.round(closest.alt_baro).toLocaleString()} ft` : '';
-  el.flightBadgeText.textContent = `${describeCallsign(closest.flight)}${type ? ` · ${type}` : ''}${altText}`;
+  const moreText = list.length > 1 ? ` (+${list.length - 1} more)` : '';
+  el.flightBadgeText.textContent = `${describeCallsign(closest.flight)}${type ? ` · ${type}` : ''}${altText}${moreText}`;
   el.flightBadge.classList.remove('hidden');
+}
+
+// Tapping an aircraft marker (see map.on('click', 'flight-aircraft-dot', ...)
+// in mapLoad.then above) shows its full detail in the very same badge slot
+// for a few seconds, rather than a separate popup/card — this feature
+// already has one dedicated, always-in-the-same-place surface for aircraft
+// info, so reuse it instead of adding a second UI surface for one tap
+// interaction. Reverts back to the normal overhead-alert content on its
+// own once CONFIG.FLIGHT_DETAIL_DISPLAY_MS elapses.
+let flightDetailRevertTimer = null;
+/** `props` is a GeoJSON feature's properties object (see updateFlightLayer)
+ * — a MapLibre click event only ever hands back properties, never the
+ * original JS object runFlightCheckin built them from. */
+function showAircraftDetail(props) {
+  const type = describeAircraftType(props.t);
+  const parts = [describeCallsign(props.flight)];
+  if (type) parts.push(type);
+  if (props.r) parts.push(`reg ${props.r}`);
+  if (typeof props.alt_baro === 'number') parts.push(`${Math.round(props.alt_baro).toLocaleString()} ft`);
+  if (typeof props.gs === 'number') parts.push(`${Math.round(props.gs)} kt`);
+  if (typeof props.distM === 'number') parts.push(`${formatDistance(props.distM)} away`);
+  el.flightBadgeText.textContent = parts.join(' · ');
+  el.flightBadge.classList.remove('hidden');
+  clearTimeout(flightDetailRevertTimer);
+  flightDetailRevertTimer = setTimeout(refreshFlightBadge, CONFIG.FLIGHT_DETAIL_DISPLAY_MS);
 }
 
 /** Repaints the flight-aircraft GeoJSON source (see the map.addSource/
@@ -2972,13 +3075,22 @@ function refreshFlightBadge() {
  * relevant — every aircraft the query returned in near-airport/regional
  * mode, or just the ones triggering the overhead alert otherwise, so the
  * map doesn't clutter with cruising traffic far from your route when
- * you're nowhere near an airport. */
+ * you're nowhere near an airport. Carries enough raw fields in each
+ * feature's properties for showAircraftDetail to use on tap. */
 function updateFlightLayer(aircraftList) {
   const features = aircraftList
     .filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number')
     .map((a) => ({
       type: 'Feature',
-      properties: { label: describeCallsign(a.flight) },
+      properties: {
+        label: describeCallsign(a.flight),
+        flight: a.flight || null,
+        t: a.t || null,
+        r: a.r || null,
+        alt_baro: typeof a.alt_baro === 'number' ? a.alt_baro : null,
+        gs: typeof a.gs === 'number' ? a.gs : null,
+        distM: typeof a._distM === 'number' ? a._distM : null,
+      },
       geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
     }));
   map.getSource('flight-aircraft').setData({ type: 'FeatureCollection', features });
@@ -2986,12 +3098,16 @@ function updateFlightLayer(aircraftList) {
 
 /** Resets every piece of check-in bookkeeping and hides the badge/clears
  * the map layer. Called whenever navigation starts/ends, so a stale
- * overhead list or cadence timer from a previous trip never leaks into
- * the next one — same pattern as resetTrafficTracking right above. */
+ * overhead list, cadence timer, or outage warning from a previous trip
+ * never leaks into the next one — same pattern as resetTrafficTracking
+ * right above. */
 function resetFlightTracking() {
   state.lastFlightCheckAt = null;
   state.flightCheckInFlight = false;
   state.flightOverheadAircraft = [];
+  state.flightCheckinFailStreak = 0;
+  state.flightCheckinWarned = false;
+  clearTimeout(flightDetailRevertTimer);
   refreshFlightBadge();
   updateFlightLayer([]);
 }
@@ -6856,7 +6972,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   // working from in-memory state either way, this only affects whether it
   // survives a reload.
   try {
-    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: state.navigating });
+    await saveCurrentTrip({ route: built, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: state.navigating, flightTracking: state.flightTrackingEnabled });
   } catch (err) {
     showStatus('Could not save trip progress locally: ' + err.message, 'error');
   }
@@ -8218,7 +8334,7 @@ function resaveNavigatingTripThrottled() {
   const now = Date.now();
   if (now - lastTripResaveAt < 15000) return;
   lastTripResaveAt = now;
-  saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+  saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true, flightTracking: state.flightTrackingEnabled })
     .then(() => {
       // endNavigation()'s own clearCurrentTrip() call and this save each
       // independently open their own IndexedDB connection, with no ordering
@@ -8471,7 +8587,7 @@ async function startNavigation({ resuming = false } = {}) {
     // startup resume path (below) restarts live navigation instead of
     // dropping back to the "tap Start again" planning screen — see
     // onPositionUpdate for the periodic re-save that keeps this current.
-    saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true })
+    saveCurrentTrip({ route: state.route, from: state.from, to: state.to, stops: getStops(), travelMode: state.travelMode, navigating: true, flightTracking: state.flightTrackingEnabled })
       .catch(() => { /* non-fatal: worst case a reload lands on the planning screen instead of resuming live */ });
 
     forgetBackLayerIfTop(resetToRouteView); // closing poi-results (if open) by side effect of starting to drive
@@ -8729,6 +8845,18 @@ if (shareTargetText) {
         state.travelMode = saved.travelMode || 'drive';
         modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === state.travelMode));
         updateStopsUiForTravelMode();
+        // Otherwise session-only (see the flight-tracking toggle handler),
+        // but a mid-trip reload — e.g. Android discarding a backgrounded
+        // tab under memory pressure, same as the resume path just below —
+        // shouldn't silently turn a feature off the user already turned on
+        // for THIS trip without them doing anything. Harmless to set even
+        // when the feature is off on this deployment; the button/handler
+        // below just won't exist to read it.
+        state.flightTrackingEnabled = !!saved.flightTracking;
+        if (CONFIG.FLIGHT_TRACKING_ENABLED) {
+          el.flightTrackingBtn.classList.toggle('active', state.flightTrackingEnabled);
+          el.flightTrackingBtn.setAttribute('aria-label', `Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`);
+        }
 
         await awaitMapLoad();
         map.getSource('route').setData(state.route.lineFeature);

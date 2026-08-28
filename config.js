@@ -511,11 +511,16 @@ export const CONFIG = {
   // succeed.
   FLIGHT_TRACKING_ENABLED: true,
 
-  // "Crossing above me" means horizontal ground-track distance from your
-  // live position to the point directly below the aircraft — NOT true 3D
-  // distance including altitude. A 3D check would almost never fire for a
-  // cruising airliner (9-12km up is far beyond any sane metre threshold);
+  // "Crossing above me" means horizontal ground-track distance — NOT true
+  // 3D distance including altitude. A 3D check would almost never fire for
+  // a cruising airliner (9-12km up is far beyond any sane metre threshold);
   // altitude is shown in the alert as extra context instead of gating it.
+  // Specifically: the closest this radius ever gets checked against is the
+  // aircraft's own projected path over the NEXT poll interval (see
+  // aircraftApproachDistM in app.js), not just where it is right now — a
+  // fast jet can cross a radius this size well within one
+  // FLIGHT_POLL_INTERVAL_MS gap, so checking only the instantaneous
+  // position could miss it arriving and leaving between two samples.
   FLIGHT_OVERHEAD_RADIUS_M: 500,
   // A little hysteresis on the hide side only, so an aircraft sitting right
   // at the threshold across two consecutive polls doesn't flicker the
@@ -526,7 +531,8 @@ export const CONFIG = {
   // Polled on its own timer (not every GPS tick) — api.adsb.lol is a free
   // shared community resource with no formal rate limit published ("dynamic
   // based on load"), so this stays deliberately gentle rather than as fast
-  // as the GPS fixes actually arrive.
+  // as the GPS fixes actually arrive. Also doubles as the look-ahead window
+  // for aircraftApproachDistM's path projection — see FLIGHT_OVERHEAD_RADIUS_M.
   FLIGHT_POLL_INTERVAL_MS: 15000,
 
   // Query radius (nautical miles — adsb.lol's own unit) for an ordinary
@@ -534,6 +540,31 @@ export const CONFIG = {
   // could plausibly cross within FLIGHT_OVERHEAD_RADIUS_M soon are actually
   // useful to know about here.
   FLIGHT_QUERY_RADIUS_NM: 3,
+
+  // A position report older than this (adsb.lol's own 'seen_pos' field —
+  // seconds since THIS aircraft's position last actually updated, which can
+  // lag well behind the response's own timestamp, especially for
+  // MLAT-derived fixes) is excluded entirely rather than trusted as "where
+  // it is right now" — a stale fix defeats the whole point of an overhead
+  // alert. Loose enough to not discard normal ADS-B fixes (which update
+  // roughly once a second) while still catching a genuinely dead/lagging
+  // contact.
+  FLIGHT_MAX_POSITION_AGE_S: 30,
+
+  // Consecutive failed check-ins (bad HTTP status, network error, anything
+  // caught by runFlightCheckin's own try/catch) before warning about it —
+  // one dropped request every 15s is normal network noise, not worth a
+  // toast; several in a row means the feature has actually stopped working
+  // and silence would just look like "nothing nearby" instead. Only warns
+  // once per outage (see noteFlightCheckinFailure in app.js), not on every
+  // failure past this point.
+  FLIGHT_CHECKIN_FAIL_WARN_THRESHOLD: 3,
+
+  // How long a tapped aircraft's detail stays in the badge (see
+  // showAircraftDetail in app.js) before reverting to the normal
+  // overhead-alert content — long enough to actually read, short enough
+  // that it doesn't feel stuck showing one plane's detail forever.
+  FLIGHT_DETAIL_DISPLAY_MS: 8000,
 
   // Distance (metres) from a bundled airport (vendor/airports.json) that
   // switches from the single-overhead-alert view into the broader regional
