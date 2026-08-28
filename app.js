@@ -76,6 +76,7 @@ const el = {
   offlineBtn: document.getElementById('offline-btn'),
   savedBtn: document.getElementById('saved-btn'),
   categoryChips: document.getElementById('category-chips'),
+  openNowChip: document.getElementById('open-now-chip'),
   routeOptionsRow: document.getElementById('route-options'),
   elevationProfile: document.getElementById('elevation-profile'),
   routeChips: document.getElementById('route-chips'),
@@ -189,6 +190,7 @@ const state = {
   travelMode: 'drive', // 'drive' | 'walk' | 'transit' — transit has no live-navigation counterpart
   avoidTolls: false,   // drive-only; see costingOptionsFor()
   avoidHighways: false, // drive-only; see costingOptionsFor()
+  filterOpenNow: false, // category/along-route search modifier; see applyOpenNowFilter
   transitItinerary: null, // last-planned OTP2 itinerary, kept separate from `route` since it's a different shape
   pendingQuickPlaceKind: null, // 'home' | 'work' while the next place picked from search should be saved as a quick place, not routed to
   originMarker: null,
@@ -1955,6 +1957,104 @@ function decorateWithRouteDistance(results, lineFeature) {
     .sort((a, b) => a.distanceM - b.distanceM);
 }
 
+const OSM_DAY_CODES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']; // index matches Date#getDay()
+
+function dayCodeMatches(daySpec, dayIndex) {
+  return daySpec.split(',').some((part) => {
+    const range = part.split('-');
+    const startIdx = OSM_DAY_CODES.indexOf(range[0]);
+    if (startIdx === -1) return false;
+    if (range.length === 1) return startIdx === dayIndex;
+    const endIdx = OSM_DAY_CODES.indexOf(range[1]);
+    if (endIdx === -1) return false;
+    return startIdx <= endIdx
+      ? dayIndex >= startIdx && dayIndex <= endIdx
+      : dayIndex >= startIdx || dayIndex <= endIdx; // wraps the week, e.g. "Fr-Mo"
+  });
+}
+
+/** Best-effort "is this place open right now" from an OSM opening_hours
+ * string (see the openingHours field nominatimSearch/fetchNearbyChargingStations
+ * already attach to results) — for the "Open now" search filter. Covers
+ * the syntax that shows up in practice (day lists/ranges, comma-separated
+ * time ranges, overnight ranges spanning midnight, 24/7, off/closed) but
+ * deliberately not the full spec (public/school holidays, month ranges,
+ * sunrise/sunset, quoted comments) — those bail out to null rather than
+ * risk a confidently wrong answer.
+ *
+ * Returns true/false when it can actually tell, or null when it can't —
+ * callers (see applyOpenNowFilter) treat null as "unknown", never as
+ * closed: hiding a place that's actually open is a worse mistake than
+ * showing one whose hours this couldn't parse. */
+function isPlaceOpenNow(openingHours, now = new Date()) {
+  if (!openingHours) return null;
+  const value = openingHours.trim();
+  if (!value) return null;
+  if (/^24\/7$/i.test(value)) return true;
+  // PH/SH (public/school holiday) rules, quoted comments, month/week
+  // qualifiers, and sunrise/sunset keywords all change the meaning in ways
+  // a plain day+time parse would get wrong — bail out entirely rather than
+  // guess.
+  if (/"|PH|SH|week|sunrise|sunset|easter|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(value)) return null;
+
+  const nowDay = now.getDay();
+  const yesterday = (nowDay + 6) % 7;
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  let matchedToday = false;
+  let open = false;
+
+  for (const rawGroup of value.split(';')) {
+    const group = rawGroup.trim();
+    if (!group) continue;
+    const parts = group.split(/\s+/);
+    const looksLikeDaySpec = /^[A-Za-z]{2}(-[A-Za-z]{2})?(,[A-Za-z]{2}(-[A-Za-z]{2})?)*$/.test(parts[0]);
+    const daySpec = looksLikeDaySpec ? parts[0] : null;
+    const timeParts = daySpec ? parts.slice(1) : parts;
+    // No day-spec at all means the rule applies every day (e.g. a plain
+    // "09:00-18:00" tag).
+    const appliesToday = daySpec ? dayCodeMatches(daySpec, nowDay) : true;
+    const appliedYesterday = daySpec ? dayCodeMatches(daySpec, yesterday) : true;
+    if (!appliesToday && !appliedYesterday) continue;
+
+    const timeSpec = timeParts.join(' ');
+    if (/^(off|closed)$/i.test(timeSpec)) {
+      if (appliesToday) matchedToday = true;
+      continue;
+    }
+
+    for (const range of timeSpec.split(',')) {
+      const m = range.trim().match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+      if (!m) return null; // unrecognized time format — don't guess
+      const startMin = Number(m[1]) * 60 + Number(m[2]);
+      let endMin = Number(m[3]) * 60 + Number(m[4]);
+      if (endMin <= startMin) endMin += 24 * 60; // overnight, e.g. 22:00-02:00
+      if (appliesToday) {
+        matchedToday = true;
+        if (nowMinutes >= startMin && nowMinutes < endMin) open = true;
+      }
+      // Yesterday's overnight range can still cover right now (e.g. now is
+      // 01:00 Saturday, rule is "Fr 22:00-02:00") — check nowMinutes as if
+      // measured from yesterday's midnight instead.
+      if (appliedYesterday && endMin > 24 * 60) {
+        if (nowMinutes + 24 * 60 >= startMin && nowMinutes + 24 * 60 < endMin) open = true;
+      }
+    }
+  }
+
+  if (open) return true;
+  return matchedToday ? false : null;
+}
+
+/** Drops results confidently known to be closed right now, when the
+ * "Open now" filter chip is on — keeps anything open AND anything whose
+ * hours this couldn't determine (see isPlaceOpenNow), so a sparse or
+ * unparseable opening_hours tag never wrongly hides a real result. */
+function applyOpenNowFilter(results) {
+  if (!state.filterOpenNow) return results;
+  return results.filter((r) => isPlaceOpenNow(r.openingHours) !== false);
+}
+
 /** `&bounded=1&viewbox=...` — confirmed by direct testing that `bounded=1`
  * is what actually makes Nominatim honour the box as a hard filter; the
  * viewbox alone is just a soft ranking hint and gets routinely ignored
@@ -2345,6 +2445,11 @@ el.mapLayerBtn.addEventListener('click', () => {
 // privacy-conscious user who doesn't want this app's GPS position going
 // anywhere, even to a free/anonymous API.
 // ============================================================================
+// Codes 0/1 (WMO "clear sky"/"mainly clear" — no actual precipitation or
+// cloud phenomenon) are the only ones that read as visibly wrong at night:
+// a sun icon while driving in the dark. Everything else (cloud/rain/snow/
+// storm glyphs) doesn't carry a day/night connotation strong enough to be
+// worth a second variant, so only these two get one.
 const WEATHER_EMOJI_BY_CODE = {
   0: '☀️', 1: '☀️',
   2: '☁️', 3: '☁️', 45: '☁️', 48: '☁️',
@@ -2354,7 +2459,13 @@ const WEATHER_EMOJI_BY_CODE = {
   71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️', 85: '🌨️', 86: '🌨️',
   95: '⛈️', 96: '⛈️', 99: '⛈️',
 };
-function weatherEmojiForCode(code) {
+const CLEAR_SKY_CODES = new Set([0, 1]);
+/** `isDay` is Open-Meteo's own `current.is_day` (1/0) — computed server-side
+ * from the actual local sunrise/sunset at that lat/lon, not just a client
+ * clock guess, so it's correct in any timezone/season without this app
+ * needing to compute sun position itself. */
+function weatherEmojiForCode(code, isDay) {
+  if (CLEAR_SKY_CODES.has(code) && !isDay) return '🌙';
   return WEATHER_EMOJI_BY_CODE[code] || '☁️'; // unrecognized code — safe default rather than showing nothing
 }
 
@@ -2382,12 +2493,12 @@ async function fetchWeather(lat, lon, force = false) {
   const cacheKey = weatherCacheKey(lat, lon);
   if (!force && weatherCache.has(cacheKey)) return weatherCache.get(cacheKey);
   try {
-    const res = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`);
+    const res = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`);
     if (!res.ok) throw new Error('bad status');
     const data = await res.json();
     const result = {
       tempC: Math.round(data.current.temperature_2m),
-      emoji: weatherEmojiForCode(data.current.weather_code),
+      emoji: weatherEmojiForCode(data.current.weather_code, data.current.is_day),
     };
     weatherCache.set(cacheKey, result);
     return result;
@@ -4120,7 +4231,9 @@ const CHIP_CATEGORY_TAGS = {
   hotel: 'tourism=hotel',
 };
 
-el.categoryChips.querySelectorAll('.chip').forEach((btn) => {
+// [data-category], not the broader .chip — #open-now-chip is a filter
+// TOGGLE, not a search trigger, and gets its own listener below instead.
+el.categoryChips.querySelectorAll('.chip[data-category]').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const tag = CHIP_CATEGORY_TAGS[btn.dataset.category];
     const label = btn.dataset.label;
@@ -4132,18 +4245,33 @@ el.categoryChips.querySelectorAll('.chip').forEach((btn) => {
       // would actually use the chips while panning around the map.
       const center = map.getCenter();
       const rawResults = await categorySearchNear(tag, center.lat, center.lng);
-      const results = decorateWithDistance(rawResults, center.lat, center.lng);
+      const results = applyOpenNowFilter(decorateWithDistance(rawResults, center.lat, center.lng));
       // Picking any one result clears the rest of the candidate markers —
       // once you've chosen, the other options aren't relevant anymore.
       const onPick = (r) => { clearPoiMarkers(); selectPlace(r); };
       showPoiMarkers(results, onPick);
-      renderSuggestionResults(el.placeSuggestions, el.placeInput, results, onPick, `No ${label.toLowerCase()} found nearby. Try panning the map or zooming out.`);
+      const emptyMessage = state.filterOpenNow
+        ? `No ${label.toLowerCase()} found nearby that are open now. Try turning off "Open now".`
+        : `No ${label.toLowerCase()} found nearby. Try panning the map or zooming out.`;
+      renderSuggestionResults(el.placeSuggestions, el.placeInput, results, onPick, emptyMessage);
     } catch (err) {
       hideSuggestionList(el.placeSuggestions);
       showStatus(err.message, 'error');
     }
   });
 });
+
+if (el.openNowChip) {
+  el.openNowChip.addEventListener('click', () => {
+    state.filterOpenNow = !state.filterOpenNow;
+    el.openNowChip.classList.toggle('active', state.filterOpenNow);
+    el.openNowChip.setAttribute('aria-pressed', String(state.filterOpenNow));
+    // Affects the NEXT category/along-route search, not results already on
+    // screen — simplest behavior, and matches the natural "set the filter,
+    // then tap a category" order this row already reads left-to-right in.
+    showStatus(`"Open now" filter: ${state.filterOpenNow ? 'on' : 'off'}`, 'info');
+  });
+}
 
 // ---- "Search along the route" (shown once a drive route is planned) ------
 
@@ -4399,12 +4527,15 @@ function wireRouteChipButtons(container, { isPopover }) {
 
       try {
         const rawResults = await categorySearchAlongRoute(tag, scope.coords, scope.totalDistM, scope.waypoints);
-        const results = decorateWithRouteDistance(rawResults, scope.lineFeature);
+        const results = applyOpenNowFilter(decorateWithRouteDistance(rawResults, scope.lineFeature));
         const onPick = (r) => { clearPoiMarkers(); addStopFromPoi(r); };
         showPoiMarkers(results, onPick);
+        const noneFoundText = state.filterOpenNow
+          ? `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'} that are open now.`
+          : `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`;
         renderSuggestionResults(
           el.poiResultsList, null, results, onPick,
-          `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`,
+          noneFoundText,
           state.navigating ? 'ahead' : 'along your route',
         );
       } catch (err) {

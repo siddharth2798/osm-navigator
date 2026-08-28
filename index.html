@@ -100,6 +100,15 @@
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19 V8 M3 13 h18 v6 M7 13 v-2 a2 2 0 0 1 2-2 h1 a2 2 0 0 1 2 2 v2 M21 19 v-4"/></svg>
             <span>Hotels</span>
           </button>
+          <!-- A filter TOGGLE, not a search trigger like the category chips
+               above — deliberately excluded from CHIP_CATEGORY_TAGS'
+               data-category iteration in app.js and given its own click
+               handler + aria-pressed semantics instead. See
+               state.filterOpenNow/applyOpenNowFilter. -->
+          <button class="chip" type="button" id="open-now-chip" aria-pressed="false" aria-label="Filter results to open now">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7 v5 l4 2"/></svg>
+            <span>Open now</span>
+          </button>
         </div>
       </div>
 
