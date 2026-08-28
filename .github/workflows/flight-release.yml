@@ -1,11 +1,20 @@
 name: AeroNav Release
 
-# Manual only, deliberately — same reasoning as personal-release.yml
-# (the self-hosted-Valhalla branch): this is a personal, experimental
-# feature branch, not day-to-day main-line work. Trigger with:
-# gh workflow run flight-release.yml --ref personal/flight-tracking
-# (the --ref matters — workflow_dispatch defaults to the repo's default
-# branch otherwise, which would build main's app instead of this one).
+# Auto-builds on every push to personal/flight-tracking, same shape as
+# daily-release.yml on main — a push-triggered workflow is evaluated
+# against the copy of THIS FILE on the branch that was pushed to, not
+# main's copy, so the `branches: [personal/flight-tracking]` filter below
+# has to actually live in that branch's own .github/workflows/flight-release.yml
+# for the push trigger to fire there at all. It's mirrored onto main's copy
+# too purely so the file (and workflow_dispatch below) stays discoverable
+# from the default branch — see the next paragraph — but a push to main
+# itself never matches this branch filter, so it can't double-build main.
+#
+# workflow_dispatch stays as a manual fallback (e.g. re-running today's
+# build without a new commit): gh workflow run flight-release.yml --ref
+# personal/flight-tracking (the --ref matters — workflow_dispatch defaults
+# to the repo's default branch otherwise, which would build main's app
+# instead of this one).
 #
 # This file has to exist on main too, even though it only ever builds
 # personal/flight-tracking's code — gh workflow run --ref <branch> can
@@ -13,6 +22,8 @@ name: AeroNav Release
 # repository's default branch. Same reason personal-release.yml lives on
 # main despite only ever building the self-hosted-Valhalla branch.
 on:
+  push:
+    branches: [personal/flight-tracking]
   workflow_dispatch:
 
 jobs:
