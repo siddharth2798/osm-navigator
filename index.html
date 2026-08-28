@@ -43,6 +43,15 @@
     <!-- Status / error banner. Always plain language, never a raw exception. -->
     <div id="status-banner" class="hidden" role="status" aria-live="polite"></div>
 
+    <!-- Personal flight-tracking overlay — see CONFIG.FLIGHT_TRACKING_ENABLED
+         and refreshFlightBadge() in app.js. Text is set entirely from
+         app.js; only ever shown while the feature is toggled on AND an
+         aircraft is actually within range. -->
+    <div id="flight-badge" class="hidden" role="status" aria-live="polite">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 3 L4 10 L11 13 L14 21 Z M21 3 L11 13"/></svg>
+      <span id="flight-badge-text"></span>
+    </div>
+
     <div id="search-card">
       <!-- ============ Default: single search box (Google Maps "search here") ============ -->
       <div id="search-simple">
@@ -389,6 +398,14 @@
     <button id="map-layer-btn" class="fab small" type="button" aria-label="Switch to satellite view">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 3 L21 8 L12 13 L3 8 Z"/><path d="M3 12 L12 17 L21 12"/><path d="M3 16 L12 21 L21 16"/>
+      </svg>
+    </button>
+    <!-- Personal branch only — see CONFIG.FLIGHT_TRACKING_ENABLED in
+         config.js and the flight-tracking section of app.js. Starts hidden,
+         same reveal-if-configured pattern as #mapillary-toggle-btn above. -->
+    <button id="flight-tracking-btn" class="fab small hidden" type="button" aria-label="Flight tracking: off">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 3 L4 10 L11 13 L14 21 Z M21 3 L11 13"/>
       </svg>
     </button>
     <div id="weather-badge" class="weather-badge hidden" role="button" tabindex="0" aria-label="Refresh weather">

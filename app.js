@@ -126,6 +126,8 @@ const el = {
   navBannerDistance: document.getElementById('nav-banner-distance'),
   navSpeed: document.getElementById('nav-speed'),
   trafficBadge: document.getElementById('traffic-badge'),
+  flightBadge: document.getElementById('flight-badge'),
+  flightBadgeText: document.getElementById('flight-badge-text'),
   maneuverList: document.getElementById('maneuver-list'),
   offlinePanel: document.getElementById('offline-panel'),
   offlineCloseBtn: document.getElementById('offline-close-btn'),
@@ -168,6 +170,7 @@ const el = {
   effortBtn: document.getElementById('effort-btn'),
   voiceModeBtn: document.getElementById('voice-mode-btn'),
   mapLayerBtn: document.getElementById('map-layer-btn'),
+  flightTrackingBtn: document.getElementById('flight-tracking-btn'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -233,6 +236,13 @@ const state = {
   // traffic one's own); only startNavigation/endNavigation clear this, see
   // maybeRerouteForTraffic's own comment for why.
   lastTrafficRerouteAt: null,
+  // Personal flight-tracking overlay (see maybeCheckFlights/runFlightCheckin
+  // below) — a session-only toggle, not persisted, same as voiceMode. All
+  // reset together by resetFlightTracking() whenever navigation starts/ends.
+  flightTrackingEnabled: false,
+  lastFlightCheckAt: null,      // Date.now() of the last check-in, or null before the first one
+  flightCheckInFlight: false,   // guards against a slow check-in overlapping the next one
+  flightOverheadAircraft: [],   // aircraft currently within FLIGHT_OVERHEAD_RADIUS_M (or still inside the hysteresis clear radius) — drives the badge
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -1018,6 +1028,43 @@ mapLoad.then(() => {
       // every GTFS route_type its own hue.
       'line-color': ['match', ['get', 'mode'], 'BUS', '#3d8bfd', 'FERRY', '#06b6d4', '#a855f7'],
       'line-width': 5,
+    },
+  });
+
+  // Personal flight-tracking overlay (see runFlightCheckin/updateFlightLayer
+  // below) — a plain circle + text label rather than a rotated plane icon.
+  // A real rotated-heading icon would need map.loadImage/addImage for a
+  // sprite; a circle is enough for "is a plane near me" situational
+  // awareness and keeps this personal-branch feature's map code simple.
+  // Harmless to always add, same reasoning as transit-route above.
+  map.addSource('flight-aircraft', { type: 'geojson', data: emptyFeatureCollection() });
+  map.addLayer({
+    id: 'flight-aircraft-dot',
+    type: 'circle',
+    source: 'flight-aircraft',
+    paint: {
+      'circle-radius': 5,
+      'circle-color': '#3d8bfd',
+      'circle-stroke-width': 1.5,
+      'circle-stroke-color': '#fff',
+    },
+  });
+  map.addLayer({
+    id: 'flight-aircraft-label',
+    type: 'symbol',
+    source: 'flight-aircraft',
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 11,
+      'text-offset': [0, 1.2],
+      'text-anchor': 'top',
+      'text-allow-overlap': true,
+      'text-optional': true,
+    },
+    paint: {
+      'text-color': '#e8ecf3',
+      'text-halo-color': '#0d1420',
+      'text-halo-width': 1.2,
     },
   });
 });
@@ -2778,6 +2825,186 @@ function maybeCheckTraffic(traveledM) {
   state.lastTrafficCheckAt = now;
   state.lastTrafficCheckDistM = traveledM;
   runTrafficCheckin(traveledM, remainingM);
+}
+
+// ============================================================================
+// Personal flight-tracking overlay (not on main — see
+// CONFIG.FLIGHT_TRACKING_ENABLED in config.js and docs/FLIGHT_TRACKING.md).
+// Shows nearby aircraft on the map while navigating: an alert above the
+// search box when one crosses close to your live position, or every
+// aircraft the query returns once you're near a bundled airport. Backed by
+// api.adsb.lol via this app's own /api/flights proxy — see
+// lib/flights-proxy.js for why a proxy is needed with no secret involved
+// (it's purely a CORS relay, adsb.lol needs no API key today).
+// ============================================================================
+
+// Loaded once, lazily, the first time the feature is actually turned on —
+// no point spending ~650KB of static reference data (airports, aircraft
+// types, airline codes; see vendor/) on a session that never touches this
+// personal-branch-only feature.
+let flightRefData = null;
+let flightRefDataPromise = null;
+function loadFlightRefData() {
+  if (!flightRefDataPromise) {
+    flightRefDataPromise = Promise.all([
+      fetch('vendor/airports.json').then((r) => r.json()),
+      fetch('vendor/aircraft-types.json').then((r) => r.json()),
+      fetch('vendor/airline-codes.json').then((r) => r.json()),
+    ]).then(([airports, aircraftTypes, airlineCodes]) => {
+      flightRefData = { airports, aircraftTypes, airlineCodes };
+      return flightRefData;
+    }).catch((err) => {
+      resolverDebugLog(`Flight tracking: failed to load reference data — ${err.message}`, 'error');
+      flightRefDataPromise = null; // let the next check-in try again rather than being stuck failed for the rest of the session
+      throw err;
+    });
+  }
+  return flightRefDataPromise;
+}
+
+/** Readable "Ryanair 36JX" style label from adsb.lol's raw callsign
+ * ('flight' field, space-padded to 8 chars) — splits the 3-letter ICAO
+ * airline prefix from the flight-number tail and looks the prefix up in
+ * the bundled airline-codes table, falling back to the bare callsign
+ * whenever the prefix isn't a known airline (private/GA aircraft mostly
+ * fly under their own registration as the callsign, not an airline code). */
+function describeCallsign(rawCallsign) {
+  const callsign = (rawCallsign || '').trim();
+  if (!callsign) return 'Unknown flight';
+  const prefix = callsign.slice(0, 3).toUpperCase();
+  const airline = flightRefData && flightRefData.airlineCodes[prefix];
+  if (!airline) return callsign;
+  const tail = callsign.slice(3).trim();
+  return tail ? `${airline} ${tail}` : airline;
+}
+
+function describeAircraftType(typeCode) {
+  if (!typeCode) return null;
+  const name = flightRefData && flightRefData.aircraftTypes[typeCode.toUpperCase()];
+  return name || typeCode; // unknown code: show the raw code rather than nothing
+}
+
+/** Nearest bundled airport within radiusM of lngLat, or null — a plain
+ * linear scan over the few-thousand-row bundled list (vendor/airports.json,
+ * large/medium commercial airports only), cheap enough to run at the same
+ * cadence as the flight poll itself (not every GPS tick). */
+function nearestAirportWithin(lngLat, radiusM) {
+  if (!flightRefData) return null;
+  let nearest = null;
+  let nearestDistM = Infinity;
+  flightRefData.airports.forEach((airport) => {
+    const distM = turf.distance(lngLat, [airport.lon, airport.lat], { units: 'meters' });
+    if (distM < nearestDistM) { nearestDistM = distM; nearest = airport; }
+  });
+  return nearest && nearestDistM <= radiusM ? nearest : null;
+}
+
+/** Gates and paces flight check-ins from onPositionUpdate, same shape as
+ * maybeCheckTraffic right above: only while actually navigating with the
+ * feature toggled on, at most once every CONFIG.FLIGHT_POLL_INTERVAL_MS. */
+function maybeCheckFlights(traveledM, lngLat) {
+  if (!state.navigating || !state.flightTrackingEnabled || !state.route) return;
+  if (state.flightCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
+  const now = Date.now();
+  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < CONFIG.FLIGHT_POLL_INTERVAL_MS) return;
+  state.lastFlightCheckAt = now;
+  runFlightCheckin(lngLat);
+}
+
+async function runFlightCheckin(lngLat) {
+  state.flightCheckInFlight = true;
+  try {
+    await loadFlightRefData();
+    const nearAirport = nearestAirportWithin(lngLat, CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M);
+    const radiusNm = nearAirport ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
+    const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+    const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
+    if (!res.ok) {
+      resolverDebugLog(`Flight tracking: /api/flights returned HTTP ${res.status}.`, 'error');
+      return;
+    }
+    const body = await res.json();
+    const aircraft = Array.isArray(body.ac) ? body.ac : [];
+
+    const overhead = [];
+    aircraft.forEach((a) => {
+      if (typeof a.lat !== 'number' || typeof a.lon !== 'number') return;
+      const distM = turf.distance(lngLat, [a.lon, a.lat], { units: 'meters' });
+      a._distM = distM; // stashed for refreshFlightBadge's "closest one" pick — local bookkeeping only, never sent anywhere
+      const wasOverhead = state.flightOverheadAircraft.some((o) => o.hex === a.hex);
+      // Hysteresis: once an aircraft is flagged overhead, it stays flagged
+      // until it's past the WIDER clear radius, not just back over the
+      // original threshold — stops the badge flickering on/off across
+      // consecutive polls for one hovering right at the boundary.
+      const radius = wasOverhead ? CONFIG.FLIGHT_OVERHEAD_CLEAR_RADIUS_M : CONFIG.FLIGHT_OVERHEAD_RADIUS_M;
+      if (distM <= radius) overhead.push(a);
+    });
+    state.flightOverheadAircraft = overhead;
+    refreshFlightBadge();
+    updateFlightLayer(nearAirport ? aircraft : overhead);
+  } catch (err) {
+    resolverDebugLog(`Flight tracking check-in failed: ${err.message}`, 'error');
+  } finally {
+    state.flightCheckInFlight = false;
+  }
+}
+
+/** Single source of truth for the "plane overhead" alert — visible only
+ * while state.flightOverheadAircraft is non-empty. Shows the closest one
+ * if more than one currently qualifies, same "don't drown the user in
+ * every possibility" spirit as showing one traffic ETA rather than every
+ * sampled point. */
+function refreshFlightBadge() {
+  const list = state.flightOverheadAircraft;
+  if (!list.length) {
+    el.flightBadge.classList.add('hidden');
+    return;
+  }
+  const closest = list.reduce((a, b) => (a._distM <= b._distM ? a : b));
+  const type = describeAircraftType(closest.t);
+  const altText = typeof closest.alt_baro === 'number' ? `, overhead at ${Math.round(closest.alt_baro).toLocaleString()} ft` : '';
+  el.flightBadgeText.textContent = `${describeCallsign(closest.flight)}${type ? ` · ${type}` : ''}${altText}`;
+  el.flightBadge.classList.remove('hidden');
+}
+
+/** Repaints the flight-aircraft GeoJSON source (see the map.addSource/
+ * addLayer calls in mapLoad.then above) from whichever list is currently
+ * relevant — every aircraft the query returned in near-airport/regional
+ * mode, or just the ones triggering the overhead alert otherwise, so the
+ * map doesn't clutter with cruising traffic far from your route when
+ * you're nowhere near an airport. */
+function updateFlightLayer(aircraftList) {
+  const features = aircraftList
+    .filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number')
+    .map((a) => ({
+      type: 'Feature',
+      properties: { label: describeCallsign(a.flight) },
+      geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
+    }));
+  map.getSource('flight-aircraft').setData({ type: 'FeatureCollection', features });
+}
+
+/** Resets every piece of check-in bookkeeping and hides the badge/clears
+ * the map layer. Called whenever navigation starts/ends, so a stale
+ * overhead list or cadence timer from a previous trip never leaks into
+ * the next one — same pattern as resetTrafficTracking right above. */
+function resetFlightTracking() {
+  state.lastFlightCheckAt = null;
+  state.flightCheckInFlight = false;
+  state.flightOverheadAircraft = [];
+  refreshFlightBadge();
+  updateFlightLayer([]);
+}
+
+if (CONFIG.FLIGHT_TRACKING_ENABLED) {
+  el.flightTrackingBtn.classList.remove('hidden');
+  el.flightTrackingBtn.addEventListener('click', () => {
+    state.flightTrackingEnabled = !state.flightTrackingEnabled;
+    el.flightTrackingBtn.classList.toggle('active', state.flightTrackingEnabled);
+    el.flightTrackingBtn.setAttribute('aria-label', `Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`);
+    showStatus(`Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`, 'info');
+    if (!state.flightTrackingEnabled) resetFlightTracking();
+  });
 }
 
 /** How many points along the route to sample for an along-route category
@@ -7933,6 +8160,7 @@ function onPositionUpdate(pos) {
   updateActiveManeuver(traveledM, lngLat);
   checkDeviation(offsetM, lngLat);
   maybeCheckTraffic(traveledM);
+  maybeCheckFlights(traveledM, lngLat);
   resaveNavigatingTripThrottled();
 }
 
@@ -8194,6 +8422,7 @@ async function startNavigation({ resuming = false } = {}) {
     state.arrivalCandidateStreak = 0;
     state.lastFix = null;
     resetTrafficTracking();
+    resetFlightTracking();
     state.lastTrafficRerouteAt = null; // a genuinely new trip — not reset by resetTrafficTracking itself, see its own comment
     state.navigationStartedAt = Date.now(); // real wall-clock elapsed time for the trip-summary panel — see endNavigation
     state.liveAscentM = 0; // accumulated live climb so far this trip — see onPositionUpdate/effortLevel
@@ -8350,6 +8579,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   clearTraveledRouteSegment();
   resetTrafficTracking();
+  resetFlightTracking();
   state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
 
   el.navBanner.classList.add('hidden');

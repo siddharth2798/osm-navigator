@@ -101,6 +101,28 @@ button {
 #status-banner.error   { background: #401616; color: #ffd0d0; }
 #status-banner.hidden  { display: none; }
 
+/* Personal flight-tracking overlay (see CONFIG.FLIGHT_TRACKING_ENABLED) —
+   same box treatment as #status-banner right above it (this is meant to
+   read as "on top of the search box", not a floating pill), --accent
+   (this app's own route-line blue) rather than an info/warning/error
+   color since there's nothing wrong being reported, just situational
+   awareness. See refreshFlightBadge() in app.js. */
+#flight-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+#flight-badge svg { flex-shrink: 0; }
+#flight-badge span { min-width: 0; }
+#flight-badge.hidden { display: none; }
+
 /* ---------------------------------------------------------------- resolver debug panel */
 #resolver-debug-panel {
   position: fixed;

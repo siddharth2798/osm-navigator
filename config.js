@@ -494,4 +494,52 @@ export const CONFIG = {
   // come back empty. Wider than Nominatim's wide radius on purpose, since
   // this only ever runs for genuinely sparse categories/areas.
   TOMTOM_PLACES_FALLBACK_RADIUS_M: 5000,
+
+  // --- Flight tracking (personal branch only) -----------------------------
+  // Shows nearby aircraft on the map while navigating — an "overhead" alert
+  // when one crosses close to your live position, or every aircraft in the
+  // area once you're near an airport. Backed by api.adsb.lol, an
+  // unofficial community-run ADS-B aggregator: no API key today, but its
+  // own docs say that may change (obtainable free by running your own
+  // receiver), and there's no uptime/coverage guarantee — real coverage
+  // depends entirely on ground-receiver density near wherever you're
+  // driving. See docs/FLIGHT_TRACKING.md. Calls this app's own /api/flights
+  // route (see functions/api/flights.js + lib/flights-proxy.js) rather than
+  // adsb.lol directly — not to hide a secret (there isn't one), but because
+  // adsb.lol sends no CORS header at all, so a direct browser fetch()
+  // couldn't read the response even though the request itself would
+  // succeed.
+  FLIGHT_TRACKING_ENABLED: true,
+
+  // "Crossing above me" means horizontal ground-track distance from your
+  // live position to the point directly below the aircraft — NOT true 3D
+  // distance including altitude. A 3D check would almost never fire for a
+  // cruising airliner (9-12km up is far beyond any sane metre threshold);
+  // altitude is shown in the alert as extra context instead of gating it.
+  FLIGHT_OVERHEAD_RADIUS_M: 500,
+  // A little hysteresis on the hide side only, so an aircraft sitting right
+  // at the threshold across two consecutive polls doesn't flicker the
+  // alert on/off — once triggered, it stays shown until the aircraft is
+  // genuinely well clear, not just a few metres back over the line.
+  FLIGHT_OVERHEAD_CLEAR_RADIUS_M: 700,
+
+  // Polled on its own timer (not every GPS tick) — api.adsb.lol is a free
+  // shared community resource with no formal rate limit published ("dynamic
+  // based on load"), so this stays deliberately gentle rather than as fast
+  // as the GPS fixes actually arrive.
+  FLIGHT_POLL_INTERVAL_MS: 15000,
+
+  // Query radius (nautical miles — adsb.lol's own unit) for an ordinary
+  // check-in away from an airport. Small on purpose: only aircraft that
+  // could plausibly cross within FLIGHT_OVERHEAD_RADIUS_M soon are actually
+  // useful to know about here.
+  FLIGHT_QUERY_RADIUS_NM: 3,
+
+  // Distance (metres) from a bundled airport (vendor/airports.json) that
+  // switches from the single-overhead-alert view into the broader regional
+  // view showing every aircraft the query returns, not just ones directly
+  // overhead — useful for watching final-approach/departure traffic near
+  // an airport rather than just the one plane that happens to cross you.
+  FLIGHT_NEAR_AIRPORT_RADIUS_M: 8000,
+  FLIGHT_REGIONAL_QUERY_RADIUS_NM: 20,
 };

@@ -6,7 +6,7 @@
 //     purged by this file's own upgrade logic below — it holds tiles the
 //     user explicitly downloaded via "Offline maps", and wiping it on every
 //     SW update would silently throw that away.
-const SHELL_CACHE_NAME = 'navigator-shell-v106';
+const SHELL_CACHE_NAME = 'navigator-shell-v107';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep this string in sync with CONFIG.TILE_CACHE_NAME in config.js — explicit "Download this area" tiles ONLY, written directly by app.js, never auto-evicted here
 // Tiles seen just from ordinary online browsing (panning/zooming, not an
 // explicit download) land in this separate, size-capped cache instead of
@@ -41,6 +41,12 @@ const SHELL_FILES = [
   './vendor/capacitor-app.js',
   './manifest.json',
   './icons/icon.svg',
+  // vendor/airports.json, vendor/aircraft-types.json, and
+  // vendor/airline-codes.json (personal flight-tracking overlay) are
+  // deliberately NOT listed here — they're lazily fetched only the first
+  // time that feature is actually turned on (see loadFlightRefData in
+  // app.js), so precaching them here would force every install/update to
+  // download ~650KB nobody using the feature asked for.
 ];
 
 self.addEventListener('install', (event) => {

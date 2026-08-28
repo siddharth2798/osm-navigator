@@ -63,6 +63,7 @@ See [docs/SETUP.md](docs/SETUP.md) for configuring your own services and deployi
 - [The optional Android shell](docs/ANDROID.md) — building, installing, and running the native Android wrapper.
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Known limitations](docs/LIMITATIONS.md)
+- [Flight tracking](docs/FLIGHT_TRACKING.md) — personal branch only, not `main`.
 
 ## Contributing
 
