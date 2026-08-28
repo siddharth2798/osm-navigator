@@ -2174,7 +2174,8 @@ async function tomtomCategorySearchNear(tag, lat, lon) {
   const term = TOMTOM_CATEGORY_TERM[tag];
   if (!term || !tomtomFeaturesEnabled) return [];
   try {
-    const url = `/api/places?term=${encodeURIComponent(term)}&lat=${lat}&lon=${lon}&radius=${CONFIG.TOMTOM_PLACES_FALLBACK_RADIUS_M}`;
+    const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+    const url = `${base}/api/places?term=${encodeURIComponent(term)}&lat=${lat}&lon=${lon}&radius=${CONFIG.TOMTOM_PLACES_FALLBACK_RADIUS_M}`;
     const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data = await res.json();
@@ -2540,7 +2541,8 @@ async function fetchTomTomFlowRatio(lat, lon) {
   };
 
   try {
-    const url = `/api/traffic?lat=${lat}&lon=${lon}`;
+    const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+    const url = `${base}/api/traffic?lat=${lat}&lon=${lon}`;
     const res = await fetchWithTimeout(url);
     if (!res.ok) return null; // covers 429 and any other non-200 — not cached, worth retrying
     const data = await res.json();
