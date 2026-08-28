@@ -257,6 +257,10 @@ button {
   white-space: nowrap;
 }
 .chip:active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Persistent toggle state (see #open-now-chip in index.html) — distinct
+   from :active above, which is only the momentary press feedback every
+   other (search-triggering) chip already has. */
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .dot { flex-shrink: 0; width: 10px; height: 10px; }
 .dot-origin { border-radius: 50%; background: var(--accent-2); }
