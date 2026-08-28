@@ -13,6 +13,7 @@ This is an experimental, personal-only feature that lives on `personal/flight-tr
 - Get within `CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M` (8km by default) of a bundled airport and the behavior switches: instead of only alerting on an overhead crossing, every aircraft the query returns gets plotted on the map — useful for watching approach/departure traffic near an airport rather than just the one plane that happens to pass over you.
 - Tap an aircraft marker for its full detail (registration, altitude, speed, distance) in the same badge slot — it reverts to the normal overhead-alert summary on its own after `CONFIG.FLIGHT_DETAIL_DISPLAY_MS` (8s by default).
 - If `/api/flights` fails several times in a row (`CONFIG.FLIGHT_CHECKIN_FAIL_WARN_THRESHOLD`, 3 by default), a status message says so once per outage — a single dropped request is ordinary network noise and isn't worth interrupting you about.
+- A 429 from adsb.lol specifically pauses polling for a while (`CONFIG.FLIGHT_BACKOFF_BASE_MS`, 30s by default, doubling on each further 429 up to `CONFIG.FLIGHT_BACKOFF_MAX_MS`/5 minutes, or whatever the response's own `Retry-After` header says) rather than keep hitting an already-throttled endpoint every 15 seconds — see `applyFlightBackoff` in `app.js`. Resets back to the normal cadence the next time a check-in succeeds. The proxy (`lib/flights-proxy.js`) also holds a 10-second edge cache keyed by a coarse (~2km) grid cell, to absorb duplicate/retried requests for the same area without ever affecting a normal solo 15s poll.
 
 ## Data source
 
@@ -20,7 +21,7 @@ Backed by [api.adsb.lol](https://api.adsb.lol), an **unofficial, community-run**
 
 **Honest caveats, worth reading before relying on this for anything:**
 
-- **No uptime or coverage guarantee.** This is a goodwill community project, not a commercial service. adsb.lol's own docs say an API key (obtainable free by running your own ADS-B receiver) may become required at some unspecified future point — if that happens, the feature stops working until re-configured with a key.
+- **No uptime or coverage guarantee.** This is a goodwill community project, not a commercial service. adsb.lol's own docs describe "dynamic rate limiting based on environment load" with no fixed published request cap, and say an API key (obtainable free by running your own ADS-B receiver) may become required at some unspecified future point — if that happens, the feature stops working until re-configured with a key.
 - **Coverage depends entirely on ground-receiver density near wherever you're driving.** Busy areas with lots of hobbyist receivers (much of Europe/North America) see rich, near-real-time traffic. Areas with sparse receiver coverage may show little or nothing, even directly under a busy flight path. This is inherent to crowd-sourced ADS-B tracking, not a bug to chase.
 - **The callsign shown is the ADS-B/ATC callsign** (adsb.lol's `flight` field), which usually but not always matches the publicly marketed flight number.
 - **Aircraft-type and airline names are best-effort lookups** against bundled static reference tables (`vendor/aircraft-types.json`, `vendor/airline-codes.json` — ICAO DOC 8643 and OpenFlights data respectively). An unrecognized code just falls back to showing the raw code/callsign rather than nothing.

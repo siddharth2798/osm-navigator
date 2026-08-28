@@ -247,6 +247,8 @@ const state = {
   flightOverheadAircraft: [],   // aircraft currently within FLIGHT_OVERHEAD_RADIUS_M (or still inside the hysteresis clear radius) — drives the badge
   flightCheckinFailStreak: 0,   // consecutive failed check-ins — see noteFlightCheckinFailure
   flightCheckinWarned: false,   // whether the current outage (if any) has already been surfaced to the user
+  flightBackoffUntil: null,     // Date.now() timestamp; maybeCheckFlights skips polling entirely until past this — see applyFlightBackoff
+  flightBackoffMs: 0,           // current backoff length, doubling per consecutive 429; reset to 0 on any successful check-in
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -3038,9 +3040,27 @@ function maybeCheckFlights(traveledM, lngLat) {
   if (!state.navigating || !state.flightTrackingEnabled || !state.route) return;
   if (state.flightCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
   const now = Date.now();
+  if (state.flightBackoffUntil != null && now < state.flightBackoffUntil) return; // rate-limited — see applyFlightBackoff
   if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < CONFIG.FLIGHT_POLL_INTERVAL_MS) return;
   state.lastFlightCheckAt = now;
   runFlightCheckin(lngLat);
+}
+
+/** adsb.lol documents "dynamic rate limiting based on environment load"
+ * with no fixed published cap (see docs/FLIGHT_TRACKING.md) — a 429 means
+ * back off, not keep polling at the normal cadence into an endpoint
+ * that's already throttling. Honors the response's own Retry-After header
+ * when present; otherwise doubles from FLIGHT_BACKOFF_BASE_MS up to
+ * FLIGHT_BACKOFF_MAX_MS. state.flightBackoffMs is reset to 0 the next time
+ * a check-in actually succeeds, so an isolated 429 doesn't leave polling
+ * needlessly slow long after the throttling has cleared. */
+function applyFlightBackoff(res) {
+  const retryAfterS = parseFloat(res.headers.get('retry-after'));
+  state.flightBackoffMs = Number.isFinite(retryAfterS) && retryAfterS > 0
+    ? retryAfterS * 1000
+    : Math.min(state.flightBackoffMs ? state.flightBackoffMs * 2 : CONFIG.FLIGHT_BACKOFF_BASE_MS, CONFIG.FLIGHT_BACKOFF_MAX_MS);
+  state.flightBackoffUntil = Date.now() + state.flightBackoffMs;
+  resolverDebugLog(`Flight tracking: rate-limited by the data source, backing off ${Math.round(state.flightBackoffMs / 1000)}s.`, 'warn');
 }
 
 /** Distance (metres) from `lngLat` to where aircraft `a` will be at ANY
@@ -3075,6 +3095,7 @@ async function runFlightCheckin(lngLat) {
     const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
     if (!res.ok) {
       resolverDebugLog(`Flight tracking: /api/flights returned HTTP ${res.status}.`, 'error');
+      if (res.status === 429) applyFlightBackoff(res);
       noteFlightCheckinFailure();
       return;
     }
@@ -3086,6 +3107,8 @@ async function runFlightCheckin(lngLat) {
     // miscounted as a DATA-SOURCE failure, which is exactly the wrong
     // signal to warn the user about.
     noteFlightCheckinSuccess();
+    state.flightBackoffMs = 0; // a successful check-in clears any earlier 429 backoff
+    state.flightBackoffUntil = null;
     const aircraft = (Array.isArray(body.ac) ? body.ac : []).filter((a) => (
       typeof a.lat === 'number' && typeof a.lon === 'number'
       // seen_pos: seconds since THIS aircraft's position last actually
@@ -3230,6 +3253,8 @@ function resetFlightTracking() {
   state.flightOverheadAircraft = [];
   state.flightCheckinFailStreak = 0;
   state.flightCheckinWarned = false;
+  state.flightBackoffUntil = null;
+  state.flightBackoffMs = 0;
   clearTimeout(flightDetailRevertTimer);
   refreshFlightBadge();
   updateFlightLayer([]);

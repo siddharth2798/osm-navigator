@@ -535,6 +535,17 @@ export const CONFIG = {
   // for aircraftApproachDistM's path projection — see FLIGHT_OVERHEAD_RADIUS_M.
   FLIGHT_POLL_INTERVAL_MS: 15000,
 
+  // A 429 from adsb.lol ("dynamic rate limiting based on environment
+  // load" — no fixed published cap, see docs/FLIGHT_TRACKING.md) means
+  // back off, not keep polling at the normal cadence and hammer an
+  // already-throttling endpoint. FLIGHT_BACKOFF_BASE_MS is the first
+  // pause; applyFlightBackoff in app.js doubles it on each further 429 up
+  // to FLIGHT_BACKOFF_MAX_MS, and resets to zero the next time a
+  // check-in actually succeeds. Overridden per-response by the server's
+  // own Retry-After header when it sends one.
+  FLIGHT_BACKOFF_BASE_MS: 30000,
+  FLIGHT_BACKOFF_MAX_MS: 300000,
+
   // Query radius (nautical miles — adsb.lol's own unit) for an ordinary
   // check-in away from an airport. Small on purpose: only aircraft that
   // could plausibly cross within FLIGHT_OVERHEAD_RADIUS_M soon are actually
