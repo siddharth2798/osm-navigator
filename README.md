@@ -1,7 +1,9 @@
-# Navigator
+# AeroNav
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-siddharth2798%2Fosm--navigator-181717?logo=github)](https://github.com/siddharth2798/osm-navigator)
+
+This is the `personal/flight-tracking` branch — same app as [Navigator](https://github.com/siddharth2798/osm-navigator) on `main`, renamed with its own applicationId (`com.aeronav.app`) so it installs as a separate app, plus the experimental flight-tracking overlay (see [docs/FLIGHT_TRACKING.md](docs/FLIGHT_TRACKING.md)).
 
 A personal, self-hosted turn-by-turn navigation web app for driving and walking, built on OpenStreetMap data. Single-user, no accounts, no sync, no server of your own beyond the geocoding/routing services you point it at.
 

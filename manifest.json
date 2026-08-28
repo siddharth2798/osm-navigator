@@ -1,7 +1,7 @@
 {
-  "name": "Navigator",
-  "short_name": "Navigator",
-  "description": "Personal turn-by-turn navigation on OpenStreetMap data.",
+  "name": "AeroNav",
+  "short_name": "AeroNav",
+  "description": "Personal turn-by-turn navigation on OpenStreetMap data, with live nearby-aircraft tracking.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
