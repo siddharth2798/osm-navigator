@@ -1,4 +1,4 @@
-package com.navigator.app;
+package com.aeronav.app;
 
 import android.content.Context;
 import android.media.AudioAttributes;

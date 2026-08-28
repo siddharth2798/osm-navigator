@@ -1,4 +1,4 @@
-package com.navigator.app;
+package com.aeronav.app;
 
 import android.app.PictureInPictureParams;
 import android.content.Intent;

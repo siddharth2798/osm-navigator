@@ -1,4 +1,4 @@
-package com.navigator.app;
+package com.aeronav.app;
 
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;

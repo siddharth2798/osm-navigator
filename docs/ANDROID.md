@@ -31,7 +31,7 @@ Also worth knowing: `@capacitor-community/background-geolocation`'s notification
 
 **Picture-in-Picture on some OEM Android skins (e.g. MIUI/HyperOS) may need a manual permission grant.** These skins gate PiP behind their own per-app permission (Settings → Privacy protection → Special permissions → Picture-in-picture), defaulted off for every non-preinstalled app. If PiP doesn't auto-enter when minimizing during navigation, grant it directly:
 ```
-adb shell appops set com.navigator.app PICTURE_IN_PICTURE allow
+adb shell appops set com.aeronav.app PICTURE_IN_PICTURE allow
 ```
 `adb logcat -s NavPip` after minimizing shows exactly why it didn't enter, if it's still not working after that.
 

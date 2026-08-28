@@ -11,10 +11,10 @@ apply plugin: 'com.android.application'
 def releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 
 android {
-    namespace = "com.navigator.app"
+    namespace = "com.aeronav.app"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.navigator.app"
+        applicationId "com.aeronav.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // CI passes -PappVersionCode=<run number> so each daily build is
