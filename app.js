@@ -249,6 +249,7 @@ const state = {
   flightCheckinWarned: false,   // whether the current outage (if any) has already been surfaced to the user
   flightBackoffUntil: null,     // Date.now() timestamp; maybeCheckFlights skips polling entirely until past this — see applyFlightBackoff
   flightBackoffMs: 0,           // current backoff length, doubling per consecutive 429; reset to 0 on any successful check-in
+  flightActiveSource: null,     // 'adsb.lol' | 'adsb.fi', from the proxy's own x-flight-source header — see runFlightCheckin
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -3109,6 +3110,18 @@ async function runFlightCheckin(lngLat) {
     noteFlightCheckinSuccess();
     state.flightBackoffMs = 0; // a successful check-in clears any earlier 429 backoff
     state.flightBackoffUntil = null;
+    // The proxy itself falls back from adsb.lol to adsb.fi on a failure —
+    // see lib/flights-proxy.js — so this app never sees most of those
+    // failures directly. Logged only on a transition (not every poll while
+    // the fallback stays in use), same "don't spam every tick" reasoning
+    // as noteFlightCheckinFailure's warn-once threshold above.
+    const activeSource = res.headers.get('x-flight-source');
+    if (activeSource && activeSource !== state.flightActiveSource) {
+      if (state.flightActiveSource != null) {
+        resolverDebugLog(`Flight tracking: data source switched to ${activeSource}.`, activeSource === 'adsb.lol' ? 'success' : 'warn');
+      }
+      state.flightActiveSource = activeSource;
+    }
     const aircraft = (Array.isArray(body.ac) ? body.ac : []).filter((a) => (
       typeof a.lat === 'number' && typeof a.lon === 'number'
       // seen_pos: seconds since THIS aircraft's position last actually
@@ -3255,6 +3268,7 @@ function resetFlightTracking() {
   state.flightCheckinWarned = false;
   state.flightBackoffUntil = null;
   state.flightBackoffMs = 0;
+  state.flightActiveSource = null;
   clearTimeout(flightDetailRevertTimer);
   refreshFlightBadge();
   updateFlightLayer([]);
