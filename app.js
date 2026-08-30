@@ -1495,8 +1495,17 @@ if (MAPILLARY_ENABLED) {
 
 async function fetchMapillaryImage(imageId) {
   const url = `https://graph.mapillary.com/${imageId}?access_token=${CONFIG.MAPILLARY_ACCESS_TOKEN}&fields=id,thumb_1024_url,sequence`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Mapillary returned an error (HTTP ${res.status}).`);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    resolverDebugLog(`Mapillary: request failed for image ${imageId} — ${err.message}`, 'error');
+    throw err;
+  }
+  if (!res.ok) {
+    resolverDebugLog(`Mapillary: returned HTTP ${res.status} for image ${imageId}.`, 'error');
+    throw new Error(`Mapillary returned an error (HTTP ${res.status}).`);
+  }
   return res.json();
 }
 
@@ -1506,18 +1515,36 @@ async function fetchMapillaryImage(imageId) {
 async function findNearestMapillaryImage(lat, lon) {
   const url = `https://graph.mapillary.com/images?access_token=${CONFIG.MAPILLARY_ACCESS_TOKEN}`
     + `&fields=id,thumb_1024_url,sequence&closeto=${lon},${lat}&radius=${CONFIG.MAPILLARY_SEARCH_RADIUS_M}&limit=1`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Mapillary returned an error (HTTP ${res.status}).`);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    resolverDebugLog(`Mapillary: nearest-image search failed for ${lat},${lon} — ${err.message}`, 'error');
+    throw err;
+  }
+  if (!res.ok) {
+    resolverDebugLog(`Mapillary: nearest-image search returned HTTP ${res.status}.`, 'error');
+    throw new Error(`Mapillary returned an error (HTTP ${res.status}).`);
+  }
   const data = await res.json();
+  if (!data.data || !data.data.length) resolverDebugLog(`Mapillary: no coverage within ${CONFIG.MAPILLARY_SEARCH_RADIUS_M}m of ${lat},${lon}.`, 'warn');
   return (data.data && data.data[0]) || null;
 }
 
 async function fetchMapillarySequenceIds(sequenceId) {
   const url = `https://graph.mapillary.com/image_ids?access_token=${CONFIG.MAPILLARY_ACCESS_TOKEN}&sequence_id=${sequenceId}`;
-  const res = await fetch(url);
-  if (!res.ok) return []; // non-fatal: viewer just won't offer prev/next
-  const data = await res.json();
-  return (data.data || []).map((d) => d.id);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      resolverDebugLog(`Mapillary: sequence lookup returned HTTP ${res.status} — prev/next won't be offered.`, 'warn');
+      return []; // non-fatal: viewer just won't offer prev/next
+    }
+    const data = await res.json();
+    return (data.data || []).map((d) => d.id);
+  } catch (err) {
+    resolverDebugLog(`Mapillary: sequence lookup failed — ${err.message}`, 'warn');
+    return [];
+  }
 }
 
 function hideMapillaryViewer() {
@@ -1641,8 +1668,17 @@ function streetViewButton(lat, lon) {
  * has to be fetched too. Handling both keeps this working if OpenFreeMap (or
  * a self-hosted equivalent) changes which shape they publish. */
 async function getTileUrlTemplate() {
-  const res = await fetch(CONFIG.MAP_STYLE_URL);
-  if (!res.ok) throw new Error('Could not read the map style to find its tile URLs.');
+  let res;
+  try {
+    res = await fetch(CONFIG.MAP_STYLE_URL);
+  } catch (err) {
+    resolverDebugLog(`Offline download: could not reach the map style — ${err.message}`, 'error');
+    throw new Error('Could not read the map style to find its tile URLs.');
+  }
+  if (!res.ok) {
+    resolverDebugLog(`Offline download: map style fetch returned HTTP ${res.status}.`, 'error');
+    throw new Error('Could not read the map style to find its tile URLs.');
+  }
   const style = await res.json();
   const vectorSource = Object.values(style.sources || {}).find((s) => s.type === 'vector');
   if (!vectorSource) throw new Error('This map style has no vector tile source to download.');
@@ -1697,6 +1733,10 @@ async function runTileDownload(template, tiles, onProgress) {
   let done = 0;
   let failed = 0;
   let cursor = 0;
+  // One log at the start and one at the end — not per-tile (this can be
+  // hundreds of fetches per download; per-tile logging would flood the
+  // debug ring buffer for no real benefit).
+  resolverDebugLog(`Offline download: starting ${tiles.length} tile(s).`);
 
   async function worker() {
     while (cursor < tiles.length && !control.cancelled) {
@@ -1725,6 +1765,10 @@ async function runTileDownload(template, tiles, onProgress) {
   }
 
   await Promise.all(Array.from({ length: CONFIG.OFFLINE_TILE_CONCURRENCY }, worker));
+  resolverDebugLog(
+    `Offline download: ${control.cancelled ? 'cancelled' : 'finished'} — ${done}/${tiles.length} succeeded, ${failed} failed.`,
+    control.cancelled ? 'warn' : (failed ? 'warn' : 'success'),
+  );
   return { total: tiles.length, failed, cancelled: control.cancelled };
 }
 
@@ -1912,11 +1956,19 @@ async function nominatimSearch(qParam, extraParams = '') {
   try {
     res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } });
   } catch (err) {
+    // Failures only, never success — this fires on every autocomplete
+    // keystroke, and logging every one of those would flood the 1000-entry
+    // debug ring buffer with keystroke noise for no real benefit. A real
+    // outage is rare enough that logging just the failures stays cheap.
+    resolverDebugLog(`Nominatim: request failed for "${qParam}" — ${err.message}`, 'error');
     throw new Error(err.name === 'AbortError'
       ? 'The geocoding service is taking too long to respond. Try again in a moment.'
       : 'Could not reach the geocoding service. Check your connection or the Nominatim server address.');
   }
-  if (!res.ok) throw new Error(`The geocoding service returned an error (HTTP ${res.status}).`);
+  if (!res.ok) {
+    resolverDebugLog(`Nominatim: returned HTTP ${res.status} for "${qParam}".`, 'error');
+    throw new Error(`The geocoding service returned an error (HTTP ${res.status}).`);
+  }
   const data = await res.json();
   return data.map((r) => ({
     label: r.display_name,
@@ -2277,9 +2329,13 @@ async function tomtomCategorySearchNear(tag, lat, lon) {
     const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
     const url = `${base}/api/places?term=${encodeURIComponent(term)}&lat=${lat}&lon=${lon}&radius=${CONFIG.TOMTOM_PLACES_FALLBACK_RADIUS_M}`;
     const res = await fetchWithTimeout(url);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      resolverDebugLog(`TomTom places: /api/places returned HTTP ${res.status} for "${term}".`, 'error');
+      return [];
+    }
     const data = await res.json();
     const results = Array.isArray(data.results) ? data.results : [];
+    resolverDebugLog(`TomTom places: ${results.length} result(s) for "${term}".`, results.length ? 'success' : 'warn');
     return results
       .filter((r) => r.position && typeof r.position.lat === 'number' && typeof r.position.lon === 'number')
       .map((r) => {
@@ -2292,6 +2348,7 @@ async function tomtomCategorySearchNear(tag, lat, lon) {
         };
       });
   } catch (err) {
+    resolverDebugLog(`TomTom places: request failed for "${term}" — ${err.message}`, 'error');
     return []; // network error, AbortError from fetchWithTimeout's own timeout, malformed JSON — all treated the same
   }
 }
@@ -2503,6 +2560,7 @@ async function fetchWeather(lat, lon, force = false) {
     weatherCache.set(cacheKey, result);
     return result;
   } catch (err) {
+    resolverDebugLog(`Weather: request failed for ${lat.toFixed(2)},${lon.toFixed(2)} — ${err.message}`, 'error');
     return null;
   }
 }
@@ -2757,7 +2815,9 @@ async function runTrafficCheckin(traveledM, remainingM) {
     if (aheadM <= 0) return;
     const sliceEndM = Math.min(traveledM + aheadM, state.route.totalDistM);
     const ahead = turf.lineSliceAlong(state.route.lineFeature, traveledM, sliceEndM, { units: 'meters' });
-    const { ratio, samples } = await sampleTrafficAhead(ahead, 0, aheadM, Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS));
+    const requestedPoints = Math.max(1, CONFIG.TRAFFIC_SAMPLE_POINTS);
+    const { ratio, samples } = await sampleTrafficAhead(ahead, 0, aheadM, requestedPoints);
+    resolverDebugLog(`Traffic check-in: ${samples.length}/${requestedPoints} sample(s) succeeded${ratio != null ? `, ratio=${ratio.toFixed(2)}` : ''}.`, ratio == null ? 'warn' : 'success');
     state.trafficRatio = ratio;
     refreshTrafficBadge();
 
@@ -4910,9 +4970,13 @@ async function handleLongPress(lngLat) {
     if (res.ok) {
       const data = await res.json();
       if (data && data.display_name) label = data.display_name;
+      else resolverDebugLog('Reverse geocode: no display_name in response — using raw coordinates.', 'warn');
+    } else {
+      resolverDebugLog(`Reverse geocode: returned HTTP ${res.status} — using raw coordinates.`, 'warn');
     }
   } catch (err) {
     // Offline or unreachable: fall back to the raw coordinates label already set above.
+    resolverDebugLog(`Reverse geocode: request failed — ${err.message} — using raw coordinates.`, 'warn');
   }
 
   if (longPressMarker) longPressMarker.remove();
@@ -5633,17 +5697,27 @@ async function fetchValhalla(action, points, body) {
   try {
     res = await doFetch(selfHosted ? `${target.base}/api/valhalla-${action}` : `${target.base}/${action}`);
   } catch (err) {
-    if (!selfHosted) throw err;
-    resolverDebugLog(`Valhalla: could not reach the self-hosted routing proxy (${err.message || err}).`, 'error');
+    resolverDebugLog(`Valhalla: could not reach the ${selfHosted ? 'self-hosted routing proxy' : 'public routing server'} (${err.message || err}).`, 'error');
     throw err;
   }
   if (selfHosted && res.status === 501) {
     resolverDebugLog('Valhalla: self-hosted routing is on but SELF_HOSTED_VALHALLA_URL is not set on this deployment — falling back to the public server.', 'warn');
     await valhallaLimiter();
-    res = await doFetch(`${CONFIG.VALHALLA_URL}/${action}`);
+    try {
+      res = await doFetch(`${CONFIG.VALHALLA_URL}/${action}`);
+    } catch (err) {
+      resolverDebugLog(`Valhalla: could not reach the public routing server either (${err.message || err}).`, 'error');
+      throw err;
+    }
     selfHosted = false;
-  } else if (selfHosted) {
-    resolverDebugLog(res.ok ? `Valhalla: routed via the self-hosted server for ${points.length} waypoint(s).` : `Valhalla: self-hosted server returned HTTP ${res.status}.`, res.ok ? 'success' : 'error');
+    resolverDebugLog(res.ok ? `Valhalla: routed via the public server (fallback) for ${points.length} waypoint(s).` : `Valhalla: public server (fallback) returned HTTP ${res.status}.`, res.ok ? 'success' : 'error');
+  } else {
+    resolverDebugLog(
+      res.ok
+        ? `Valhalla: routed via the ${selfHosted ? 'self-hosted' : 'public'} server for ${points.length} waypoint(s).`
+        : `Valhalla: ${selfHosted ? 'self-hosted' : 'public'} server returned HTTP ${res.status}.`,
+      res.ok ? 'success' : 'error',
+    );
   }
   return { res, selfHosted };
 }
@@ -5830,6 +5904,7 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
     // uniformly, including to the /api/valhalla-route proxy hop.)
     ({ res } = await fetchValhalla('route', waypoints, body));
   } catch (err) {
+    resolverDebugLog(`Routing: request failed — ${err.message}`, 'error');
     throw new Error(err.name === 'AbortError'
       ? 'The routing service is taking too long to respond. Try again in a moment.'
       : 'Could not reach the routing service. Check your connection or the Valhalla server address.');
@@ -5837,14 +5912,17 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json()).error || ''; } catch (_) { /* ignore parse failure */ }
+    resolverDebugLog(`Routing: service returned HTTP ${res.status}${detail ? ' — ' + detail : ''}.`, 'error');
     throw new Error(detail || `The routing service returned an error (HTTP ${res.status}).`);
   }
   const data = await res.json();
   if (!data.trip || !data.trip.legs || !data.trip.legs.length) {
+    resolverDebugLog('Routing: response had no usable trip/legs.', 'error');
     throw new Error('No route could be found between those two points.');
   }
   const rawAlternates = (data.alternates || []).map((a) => a.trip);
   const alternates = wantAlternates > 0 ? filterMeaningfulAlternates(data.trip, rawAlternates) : [];
+  resolverDebugLog(`Routing: found ${data.trip.summary.length.toFixed(1)}km route (${alternates.length} alternate(s)).`, 'success');
   const result = { trip: data.trip, alternates };
   if (useCache) {
     valhallaCache.set(cacheKey, result);
@@ -5905,7 +5983,10 @@ async function fetchElevationProfile(coords) {
   const { res, selfHosted } = await fetchValhalla('height', shape, { range: true, shape });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
   const data = await res.json();
-  if (!data.range_height || !data.range_height.length) throw new Error('No elevation data returned.');
+  if (!data.range_height || !data.range_height.length) {
+    resolverDebugLog('Valhalla: elevation response had no range_height data.', 'error');
+    throw new Error('No elevation data returned.');
+  }
   if (selfHosted && isDegenerateElevation(data.range_height)) {
     try {
       resolverDebugLog('Valhalla: self-hosted elevation came back completely flat (likely built without elevation data) — retrying this chart only against the public server.', 'warn');
@@ -6887,15 +6968,26 @@ async function requestTransitRoute(from, to) {
   try {
     res = await fetchWithTimeout(url);
   } catch (err) {
+    resolverDebugLog(`Transit (OTP2): request failed — ${err.message}`, 'error');
     throw new Error(err.name === 'AbortError'
       ? 'The transit routing service is taking too long to respond. Try again in a moment.'
       : 'Could not reach the transit routing service. Check your connection or the OTP2 server address.');
   }
-  if (!res.ok) throw new Error(`The transit routing service returned an error (HTTP ${res.status}).`);
+  if (!res.ok) {
+    resolverDebugLog(`Transit (OTP2): service returned HTTP ${res.status}.`, 'error');
+    throw new Error(`The transit routing service returned an error (HTTP ${res.status}).`);
+  }
   const data = await res.json();
-  if (data.error) throw new Error(data.error.msg || 'No transit route could be found between those two points.');
+  if (data.error) {
+    resolverDebugLog(`Transit (OTP2): ${data.error.msg || 'planning error, no message'}`, 'error');
+    throw new Error(data.error.msg || 'No transit route could be found between those two points.');
+  }
   const itineraries = data.plan && data.plan.itineraries;
-  if (!itineraries || !itineraries.length) throw new Error('No transit route could be found between those two points.');
+  if (!itineraries || !itineraries.length) {
+    resolverDebugLog('Transit (OTP2): no itineraries in response.', 'warn');
+    throw new Error('No transit route could be found between those two points.');
+  }
+  resolverDebugLog(`Transit (OTP2): found an itinerary with ${itineraries[0].legs ? itineraries[0].legs.length : 0} leg(s).`, 'success');
   return itineraries[0];
 }
 
