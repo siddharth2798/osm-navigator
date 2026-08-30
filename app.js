@@ -7368,6 +7368,11 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
 
   await awaitMapLoad();
   map.getSource('route').setData(built.lineFeature);
+  // Mirrors renderTransitRoute's own clear of 'route' — a stale transit
+  // line from a previous plan would otherwise stay drawn underneath this
+  // one forever, since nothing else on the drive/walk path ever touches
+  // the transit-route source.
+  map.getSource('transit-route').setData(emptyFeatureCollection());
   clearTraveledRouteSegment(); // a fresh/rerouted trip starts with nothing "already driven" yet
 
   if (fitView) {
@@ -8272,6 +8277,15 @@ el.planBtn.addEventListener('click', async () => {
     state.routeOptions = [];
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
+    // Mirrors the routeOptions reset just above — without this, planning a
+    // drive/walk route after a transit one left its options row (and, via
+    // renderRoute below, its map line) on screen forever: this whole block
+    // only ever set/cleared whichever mode was ACTIVE, never the other
+    // one's leftovers. Confirmed live: transit route options row still
+    // showing underneath a freshly-planned drive route's own options row.
+    state.transitItineraryOptions = [];
+    state.selectedTransitItineraryIndex = 0;
+    renderTransitItineraryOptions();
     if (state.travelMode === 'transit') {
       const itineraries = await requestTransitItineraries(state.from, state.to, getStops());
       state.transitItineraryOptions = itineraries;
