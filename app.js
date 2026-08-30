@@ -650,6 +650,14 @@ let statusTimer = null;
  * unconditionally sticky (the previous behavior) meant they'd sit pinned
  * on screen indefinitely — confirmed live with
  * "Couldn't restore your in-progress trip — starting fresh.". */
+/** `opts.link` (`{href, text}`) appends a real, tappable `<a>` after the
+ * message — built via DOM APIs (never string-concatenated into innerHTML),
+ * and gated by isSafeHttpUrl the same way el.evOperatorLink's dynamic href
+ * already is, so this stays safe even though href ultimately traces back
+ * to attacker-influenceable text (e.g. a pasted Google Maps link that
+ * failed to resolve — see resolveGoogleMapsLink's matchedUrl). Callers
+ * passing a link should also pass `sticky: true`; the default auto-dismiss
+ * is too short to reliably tap a link in. */
 function showStatus(message, type = 'info', opts = {}) {
   clearTimeout(statusTimer);
   // Reset any leftover swipe-drag transform/opacity from a previous message
@@ -660,6 +668,20 @@ function showStatus(message, type = 'info', opts = {}) {
   el.statusBanner.style.opacity = '';
   el.statusBanner.textContent = message;
   el.statusBanner.className = type;
+  if (opts.link && isSafeHttpUrl(opts.link.href)) {
+    const a = document.createElement('a');
+    a.href = opts.link.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = opts.link.text;
+    // Own line, underlined so it reads as tappable rather than part of the
+    // sentence above it.
+    a.style.display = 'block';
+    a.style.marginTop = '4px';
+    a.style.textDecoration = 'underline';
+    a.style.color = 'inherit';
+    el.statusBanner.appendChild(a);
+  }
   if (!opts.sticky) {
     statusTimer = setTimeout(clearStatus, opts.timeoutMs || (type === 'error' ? 8000 : 4000));
   }
@@ -3563,7 +3585,14 @@ async function resolveGoogleMapsLink(text) {
     }
   }
   resolverDebugLog('Giving up.', 'error');
-  return { error: resolveError || "couldn't find coordinates for that link" };
+  // matchedUrl (the original short link) lets the caller offer "open this
+  // link yourself" as a fallback — the whole reason a server-side hop
+  // exists at all is that a browser can't read a cross-origin redirect's
+  // target itself (see this function's own top comment), so when that hop
+  // fails there is no way to automate following it further; the least this
+  // can do is hand back the exact link to open, rather than making the user
+  // go find it again in whatever they pasted/shared it from.
+  return { error: resolveError || "couldn't find coordinates for that link", matchedUrl: parsed.matchedUrl };
 }
 
 /** Every place resolved from a pasted Google Maps link is, by definition,
@@ -4045,7 +4074,9 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
           onSelect(resolved);
           autoBookmarkGoogleMapsLink(resolved);
         } else {
-          showStatus(`Couldn't resolve that Google Maps link — ${resolved.error}.`, 'error');
+          showStatus(`Couldn't resolve that Google Maps link — ${resolved.error}.`, 'error', resolved.matchedUrl
+            ? { sticky: true, link: { href: resolved.matchedUrl, text: 'Open the original link' } }
+            : {});
         }
         return;
       }
@@ -8173,7 +8204,9 @@ async function handleSharedGoogleMapsLink(text) {
     selectPlace(resolved);
     autoBookmarkGoogleMapsLink(resolved);
   } else {
-    showStatus(`That shared link couldn't be resolved — ${resolved.error}.`, 'error');
+    showStatus(`That shared link couldn't be resolved — ${resolved.error}.`, 'error', resolved.matchedUrl
+      ? { sticky: true, link: { href: resolved.matchedUrl, text: 'Open the original link' } }
+      : {});
   }
 }
 
