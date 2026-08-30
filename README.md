@@ -28,15 +28,23 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 <td align="center">Place details &amp; weather at a glance</td>
 <td align="center">Walk-mode elevation profile</td>
 </tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/transit-departure.jpg" alt="Kochi Metro itinerary with next-departure time"></td>
+<td width="50%"><img src="docs/screenshots/transit-live-tracking.jpg" alt="Live GPS tracking during a Kochi transit trip"></td>
+</tr>
+<tr>
+<td align="center">Kochi Metro itinerary with real next-departure time</td>
+<td align="center">Live GPS tracking during the trip, turn-by-turn banner and all</td>
+</tr>
 </table>
 
 ## Features
 
-- **Search** — typo-tolerant fallback, one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels), "X near me" resolves to your live GPS position. Category searches that come back empty from Nominatim (EV charging especially, see [Known limitations](docs/LIMITATIONS.md)) fall back to TomTom's Places Search, when configured.
+- **Search** — typo-tolerant fallback, one-tap category chips (petrol, EV charging, pharmacy, ATM, hospital, food, parking, hotels), "X near me" resolves to your live GPS position. An "Open now" toggle (last chip in that same scrollable row — set it before tapping a category, not after) filters out anything closed per its OSM `opening_hours` tag, keeping unparseable ones rather than risk hiding a real result. Category searches that come back empty from Nominatim (EV charging especially, see [Known limitations](docs/LIMITATIONS.md)) fall back to TomTom's Places Search, when configured.
 - **EV charging station details** via Open Charge Map — connector type, power, operator, cost, and an honestly-labeled operational status. Falls back to a plain OSM pin without a configured Open Charge Map key.
 - **Paste a Google Maps link** — a full link or `maps.app.goo.gl` short link resolves straight to that place, including places with no street address (Plus Codes decode automatically). Also registers as an Android Share target.
 - **Directions** — multi-stop routing (up to 8, drag to reorder), a plain-text "X to Y" shortcut, Drive/Walk/Transit modes, avoid-tolls/avoid-highways. Route cards lead with distance, not Valhalla's time estimate — that estimate has no live traffic behind it, unless TomTom live traffic is configured (see [Setup](docs/SETUP.md)).
-- **Kochi Metro + Kochi Water Metro routing**, bundled with real station/schedule data — no self-hosted transit server needed. Transit mode plans a real walk-or-drive-to-station, ride, walk-or-drive-to-destination itinerary using each system's own actual timetable (see [docs/KOCHI_TRANSIT.md](docs/KOCHI_TRANSIT.md) for where the data comes from and its caveats). A self-hosted [OpenTripPlanner 2](https://www.opentripplanner.org/) instance can cover a different city's transit on top of this.
+- **Kochi Metro + Kochi Water Metro routing**, bundled with real station/schedule data — no self-hosted transit server needed. Transit mode plans a real walk-or-drive-to-station, ride, walk-or-drive-to-destination itinerary using each system's own actual timetable, showing the real next-departure time on the ride leg. Tap "Start" on a planned trip for live GPS tracking through every leg — a real turn-by-turn banner on the walk/drive portions, then a "next stop"/stops-remaining readout on the metro or a percent-of-distance readout on the water metro, the same live-puck experience drive/walk mode already has. See [docs/KOCHI_TRANSIT.md](docs/KOCHI_TRANSIT.md) for where the data comes from, how live tracking decides you've boarded, and its caveats. A self-hosted [OpenTripPlanner 2](https://www.opentripplanner.org/) instance can cover a different city's transit (planning/rendering only, no live tracking) on top of this.
 - **Long-press to pin a place** (4-second press) — fills the search box, or sets it as the destination directly if you're already mid-trip.
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, shown automatically as soon as GPS resolves, toggleable from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes — plus, on this experimental branch (not yet on `main`), spoken incline heads-up cues, a steep-route advisory, per-alternative elevation badges, and a live effort readout (see [Known limitations](docs/LIMITATIONS.md)).
