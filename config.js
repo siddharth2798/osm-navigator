@@ -353,11 +353,26 @@ export const CONFIG = {
   OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
 
   // --- Transit -------------------------------------------------------------
-  // Point at a self-hosted OpenTripPlanner 2 instance loaded with your OSM
-  // extract + a GTFS feed, e.g. 'https://otp.mydomain.com'. Leave empty and
-  // the transit mode toggle simply never appears — there's no public OTP2
-  // demo server to default to (unlike Valhalla), and a GTFS feed is specific
-  // to whichever local transit agency you care about.
+  // Bundled Kochi Metro + Kochi Water Metro routing — real station/schedule
+  // data (vendor/kochi-metro.json, vendor/kochi-water-metro.json; see
+  // docs/KOCHI_TRANSIT.md for where it comes from and scripts/build-*.mjs to
+  // regenerate it) with no self-hosted service needed at all: both networks
+  // are small enough that this app just does nearest-station lookup + plain
+  // stop-counting/graph traversal itself, reusing the existing Valhalla-
+  // backed walk/drive routing for the first/last mile (see
+  // buildKochiItinerary in app.js). This is Kochi-specific bundled data —
+  // same spirit as GEOCODE_COUNTRY_CODES defaulting to 'in' below, this
+  // maintainer's own bias, not a generic default. Set to false if you don't
+  // want this showing on your own deployment.
+  KOCHI_TRANSIT_ENABLED: true,
+
+  // Point at a self-hosted OpenTripPlanner 2 instance for a DIFFERENT city's
+  // transit, loaded with your own OSM extract + a GTFS feed, e.g.
+  // 'https://otp.mydomain.com'. Leave empty if Kochi (above) is all you
+  // need. Only tried when the Kochi planner can't produce a route for the
+  // query (disabled, or neither endpoint near the bundled network) — see
+  // requestTransitRoute in app.js. With both this and KOCHI_TRANSIT_ENABLED
+  // empty/false, the transit mode toggle simply never appears.
   OTP2_URL: '',
 
   // --- Weather badge -----------------------------------------------------

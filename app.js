@@ -1000,19 +1000,30 @@ mapLoad.then(() => {
   // the "is transit configured" gating limited to the UI/network logic
   // below rather than needing to be threaded through map setup too.
   map.addSource('transit-route', { type: 'geojson', data: emptyFeatureCollection() });
+  // WALK and CAR are both "getting to/from the actual transit leg" —
+  // dashed, distinct from the solid ride legs below. CAR is the
+  // park-and-ride case (see the Kochi transit planner's driveOrWalkLeg):
+  // drive instead of walk when the nearest station/jetty is too far to
+  // walk, same shape Google Maps offers. Same blue as the plain drive
+  // route (#3d8bfd) but dashed, so it still reads as "getting there", not
+  // the trip's own main line.
   map.addLayer({
     id: 'transit-route-walk',
     type: 'line',
     source: 'transit-route',
-    filter: ['==', ['get', 'mode'], 'WALK'],
+    filter: ['in', ['get', 'mode'], ['literal', ['WALK', 'CAR']]],
     layout: { 'line-cap': 'round', 'line-join': 'round' },
-    paint: { 'line-color': '#9aabc2', 'line-width': 3, 'line-dasharray': [2, 2] },
+    paint: {
+      'line-color': ['match', ['get', 'mode'], 'CAR', '#3d8bfd', '#9aabc2'],
+      'line-width': 3,
+      'line-dasharray': [2, 2],
+    },
   });
   map.addLayer({
     id: 'transit-route-transit',
     type: 'line',
     source: 'transit-route',
-    filter: ['!=', ['get', 'mode'], 'WALK'],
+    filter: ['!', ['in', ['get', 'mode'], ['literal', ['WALK', 'CAR']]]],
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: {
       // Bus/ferry get their own colour; rail/subway/tram/funicular/gondola
@@ -6881,17 +6892,271 @@ function highlightManeuver(idx) {
 }
 
 // ============================================================================
-// Transit mode via OpenTripPlanner 2
+// Transit mode: bundled Kochi Metro + Kochi Water Metro, or OpenTripPlanner 2
 //
-// Entirely config-gated on OTP2_URL, same philosophy as Mapillary: with
-// nothing configured, the mode toggle never appears and none of this runs.
-// Scope note: this covers planning + distinct rendering + transit-specific
-// maneuver text only, not live GPS-guided transit navigation — boarding/
-// alighting detection for buses and trains is a materially different
-// problem from turn-by-turn road-snapping, so "Start navigation" simply
-// isn't offered for a transit itinerary.
+// Two independent transit sources feed the same rendering/maneuver-list code
+// below (requestTransitRoute picks whichever actually produces a result):
+//
+// 1. Kochi Metro + Kochi Water Metro (buildKochiItinerary and everything it
+//    calls, right below) — real station/schedule data bundled at
+//    vendor/kochi-metro.json / vendor/kochi-water-metro.json (see
+//    scripts/build-kochi-metro-data.mjs / build-water-metro-data.mjs and
+//    docs/KOCHI_TRANSIT.md for where it comes from). No self-hosted service
+//    needed — both systems are small enough (one ~25-station line, ~10
+//    jetties) that a general trip planner is overkill; this just does
+//    nearest-station lookup + simple stop-counting/graph traversal, and
+//    reuses this app's own Valhalla-backed walk/drive routing (see
+//    driveOrWalkLeg) for the first/last mile — the same "walk or drive to
+//    the station, then ride, then walk or drive the rest of the way" shape
+//    Google Maps uses for park-and-ride.
+// 2. OpenTripPlanner 2 (requestOtp2Route, further below) — for any OTHER
+//    city's transit, if you've self-hosted an OTP2 instance loaded with
+//    your own OSM extract + GTFS feed. Only tried when the Kochi planner
+//    above doesn't produce a route (either it's disabled, or neither
+//    endpoint is anywhere near the bundled Kochi network).
+//
+// Mode toggle visibility (below) is gated on either being available — with
+// neither configured, the toggle never appears, same philosophy as
+// Mapillary's CONFIG-gated visibility.
+//
+// Scope note, both sources: this covers planning + distinct rendering +
+// transit-specific maneuver text only, not live GPS-guided transit
+// navigation — boarding/alighting detection for buses/trains/boats is a
+// materially different problem from turn-by-turn road-snapping, so "Start
+// navigation" simply isn't offered for a transit itinerary.
 // ============================================================================
-const TRANSIT_ENABLED = !!CONFIG.OTP2_URL;
+const TRANSIT_ENABLED = CONFIG.KOCHI_TRANSIT_ENABLED || !!CONFIG.OTP2_URL;
+
+// Loaded once, lazily, the first time transit mode is actually used — same
+// "don't spend bytes on a session that never touches this" reasoning as
+// loadFlightRefData for the flight-tracking branch's own bundled data.
+let kochiTransitData = null;
+let kochiTransitDataPromise = null;
+function loadKochiTransitData() {
+  if (!kochiTransitDataPromise) {
+    kochiTransitDataPromise = Promise.all([
+      fetch('vendor/kochi-metro.json').then((r) => r.json()),
+      fetch('vendor/kochi-water-metro.json').then((r) => r.json()),
+    ]).then(([metro, waterMetro]) => {
+      kochiTransitData = { metro, waterMetro };
+      return kochiTransitData;
+    }).catch((err) => {
+      resolverDebugLog(`Kochi transit: failed to load reference data — ${err.message}`, 'error');
+      kochiTransitDataPromise = null; // let the next attempt try again rather than being stuck failed for the rest of the session
+      throw err;
+    });
+  }
+  return kochiTransitDataPromise;
+}
+
+// Beyond a short walk, park-and-ride (drive instead) reads as the more
+// realistic choice for how someone would actually reach a station/jetty —
+// mirrors the same judgment call Google Maps makes for transit directions.
+// Beyond KOCHI_DRIVE_MAX_M, the network just isn't a realistic option for
+// this trip at all (e.g. both endpoints on the opposite side of the city
+// from any bundled station) — treated as "no Kochi transit route," falling
+// through to OTP2 (if configured) or the plain "no route" error.
+const KOCHI_WALK_MAX_M = 1200;
+const KOCHI_DRIVE_MAX_M = 15000;
+
+/** Nearest entry in `stations` (metro stations or water-metro jetties, both
+ * plain {name/lat/lon, ...} arrays) to a point, or null if the array is
+ * empty/every entry lacks coordinates (see the water-metro build script's
+ * own "needs manual coordinates" warning for when that can happen). */
+function nearestKochiStation(lat, lon, stations) {
+  let best = null;
+  let bestDistM = Infinity;
+  stations.forEach((s, index) => {
+    if (s.lat == null || s.lon == null) return;
+    const distM = turf.distance([lon, lat], [s.lon, s.lat], { units: 'meters' });
+    if (distM < bestDistM) { bestDistM = distM; best = { ...s, index, distanceM: distM }; }
+  });
+  return best;
+}
+
+/** The first/last-mile leg of a Kochi transit itinerary — walk or drive
+ * depending on distance (see KOCHI_WALK_MAX_M), reusing this app's own
+ * Valhalla-backed requestRoute exactly like the plain drive/walk travel
+ * modes already do (same COSTING_BY_MODE strings). Returns null (not a
+ * thrown error) when the distance is unreasonable for either — the caller
+ * treats that as "this endpoint isn't a realistic candidate," not a hard
+ * failure, since another candidate (metro vs. water metro) might still work. */
+async function driveOrWalkLeg(from, to, toName) {
+  const distM = turf.distance([from.lon, from.lat], [to.lon, to.lat], { units: 'meters' });
+  if (distM > KOCHI_DRIVE_MAX_M) return null;
+  const mode = distM <= KOCHI_WALK_MAX_M ? 'WALK' : 'CAR';
+  const { trip } = await requestRoute(from, to, [], 0, mode === 'WALK' ? 'pedestrian' : 'auto', {});
+  return {
+    mode,
+    distance: trip.summary.length * 1000,
+    duration: trip.summary.time,
+    geometry: trip.legs.flatMap((l) => decodePolyline(l.shape)),
+    to: { name: toName },
+  };
+}
+
+/** Kochi Metro is a single line (confirmed at data-build time — see
+ * scripts/build-kochi-metro-data.mjs, which throws if KMRL's feed ever
+ * shows more than one route/shape), so "routing" between two of its 25
+ * stations is just an array slice, not a graph search. `stations` is
+ * ordered direction-0 (index 0 = Aluva); direction 1 is the exact reverse.
+ * `offsetS` per station (seconds from the first station's departure, taken
+ * from one real scheduled trip) gives real ride distance/duration and,
+ * combined with the bundled real trip-start times, a real "board at
+ * roughly HH:MM" estimate — not a guessed average headway. */
+function planKochiMetroRideLeg(fromIdx, toIdx, now) {
+  const { stations, schedule } = kochiTransitData.metro;
+  const directionId = toIdx > fromIdx ? 0 : 1;
+  const lo = Math.min(fromIdx, toIdx);
+  const hi = Math.max(fromIdx, toIdx);
+  const segment = stations.slice(lo, hi + 1);
+  const orderedSegment = directionId === 0 ? segment : segment.slice().reverse();
+  let distanceM = 0;
+  for (let i = 0; i < segment.length - 1; i++) {
+    distanceM += turf.distance([segment[i].lon, segment[i].lat], [segment[i + 1].lon, segment[i + 1].lat], { units: 'meters' });
+  }
+
+  // KMRL's own calendar.txt (checked at data-build time): service 'WK' runs
+  // Monday-Saturday, 'WE' is Sunday-only — NOT the more usual Mon-Fri/
+  // Sat-Sun split, so this checks specifically for Sunday rather than
+  // "is it a weekend day".
+  const serviceKey = now.getDay() === 0 ? 'weekend' : 'weekday';
+  const startTimes = schedule[serviceKey][directionId === 0 ? 'direction0' : 'direction1'];
+  const totalOffsetS = stations[stations.length - 1].offsetS - stations[0].offsetS;
+  const boardOffsetS = directionId === 0 ? stations[fromIdx].offsetS : (totalOffsetS - stations[fromIdx].offsetS);
+  const nowS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  let waitS = null;
+  for (const t of startTimes) {
+    const [h, m, s] = t.split(':').map(Number);
+    const boardS = h * 3600 + m * 60 + s + boardOffsetS;
+    if (boardS >= nowS) { waitS = boardS - nowS; break; }
+  }
+  if (waitS != null) resolverDebugLog(`Kochi Metro: next train from ${stations[fromIdx].name} in about ${Math.round(waitS / 60)} min.`);
+
+  return {
+    mode: 'SUBWAY', // GTFS route_type 1 (confirmed in KMRL's routes.txt) — matches OTP's own convention, already rendered correctly (transitLegIcon's rail-like default, the purple map layer)
+    route: 'Kochi Metro',
+    headsign: stations[directionId === 0 ? stations.length - 1 : 0].name,
+    to: { name: stations[toIdx].name },
+    distance: distanceM,
+    duration: Math.abs(stations[toIdx].offsetS - stations[fromIdx].offsetS),
+    intermediateStops: new Array(Math.max(0, orderedSegment.length - 2)), // only .length is ever read by renderTransitManeuverList
+    geometry: orderedSegment.map((s) => [s.lon, s.lat]), // connects real station coordinates — not the physical rail curve (no shapes.txt data bundled), close enough at map scale for an elevated single line
+  };
+}
+
+function kochiWaterMetroRouteEntry(from, to) {
+  return kochiTransitData.waterMetro.routes.find((r) => r.from === from && r.to === to) || null;
+}
+
+/** Fewest-transfers path over the small (~10-jetty) real route graph built
+ * by scripts/build-water-metro-data.mjs — direct if one exists, else one
+ * transfer through whichever jetty connects to both ends (in practice,
+ * almost every cross-cluster trip transfers through HighCourt, confirmed
+ * at data-build time). Not general shortest-path search: this network is
+ * small and star-shaped enough that "try direct, else try every possible
+ * one-hop transfer" already covers every real trip without needing actual
+ * graph-search machinery — consistent with this whole feature's "OTP2 is
+ * overkill for a network this size" premise. Returns null if genuinely
+ * unreachable (e.g. Willingdon Island, which the live schedule API returns
+ * zero sailings for at all, despite being a listed terminal — see
+ * docs/KOCHI_TRANSIT.md). */
+function findKochiWaterMetroPath(from, to) {
+  const direct = kochiWaterMetroRouteEntry(from, to);
+  if (direct) return [direct];
+  for (const hub of kochiTransitData.waterMetro.stations) {
+    if (hub.name === from || hub.name === to) continue;
+    const leg1 = kochiWaterMetroRouteEntry(from, hub.name);
+    const leg2 = kochiWaterMetroRouteEntry(hub.name, to);
+    if (leg1 && leg2) return [leg1, leg2];
+  }
+  return null;
+}
+
+function nextSailingAfter(routeEntry, afterS) {
+  for (const sailing of routeEntry.sailings) {
+    const [h, m, s] = sailing.departure.split(':').map(Number);
+    if (h * 3600 + m * 60 + s >= afterS) return sailing;
+  }
+  return null;
+}
+
+/** One leg per hop in findKochiWaterMetroPath's result, each using a real
+ * sailing time from the bundled schedule (not an average) — picks the next
+ * sailing after the previous leg's real arrival time, so a transfer's wait
+ * is genuine, not assumed. Falls back to the day's first sailing (a rough
+ * estimate, not "no service") if nothing's left today, rather than failing
+ * a query just because it's late at night. */
+function planKochiWaterMetroRideLegs(from, to, now) {
+  const path = findKochiWaterMetroPath(from, to);
+  if (!path) return null;
+  const stationByName = new Map(kochiTransitData.waterMetro.stations.map((s) => [s.name, s]));
+  let cursorS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  return path.map((routeEntry) => {
+    const sailing = nextSailingAfter(routeEntry, cursorS) || routeEntry.sailings[0];
+    const [dh, dm, ds] = sailing.departure.split(':').map(Number);
+    const [ah, am, as] = sailing.arrival.split(':').map(Number);
+    let durationS = (ah * 3600 + am * 60 + as) - (dh * 3600 + dm * 60 + ds);
+    if (durationS < 0) durationS += 24 * 3600; // arrival past midnight
+    cursorS = ah * 3600 + am * 60 + as;
+    const fromS = stationByName.get(routeEntry.from);
+    const toS = stationByName.get(routeEntry.to);
+    return {
+      mode: 'FERRY',
+      route: 'Kochi Water Metro',
+      to: { name: routeEntry.to },
+      distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
+      duration: durationS,
+      intermediateStops: [],
+      geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
+    };
+  });
+}
+
+/** Tries Kochi Metro and Kochi Water Metro, picks whichever needs less
+ * total first/last-mile walking/driving when both could plausibly serve
+ * this trip, and returns null (not a thrown error — see requestTransitRoute)
+ * when neither can, so the caller can fall through to OTP2 or the final
+ * "no route" error instead of hard-failing on a query nowhere near Kochi. */
+async function buildKochiItinerary(from, to) {
+  if (!CONFIG.KOCHI_TRANSIT_ENABLED) return null;
+  await loadKochiTransitData();
+  const { metro, waterMetro } = kochiTransitData;
+
+  const metroFrom = nearestKochiStation(from.lat, from.lon, metro.stations);
+  const metroTo = nearestKochiStation(to.lat, to.lon, metro.stations);
+  const metroFeasible = metroFrom && metroTo && metroFrom.index !== metroTo.index
+    && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M;
+
+  const ferryFrom = nearestKochiStation(from.lat, from.lon, waterMetro.stations);
+  const ferryTo = nearestKochiStation(to.lat, to.lon, waterMetro.stations);
+  const ferryPath = ferryFrom && ferryTo && ferryFrom.name !== ferryTo.name
+    && ferryFrom.distanceM <= KOCHI_DRIVE_MAX_M && ferryTo.distanceM <= KOCHI_DRIVE_MAX_M
+    ? findKochiWaterMetroPath(ferryFrom.name, ferryTo.name) : null;
+
+  if (!metroFeasible && !ferryPath) return null;
+  const useMetro = metroFeasible && (!ferryPath || (metroFrom.distanceM + metroTo.distanceM) <= (ferryFrom.distanceM + ferryTo.distanceM));
+
+  const now = new Date();
+  const legs = [];
+  if (useMetro) {
+    const firstLeg = await driveOrWalkLeg(from, metroFrom, metroFrom.name);
+    if (!firstLeg) return null;
+    legs.push(firstLeg, planKochiMetroRideLeg(metroFrom.index, metroTo.index, now));
+    const lastLeg = await driveOrWalkLeg(metroTo, to, 'your destination');
+    if (!lastLeg) return null;
+    legs.push(lastLeg);
+  } else {
+    const firstLeg = await driveOrWalkLeg(from, ferryFrom, ferryFrom.name);
+    if (!firstLeg) return null;
+    legs.push(firstLeg, ...planKochiWaterMetroRideLegs(ferryFrom.name, ferryTo.name, now));
+    const lastLeg = await driveOrWalkLeg(ferryTo, to, 'your destination');
+    if (!lastLeg) return null;
+    legs.push(lastLeg);
+  }
+
+  return { legs, duration: legs.reduce((sum, l) => sum + l.duration, 0) };
+}
 
 const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
 const transitModeBtn = modeButtons.find((b) => b.dataset.mode === 'transit');
@@ -6959,9 +7224,30 @@ function transitLegIcon(mode) {
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 }
 
+/** Tries the bundled Kochi planner first (see buildKochiItinerary above),
+ * falling back to OTP2 (if configured — see requestOtp2TransitRoute below)
+ * only when Kochi's doesn't produce a route, either because it's disabled
+ * or because neither endpoint is anywhere near the bundled network. A
+ * thrown error from the Kochi planner (e.g. a Valhalla hiccup on the
+ * walk/drive leg) is logged and treated the same as "no route" from it,
+ * not surfaced directly — OTP2 (or the final error) still gets a chance. */
+async function requestTransitRoute(from, to) {
+  try {
+    const itinerary = await buildKochiItinerary(from, to);
+    if (itinerary) {
+      resolverDebugLog(`Kochi transit: found an itinerary with ${itinerary.legs.length} leg(s).`, 'success');
+      return itinerary;
+    }
+  } catch (err) {
+    resolverDebugLog(`Kochi transit: planning failed — ${err.message}`, 'error');
+  }
+  if (!CONFIG.OTP2_URL) throw new Error('No transit route could be found between those two points.');
+  return requestOtp2TransitRoute(from, to);
+}
+
 /** OTP2's classic REST trip planner endpoint — stable across OTP1/OTP2,
  * simpler to call than constructing a GraphQL query for this app's needs. */
-async function requestTransitRoute(from, to) {
+async function requestOtp2TransitRoute(from, to) {
   const url = `${CONFIG.OTP2_URL}/otp/routers/default/plan?fromPlace=${from.lat},${from.lon}`
     + `&toPlace=${to.lat},${to.lon}&mode=TRANSIT,WALK&numItineraries=1`;
   let res;
@@ -7023,9 +7309,15 @@ async function renderTransitRoute(itinerary) {
   const features = itinerary.legs.map((leg) => ({
     type: 'Feature',
     properties: { mode: leg.mode },
-    // OTP encodes leg geometry at Google's standard polyline precision (5),
-    // unlike Valhalla's precision-6 shapes — same decoder, different precision.
-    geometry: { type: 'LineString', coordinates: decodePolyline(leg.legGeometry.points, 5) },
+    geometry: {
+      type: 'LineString',
+      // Kochi planner legs already carry plain decoded coordinates
+      // (driveOrWalkLeg decodes Valhalla's own shape; the ride legs connect
+      // real station/jetty coordinates directly) — only an OTP2 itinerary's
+      // legs need decoding here, at OTP's own polyline precision (5, same
+      // as Google's standard — different from Valhalla's precision-6).
+      coordinates: leg.geometry || decodePolyline(leg.legGeometry.points, 5),
+    },
   }));
 
   await awaitMapLoad();
