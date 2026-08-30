@@ -192,9 +192,15 @@ button {
 .search-top { display: flex; align-items: center; gap: 6px; }
 .search-fields { flex: 1; min-width: 0; }
 
-.search-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
+.search-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 10px; transition: background 0.1s ease; }
 .search-row.plain { padding: 6px 4px; }
 .search-icon { flex-shrink: 0; color: var(--text-dim); }
+/* Dragging a stop above the starting-point row or below the destination
+   row highlights that row as the drop target — see stopDragPromoteTarget
+   in app.js — the same accent-tinted-background language .route-option-
+   card.active already uses elsewhere for "this is the thing that'll
+   happen" feedback. */
+.search-row.stop-drop-target { background: rgba(61,139,253,0.14); }
 
 /* Once several stops are added, the list scrolls internally instead of
    pushing the rest of the card (Get Directions, the map below it) further
@@ -207,6 +213,12 @@ button {
   max-height: 18dvh;
   overflow-y: auto;
 }
+/* A stop row's suggestions dropdown is position:absolute — overflow:auto
+   above would otherwise clip it to this box's own tiny height regardless
+   of z-index (see showSuggestionList/hideSuggestionList in app.js, which
+   toggle this class exactly while one of this container's own dropdowns
+   is open). */
+#stops-container.stops-suggestions-open { overflow: visible; }
 
 /* One-tap POI category chips (Google-Maps style) — a single horizontally
    scrollable row, never more, so it can't turn into the kind of permanent

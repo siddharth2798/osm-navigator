@@ -3897,6 +3897,15 @@ function showSuggestionList(listEl) {
     pushBackLayer(closeFn);
   }
   listEl.classList.remove('hidden');
+  // A stop row's own dropdown is position:absolute inside #stops-container,
+  // which caps its own height with overflow-y:auto (so a long stops list
+  // scrolls internally instead of growing the whole card) — but that
+  // overflow clips ANY absolutely-positioned descendant to its own tiny
+  // box, dropdown included, regardless of z-index. Relaxing it to
+  // `visible` only while one of its own suggestion lists is actually open
+  // lets the dropdown render in full without giving up the container's own
+  // scrolling the rest of the time.
+  if (el.stopsContainer.contains(listEl)) el.stopsContainer.classList.add('stops-suggestions-open');
 }
 function hideSuggestionList(listEl) {
   if (!listEl.classList.contains('hidden') && listEl._backLayerCloseFn) {
@@ -3905,6 +3914,7 @@ function hideSuggestionList(listEl) {
   }
   listEl.classList.add('hidden');
   listEl.innerHTML = '';
+  if (el.stopsContainer.contains(listEl)) el.stopsContainer.classList.remove('stops-suggestions-open');
 }
 
 /** Shown the moment a search actually fires, so there's visible feedback
@@ -5635,6 +5645,19 @@ function addStopRow(prefill) {
 
 el.addStopBtn.addEventListener('click', () => addStopRow());
 
+/** Whichever of the from/to rows draggedCenter is currently past the far
+ * side of — 'from' if above the starting-point row's own vertical middle,
+ * 'to' if below the destination row's, else null (an ordinary
+ * reorder-within-stops drag). Shared by startStopDrag's own onMove (for the
+ * drop-target highlight) and onUp (for the actual promote). */
+function stopDragPromoteTarget(draggedCenter) {
+  const fromRect = el.fromInput.closest('.search-row').getBoundingClientRect();
+  if (draggedCenter < fromRect.top + fromRect.height / 2) return 'from';
+  const toRect = el.toInput.closest('.search-row').getBoundingClientRect();
+  if (draggedCenter > toRect.top + toRect.height / 2) return 'to';
+  return null;
+}
+
 /** Custom pointer-based drag reorder for stop units — plain HTML5
  * draggable/dragstart doesn't work reliably on touch (this is a mobile-first
  * PWA), so this follows the same Pointer Events approach already used for
@@ -5643,12 +5666,19 @@ el.addStopBtn.addEventListener('click', () => addStopRow());
  * The dragged unit is pulled out of flow (`position: fixed`) and tracks the
  * pointer directly; the *other* units simply reflow around it as it's moved
  * past their midpoint in the live DOM, which is what gives the "make room"
- * sortable-list feel without a drag-and-drop library. */
+ * sortable-list feel without a drag-and-drop library.
+ *
+ * Dragging past the starting-point or destination row (see
+ * stopDragPromoteTarget) promotes this stop to that role instead of just
+ * reordering it — a value swap, not a DOM move: the previous start/
+ * destination becomes a stop in the exact position this one is dropped in,
+ * so nothing about visit order elsewhere needs recomputing. */
 function startStopDrag(unit, downEvent) {
   downEvent.preventDefault();
   const rect = unit.getBoundingClientRect();
   const startY = downEvent.clientY;
   const startTop = rect.top;
+  const input = unit.querySelector('.stop-row input');
 
   unit.classList.add('stop-unit-dragging');
   unit.style.position = 'fixed';
@@ -5656,11 +5686,23 @@ function startStopDrag(unit, downEvent) {
   unit.style.left = `${rect.left}px`;
   unit.style.width = `${rect.width}px`;
 
+  function clearDropTargetHighlight() {
+    el.fromInput.closest('.search-row').classList.remove('stop-drop-target');
+    el.toInput.closest('.search-row').classList.remove('stop-drop-target');
+  }
+
   function onMove(e) {
     const dy = e.clientY - startY;
     const newTop = startTop + dy;
     unit.style.top = `${newTop}px`;
     const draggedCenter = newTop + rect.height / 2;
+
+    const promoteTarget = stopDragPromoteTarget(draggedCenter);
+    clearDropTargetHighlight();
+    if (promoteTarget) {
+      el[promoteTarget === 'from' ? 'fromInput' : 'toInput'].closest('.search-row').classList.add('stop-drop-target');
+      return; // in a promote zone — leave this stop's own position in the list alone until dropped
+    }
 
     const siblings = [...el.stopsContainer.children].filter((c) => c !== unit);
     let insertBeforeEl = null;
@@ -5678,12 +5720,36 @@ function startStopDrag(unit, downEvent) {
   function onUp() {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
+    // Read the final position BEFORE clearing the inline position:fixed
+    // styles below — after that, the unit's rect reflects its normal
+    // in-flow layout position instead of where it was actually dropped.
+    const draggedRect = unit.getBoundingClientRect();
+    const promoteTarget = stopDragPromoteTarget(draggedRect.top + draggedRect.height / 2);
+    clearDropTargetHighlight();
     unit.classList.remove('stop-unit-dragging');
     unit.style.position = '';
     unit.style.top = '';
     unit.style.left = '';
     unit.style.width = '';
-    updatePlanningMarkers(); // stop order may have changed — redraw pins/labels in the new sequence
+
+    if (promoteTarget && !input._stopPlace) {
+      showStatus('Pick a place for this stop before dragging it to the start or destination.', 'error');
+    } else if (promoteTarget === 'from') {
+      const oldFrom = state.from;
+      state.from = input._stopPlace;
+      el.fromInput.value = shortLabel(state.from);
+      input.value = oldFrom ? shortLabel(oldFrom) : '';
+      input._stopPlace = oldFrom || null;
+      el.planBtn.classList.remove('hidden'); // starting point just changed — any route already shown is now stale
+    } else if (promoteTarget === 'to') {
+      const oldTo = state.to;
+      state.to = input._stopPlace;
+      el.toInput.value = shortLabel(state.to);
+      input.value = oldTo ? shortLabel(oldTo) : '';
+      input._stopPlace = oldTo || null;
+      el.planBtn.classList.remove('hidden'); // destination just changed — any route already shown is now stale
+    }
+    updatePlanningMarkers(); // stop order/from/to may have changed — redraw pins/labels in the new sequence
   }
 
   window.addEventListener('pointermove', onMove);
