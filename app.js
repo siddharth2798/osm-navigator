@@ -239,6 +239,21 @@ const state = {
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
   lastElevationHeightM: null, // interpolated height at the previous tick's traveledM, for the live-ascent/descent diff above
+
+  // Kochi-transit live tracking (see startTransitNavigation/
+  // endTransitNavigation/onTransitPositionUpdate in app.js) — deliberately
+  // its own fields, not a rider on currentLegIndex/currentManeuverIdx above,
+  // which already mean something specific to a single drive/walk route's
+  // own maneuver list. A transit itinerary is a sequence of distinct legs
+  // (walk, ride, walk, ...), each needing its own progress tracking.
+  transitTracking: false,   // true only between startTransitNavigation and endTransitNavigation
+  transitLegIndex: 0,       // which leg of state.transitItinerary is currently active
+  transitLegManeuverIdx: 0, // ratchet into the CURRENT leg's own maneuvers, when it's a WALK/CAR leg — same idea as currentManeuverIdx, reset on every leg change
+  transitLegLineFeature: null, // turf.lineString of the CURRENT leg's own geometry — rebuilt on every leg change, not the whole itinerary's line
+  transitLegArrivalStreak: 0,  // consecutive fixes within arrival radius of the current leg's own destination — see updateTransitWalkLeg/updateTransitRideLeg
+  transitRideBoarded: false,   // current ride leg only — see updateTransitRideLeg's boarding-detection comment
+  transitRideOffRouteSince: null, // current ride leg only — generous, no-reroute deviation grace (TRANSIT_RIDE_DEVIATION_*), separate from offRouteSince above
+  transitRideHidden: false,    // current ride leg only — true once a sustained deviation means its live progress readout is no longer trustworthy
 };
 
 // ============================================================================
@@ -1055,7 +1070,10 @@ map.on('error', (e) => {
 // gestures, never on our own programmatic `easeTo` calls, so this can't
 // mistake auto-follow motion for a manual pan.
 map.on('dragstart', () => {
-  if (!state.navigating || !state.followMode) return;
+  // transitTracking (Kochi transit live tracking, see startTransitNavigation
+  // below) also auto-follows the live position — a manual drag should stop
+  // that too, same as it does for drive/walk's own state.navigating.
+  if (!(state.navigating || state.transitTracking) || !state.followMode) return;
   state.followMode = false;
   updateLocateBtnState();
 });
@@ -1321,7 +1339,7 @@ function locateBtnIcon(offCenter) {
 // (see index.html), unlike the old static-markup version this replaced.
 let lastLocateBtnOffCenter = null;
 function updateLocateBtnState() {
-  const offCenter = state.navigating && !state.followMode;
+  const offCenter = (state.navigating || state.transitTracking) && !state.followMode;
   el.locateBtn.classList.toggle('active', offCenter);
   if (offCenter !== lastLocateBtnOffCenter) {
     el.locateBtn.innerHTML = locateBtnIcon(offCenter);
@@ -1430,7 +1448,7 @@ function stopIdleLocationShare() {
 }
 
 el.locateBtn.addEventListener('click', async () => {
-  if (state.navigating) {
+  if (state.navigating || state.transitTracking) {
     state.followMode = true;
     updateLocateBtnState();
     if (state.lastFix) followCamera([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
@@ -6997,11 +7015,20 @@ async function driveOrWalkLeg(from, to, toName) {
   if (distM > KOCHI_DRIVE_MAX_M) return null;
   const mode = distM <= KOCHI_WALK_MAX_M ? 'WALK' : 'CAR';
   const { trip } = await requestRoute(from, to, [], 0, mode === 'WALK' ? 'pedestrian' : 'auto', {});
+  // buildRouteState is the exact same maneuver-list builder normal drive/walk
+  // navigation uses for state.route (see renderRoute) — reusing it here
+  // (rather than just decoding geometry and discarding the rest, as this
+  // used to) means this leg's own `maneuvers` are structurally identical to
+  // state.route.maneuvers (startDistM, legIndex, instruction, ...), so
+  // startTransitNavigation's walk/drive-leg tracking (updateTransitWalkLeg)
+  // can drive a real turn-by-turn banner off it directly, no adapter needed.
+  const built = buildRouteState(trip);
   return {
     mode,
-    distance: trip.summary.length * 1000,
-    duration: trip.summary.time,
-    geometry: trip.legs.flatMap((l) => decodePolyline(l.shape)),
+    distance: built.totalDistM,
+    duration: built.totalTimeS,
+    geometry: built.coords,
+    maneuvers: built.maneuvers,
     to: { name: toName },
   };
 }
@@ -7048,15 +7075,29 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
     mode: 'SUBWAY', // GTFS route_type 1 (confirmed in KMRL's routes.txt) — matches OTP's own convention, already rendered correctly (transitLegIcon's rail-like default, the purple map layer)
     route: 'Kochi Metro',
     headsign: stations[directionId === 0 ? stations.length - 1 : 0].name,
+    from: { name: stations[fromIdx].name }, // used by startTransitNavigation's boarding-detection banner ("Head to X") — see updateTransitRideLeg
     to: { name: stations[toIdx].name },
     distance: distanceM,
     duration: Math.abs(stations[toIdx].offsetS - stations[fromIdx].offsetS),
     intermediateStops: new Array(Math.max(0, orderedSegment.length - 2)), // only .length is ever read by renderTransitManeuverList
     geometry: orderedSegment.map((s) => [s.lon, s.lat]), // connects real station coordinates — not the physical rail curve (no shapes.txt data bundled), close enough at map scale for an elevated single line
+    // Ordered station list (origin→destination direction), same array this
+    // function derives distanceM from above — exposed here so live tracking
+    // (updateTransitRideLeg, which runs long after this function returns)
+    // can compute "next station"/"N stops remaining" from live
+    // traveled-distance using the same cumulative-distance technique.
+    stations: orderedSegment,
     // waitS: seconds until the next real train departs stations[fromIdx], or
     // null if none left today — surfaced in renderTransitManeuverList below.
     // Absent/undefined on an OTP2 leg, so that rendering path is untouched.
     waitS,
+    // Absolute real-world departure time (ms since epoch) for the origin
+    // station, or null if there's no train left today — waitS above is
+    // genuinely "seconds from now" for this leg (single hop, no transfer),
+    // so anchoring it to `now` here is exact. See TRANSIT_BOARDING_RADIUS_M's
+    // own comment in config.js for why boarding detection needs a real
+    // clock time, not just GPS proximity to the platform.
+    departureAtMs: waitS != null ? now.getTime() + waitS * 1000 : null,
   };
 }
 
@@ -7106,7 +7147,13 @@ function planKochiWaterMetroRideLegs(from, to, now) {
   const path = findKochiWaterMetroPath(from, to);
   if (!path) return null;
   const stationByName = new Map(kochiTransitData.waterMetro.stations.map((s) => [s.name, s]));
-  let cursorS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  // Fixed reference for departureAtMs below (unlike cursorS just below,
+  // which mutates to each hop's own real arrival time as the loop
+  // progresses through a transfer) — every hop's departureS is a same-day
+  // seconds-of-day value relative to THIS moment, regardless of which hop
+  // it is, so this is what anchors it to a real wall-clock time.
+  const nowS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  let cursorS = nowS;
   return path.map((routeEntry) => {
     const beforeS = cursorS; // "now" for the first hop, the previous hop's real arrival for a transfer
     const sailing = nextSailingAfter(routeEntry, cursorS) || routeEntry.sailings[0];
@@ -7121,6 +7168,7 @@ function planKochiWaterMetroRideLegs(from, to, now) {
     return {
       mode: 'FERRY',
       route: 'Kochi Water Metro',
+      from: { name: routeEntry.from }, // used by startTransitNavigation's boarding-detection banner ("Head to X") — see updateTransitRideLeg
       to: { name: routeEntry.to },
       distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
       duration: durationS,
@@ -7130,6 +7178,17 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       // for the first hop, "transfer wait" for a second one. Absent on an
       // OTP2 leg, same as the metro leg above.
       waitS: Math.max(0, departureS - beforeS),
+      // Absolute real-world departure time (ms since epoch) for THIS hop's
+      // own origin jetty — deliberately computed against nowS (fixed, see
+      // above), not beforeS/cursorS: waitS above intentionally measures a
+      // transfer hop's wait from the previous hop's arrival instead (see
+      // its own comment), which is a different quantity from "time from
+      // now". Same day-only assumption already implicit throughout this
+      // function (see the "arrival past midnight" comment above) — a
+      // service that crosses midnight between hops isn't handled precisely,
+      // consistent with the rest of this function's scope. Clamped to 0 for
+      // the same "no service left today" fallback reason waitS is above.
+      departureAtMs: now.getTime() + Math.max(0, departureS - nowS) * 1000,
     };
   });
 }
@@ -7176,7 +7235,11 @@ async function buildKochiItinerary(from, to) {
     legs.push(lastLeg);
   }
 
-  return { legs, duration: legs.reduce((sum, l) => sum + l.duration, 0) };
+  // source: 'kochi' — tags this as a live-trackable itinerary (see
+  // startTransitNavigation/state.transitTracking below), unlike an OTP2
+  // itinerary, which has no bundled schedule/station data to detect
+  // boarding/alighting against and so never gets a Start button at all.
+  return { legs, duration: legs.reduce((sum, l) => sum + l.duration, 0), source: 'kochi' };
 }
 
 const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
@@ -7378,7 +7441,12 @@ el.planBtn.addEventListener('click', async () => {
       const itinerary = await requestTransitRoute(state.from, state.to);
       await renderTransitRoute(itinerary);
       el.bottomSheet.classList.remove('expanded', 'half');
-      el.startNavBtn.classList.add('hidden'); // no live transit navigation — see scope note above
+      // Live GPS-guided tracking (startTransitNavigation) only exists for a
+      // Kochi-sourced itinerary (see itinerary.source in buildKochiItinerary)
+      // — an OTP2 itinerary has no bundled schedule/station data to detect
+      // boarding/alighting against, so it still gets no Start button, exactly
+      // as before.
+      el.startNavBtn.classList.toggle('hidden', itinerary.source !== 'kochi');
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
       updateSheetPeekHeight(); // see the same call in the drive/walk branch below for why this needs to happen after the buttons above are actually visible
@@ -7581,6 +7649,12 @@ el.sheetHandle.addEventListener('pointercancel', endSheetDrag);
 /** Discards the currently planned route entirely and returns to a blank
  * search — the equivalent of Google Maps' "✕" on the directions panel. */
 function cancelPlannedRoute() {
+  // Defensive: cancelPlannedRoute isn't normally reachable while transit
+  // tracking is active (el.cancelRouteBtn is hidden and the back-stack's top
+  // layer is navigatingBackGuard, not this — see startTransitNavigation), but
+  // stop tracking cleanly first regardless, rather than leaving a GPS watch/
+  // wake lock orphaned if it ever is.
+  if (state.transitTracking) endTransitNavigation();
   clearBackLayers(); // discards the whole route (and anything nested on top, e.g. poi-results) back to true home
   state.route = null;
   state.transitItinerary = null;
@@ -8414,6 +8488,13 @@ function updateSpeedText(speed) {
 }
 
 function onPositionUpdate(pos) {
+  // Kochi transit live tracking (see startTransitNavigation below) branches
+  // to its own, entirely separate handler here — tightly guarded on
+  // state.transitTracking (only ever true between startTransitNavigation and
+  // endTransitNavigation, and only ever set for a Kochi-sourced itinerary in
+  // the first place) so normal drive/walk position handling below is never
+  // touched by any of this.
+  if (state.travelMode === 'transit' && state.transitTracking) { onTransitPositionUpdate(pos); return; }
   const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
   const lngLat = [lng, lat];
   updateSpeedText(speed);
@@ -8561,13 +8642,18 @@ function onPositionError(err) {
   // ensureLocationEnabled() in native-location.js now proactively prompts
   // for before a watch even starts — this branch is the fallback for
   // someone declining that prompt, or turning Location off again mid-trip).
+  // Shared between drive/walk navigation and Kochi transit live tracking —
+  // whichever of the two is actually active is the one that needs cleaning
+  // up (see endTransitNavigation's own comment for why it doesn't just
+  // reuse endNavigation directly).
+  const endAnyNavigation = () => (state.transitTracking ? endTransitNavigation() : endNavigation());
   const isLocationServiceDisabled = err.code === 'NOT_AUTHORIZED' && /disabled/i.test(err.message || '');
   if (isLocationServiceDisabled) {
     showStatus('Location is turned off on this device. Turn it on to continue navigation.', 'error');
-    endNavigation();
+    endAnyNavigation();
   } else if (err.code === err.PERMISSION_DENIED || err.code === 'NOT_AUTHORIZED') {
     showStatus('Location access was denied. Allow location permission for this site to use turn-by-turn navigation.', 'error');
-    endNavigation();
+    endAnyNavigation();
   } else if (err.code === err.TIMEOUT) {
     showStatus('Still waiting for a GPS fix…', 'info');
   } else {
@@ -8605,7 +8691,7 @@ async function acquireWakeLock(isRetry = false) {
       // policy change) while the tab stays visible the whole time — nothing
       // else would ever notice and re-request it in that case, since
       // visibilitychange only fires on an actual hide/show transition.
-      if (state.navigating) acquireWakeLock();
+      if (state.navigating || state.transitTracking) acquireWakeLock();
     });
   } catch (err) {
     wakeLockSentinel = null;
@@ -8614,8 +8700,8 @@ async function acquireWakeLock(isRetry = false) {
     // *quite* fully "active" from the Wake Lock API's own perspective —
     // one retry shortly after covers that without retrying forever if the
     // rejection is for a real, sustained reason (denied, battery saver).
-    if (state.navigating && !isRetry) {
-      setTimeout(() => { if (state.navigating && !wakeLockSentinel) acquireWakeLock(true); }, 1000);
+    if ((state.navigating || state.transitTracking) && !isRetry) {
+      setTimeout(() => { if ((state.navigating || state.transitTracking) && !wakeLockSentinel) acquireWakeLock(true); }, 1000);
     }
   }
 }
@@ -8656,8 +8742,8 @@ function releaseWakeLock() {
 // have done anyway, just not delayed until one arrives.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  if (state.navigating && !wakeLockSentinel) acquireWakeLock();
-  if (state.navigating && state.puckMarker && state.lastFix) {
+  if ((state.navigating || state.transitTracking) && !wakeLockSentinel) acquireWakeLock();
+  if ((state.navigating || state.transitTracking) && state.puckMarker && state.lastFix) {
     map.resize();
     updatePuck([state.lastFix.lng, state.lastFix.lat], state.lastHeading);
   }
@@ -8962,8 +9048,366 @@ function renderTripSummary({ arrived, distanceM, elapsedS, ascentM, descentM, ef
   el.tripSummaryPanel.classList.remove('hidden');
 }
 
-el.startNavBtn.addEventListener('click', startNavigation);
-el.endNavBtn.addEventListener('click', () => endNavigation({ showSummary: true }));
+// ============================================================================
+// Kochi transit live tracking — GPS-guided progress through a Kochi-sourced
+// itinerary (buildKochiItinerary; see itinerary.source === 'kochi') only. An
+// OTP2 itinerary never gets a Start button in the first place (see the
+// plan-button handler above), so none of this ever runs against one —
+// there's no bundled schedule/station data to detect boarding/alighting
+// against for a generic transit backend.
+//
+// Reuses as much of normal drive/walk navigation as safely possible:
+// updatePuck/followCamera unmodified for the whole trip. A WALK/CAR leg
+// specifically reuses the exact maneuver shape buildRouteState produces for
+// state.route (see driveOrWalkLeg, Part A) to drive the same turn-by-turn
+// #nav-banner drive/walk mode uses. A SUBWAY/FERRY ride leg has no maneuvers
+// at all (nothing to turn), so it gets a different, simpler "next station"/
+// percent-of-distance readout instead (updateTransitRideLeg) — both leg
+// kinds share the same #nav-banner DOM, just different text/icon.
+//
+// Deliberately its own state machine (state.transitTracking/transitLegIndex/
+// ...), not a mode bolted onto state.navigating/currentLegIndex/
+// currentManeuverIdx — those already mean something specific to a single
+// drive/walk route's own maneuver list. onPositionUpdate branches to a
+// completely separate handler (onTransitPositionUpdate) the instant
+// state.transitTracking is true, so normal drive/walk position handling is
+// never touched by any of this.
+// ============================================================================
+
+/** Resets every per-leg tracking field for whichever leg is now current
+ * (state.transitLegIndex) — called on entering transit tracking and on every
+ * leg transition (advanceTransitLeg). Also paints the banner/maneuver-list
+ * highlight immediately rather than waiting for the next GPS fix, so the UI
+ * never shows a stale previous-leg readout for the few seconds until one
+ * arrives. */
+function resetTransitLegTrackingState() {
+  const leg = state.transitItinerary.legs[state.transitLegIndex];
+  state.transitLegManeuverIdx = 0;
+  state.transitLegArrivalStreak = 0;
+  state.transitRideBoarded = false;
+  state.transitRideOffRouteSince = null;
+  state.transitRideHidden = false;
+  state.transitLegLineFeature = leg && leg.geometry && leg.geometry.length > 1 ? turf.lineString(leg.geometry) : null;
+  highlightTransitLeg(state.transitLegIndex);
+  if (!leg) return;
+  if (leg.mode === 'WALK' || leg.mode === 'CAR') {
+    const first = leg.maneuvers && leg.maneuvers[0];
+    el.navBannerIcon.innerHTML = first ? maneuverIcon(first.type) : transitLegIcon(leg.mode);
+    el.navBannerInstruction.textContent = first ? first.instruction : `Walk to ${(leg.to && leg.to.name) || 'the next stop'}`;
+    el.navBannerDistance.textContent = formatDistance(leg.distance || 0);
+  } else {
+    el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
+    el.navBannerInstruction.textContent = `Head to ${(leg.from && leg.from.name) || 'the platform'}`;
+    el.navBannerDistance.textContent = 'Waiting to board';
+  }
+}
+
+/** Toggles 'active'/'done' on el.maneuverList's own <li> elements — the same
+ * list renderTransitManeuverList already built for the static itinerary
+ * view, same classes/CSS highlightManeuver uses for a drive/walk maneuver
+ * list. idx < 0 clears all highlighting (see endTransitNavigation). */
+function highlightTransitLeg(idx) {
+  [...el.maneuverList.children].forEach((li, i) => {
+    li.classList.toggle('active', i === idx);
+    li.classList.toggle('done', idx >= 0 && i < idx);
+  });
+  const activeLi = idx >= 0 ? el.maneuverList.children[idx] : null;
+  if (activeLi) activeLi.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+/** Advances to the next leg, or ends the trip if that was the last one —
+ * the shared "a leg just finished" path for both updateTransitWalkLeg and
+ * updateTransitRideLeg below. */
+function advanceTransitLeg() {
+  state.transitLegIndex += 1;
+  if (state.transitLegIndex >= state.transitItinerary.legs.length) {
+    endTransitNavigation({ arrived: true });
+    return;
+  }
+  resetTransitLegTrackingState();
+}
+
+/** WALK/CAR leg progress — a locally-scoped rerun of the same startDistM
+ * ratchet updateActiveManeuver uses for a full drive/walk route (see its own
+ * comment), just against this one leg's own maneuvers/geometry instead of
+ * state.route. Deliberately has no voice guidance, whole-trip arrival
+ * handling, or deviation/reroute behaviour of its own — this app can't
+ * "reroute" a Kochi itinerary, and rerouting a short first/last-mile leg
+ * independently of the ride ahead isn't attempted either (see
+ * docs/KOCHI_TRANSIT.md). */
+function updateTransitWalkLeg(leg, lngLat) {
+  if (!state.transitLegLineFeature || !leg.maneuvers || !leg.maneuvers.length) {
+    // No usable geometry/maneuvers (shouldn't normally happen — Part A
+    // always attaches these — but a same-spot "walk" can produce a
+    // single-point geometry that can't be turf.lineString'd). Fall back to
+    // a plain distance-remaining readout rather than erroring.
+    el.navBannerInstruction.textContent = `Walk to ${(leg.to && leg.to.name) || 'the next stop'}`;
+    el.navBannerDistance.textContent = formatDistance(leg.distance || 0);
+    return;
+  }
+  const snapped = turf.nearestPointOnLine(state.transitLegLineFeature, turf.point(lngLat), { units: 'meters' });
+  const traveledM = snapped.properties.location;
+
+  const maneuvers = leg.maneuvers;
+  let candidateIdx = 0;
+  for (let i = 0; i < maneuvers.length; i++) {
+    if (maneuvers[i].startDistM <= traveledM) candidateIdx = i; else break;
+  }
+  // Same forward-only-ratchet hysteresis as updateActiveManeuver, scoped to
+  // this leg's own maneuver index instead of state.currentManeuverIdx.
+  if (candidateIdx === state.transitLegManeuverIdx + 1) {
+    if (traveledM >= maneuvers[candidateIdx].startDistM + CONFIG.MANEUVER_ADVANCE_HYSTERESIS_M) state.transitLegManeuverIdx = candidateIdx;
+  } else if (candidateIdx > state.transitLegManeuverIdx + 1) {
+    state.transitLegManeuverIdx = candidateIdx;
+  }
+  const currentIdx = state.transitLegManeuverIdx;
+  const nextIdx = currentIdx + 1 < maneuvers.length ? currentIdx + 1 : null;
+  const legTotalM = leg.distance || maneuvers[maneuvers.length - 1].startDistM + maneuvers[maneuvers.length - 1].lengthM;
+  const remainingM = Math.max(0, legTotalM - traveledM);
+
+  if (nextIdx !== null) {
+    const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
+    el.navBannerIcon.innerHTML = maneuverIcon(maneuvers[nextIdx].type);
+    el.navBannerInstruction.textContent = maneuvers[nextIdx].instruction;
+    el.navBannerDistance.textContent = 'in ' + formatDistance(distToNextM);
+  } else {
+    el.navBannerIcon.innerHTML = maneuverIcon(4); // flag — same "arriving" icon updateActiveManeuver uses
+    el.navBannerInstruction.textContent = maneuvers[currentIdx].instruction || `Arriving at ${(leg.to && leg.to.name) || 'the next stop'}`;
+    el.navBannerDistance.textContent = 'Arriving';
+  }
+
+  // Leg-complete check: genuinely close to THIS leg's own end point (the
+  // last coordinate of its own geometry), not just "remainingM is small" —
+  // same reasoning as updateActiveManeuver's own straight-line arrival
+  // check, scoped to this leg's destination instead of the whole trip's.
+  const legEndCoord = leg.geometry[leg.geometry.length - 1];
+  const straightLineToEndM = turf.distance(lngLat, legEndCoord, { units: 'meters' });
+  if (remainingM <= CONFIG.TRANSIT_ALIGHT_RADIUS_M && straightLineToEndM <= CONFIG.TRANSIT_ALIGHT_RADIUS_M * 2) {
+    state.transitLegArrivalStreak += 1;
+  } else {
+    state.transitLegArrivalStreak = 0;
+  }
+  if (state.transitLegArrivalStreak >= CONFIG.TRANSIT_ARRIVAL_CONFIRM_FIXES) {
+    advanceTransitLeg();
+  }
+}
+
+/** SUBWAY/FERRY ride-leg progress. Boarding is deliberately NOT decided by
+ * GPS proximity alone (see TRANSIT_BOARDING_RADIUS_M's own comment in
+ * config.js) — combines proximity to the origin coordinate with the real
+ * scheduled departure time (leg.departureAtMs, captured when the itinerary
+ * was planned — see planKochiMetroRideLeg/planKochiWaterMetroRideLegs).
+ * Metro shows "next station"/stops-remaining off leg.stations' real
+ * per-station coordinates, using the same cumulative-distance technique
+ * planKochiMetroRideLeg itself uses to compute total ride distance; water
+ * metro has no intermediate-stop data at all, so it gets a
+ * percent-of-distance readout instead. No reroute concept for a ride leg —
+ * sustained deviation just hides the live readout (transitRideHidden)
+ * rather than erroring or guessing. */
+function updateTransitRideLeg(leg, lngLat) {
+  const originCoord = leg.geometry[0];
+  const destCoord = leg.geometry[leg.geometry.length - 1];
+
+  if (!state.transitRideBoarded) {
+    const distToOriginM = turf.distance(lngLat, originCoord, { units: 'meters' });
+    // leg.departureAtMs is null only when there's no real departure left to
+    // check against (e.g. the last train of the day already ran) — falls
+    // back to proximity alone rather than never being able to board at all.
+    const pastDeparture = leg.departureAtMs == null || Date.now() >= leg.departureAtMs;
+    if (distToOriginM <= CONFIG.TRANSIT_BOARDING_RADIUS_M && pastDeparture) {
+      state.transitRideBoarded = true;
+    } else {
+      el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
+      el.navBannerInstruction.textContent = `Head to ${(leg.from && leg.from.name) || 'the platform'}`;
+      el.navBannerDistance.textContent = pastDeparture
+        ? `${formatDistance(distToOriginM)} away`
+        : `${formatDistance(distToOriginM)} away · next ${formatWaitText(Math.round((leg.departureAtMs - Date.now()) / 1000))}`;
+      return;
+    }
+  }
+
+  if (!state.transitLegLineFeature) return; // shouldn't happen — every ride leg has a >=2-point geometry
+  const snapped = turf.nearestPointOnLine(state.transitLegLineFeature, turf.point(lngLat), { units: 'meters' });
+  const traveledM = snapped.properties.location;
+  const offsetM = snapped.properties.dist;
+
+  // No-reroute deviation grace (see TRANSIT_RIDE_DEVIATION_* in config.js) —
+  // same offRouteSince/clear-threshold hysteresis idea as checkDeviation
+  // above, just far more generous and ending in "hide the readout" instead
+  // of a reroute request.
+  if (offsetM > CONFIG.TRANSIT_RIDE_DEVIATION_THRESHOLD_M) {
+    if (state.transitRideOffRouteSince == null) state.transitRideOffRouteSince = Date.now();
+    if (Date.now() - state.transitRideOffRouteSince > CONFIG.TRANSIT_RIDE_DEVIATION_DURATION_MS) state.transitRideHidden = true;
+  } else {
+    state.transitRideOffRouteSince = null;
+    state.transitRideHidden = false;
+  }
+
+  if (state.transitRideHidden) {
+    el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
+    el.navBannerInstruction.textContent = `On ${leg.route || leg.mode}`;
+    el.navBannerDistance.textContent = `Towards ${(leg.to && leg.to.name) || 'your stop'}`;
+  } else if (leg.mode === 'SUBWAY' && leg.stations && leg.stations.length > 1) {
+    const stations = leg.stations;
+    let cumM = 0;
+    let nextIdx = stations.length - 1;
+    for (let i = 0; i < stations.length - 1; i++) {
+      cumM += turf.distance([stations[i].lon, stations[i].lat], [stations[i + 1].lon, stations[i + 1].lat], { units: 'meters' });
+      if (cumM > traveledM) { nextIdx = i + 1; break; }
+    }
+    const stopsRemaining = Math.max(0, stations.length - 1 - nextIdx);
+    el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
+    el.navBannerInstruction.textContent = `Next stop: ${stations[nextIdx].name}`;
+    el.navBannerDistance.textContent = stopsRemaining > 0 ? `${stopsRemaining} stop${stopsRemaining === 1 ? '' : 's'} to go` : 'Arriving';
+  } else {
+    // FERRY (or a metro leg somehow missing its stations array) — no
+    // intermediate-stop data to count, so percent-of-distance + a plain
+    // distance-remaining readout instead (see docs/KOCHI_TRANSIT.md).
+    const totalM = leg.distance || turf.length(state.transitLegLineFeature, { units: 'meters' });
+    const pct = totalM > 0 ? Math.min(100, Math.round((traveledM / totalM) * 100)) : 0;
+    el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
+    el.navBannerInstruction.textContent = `Approaching ${(leg.to && leg.to.name) || 'your stop'}`;
+    el.navBannerDistance.textContent = `${pct}% · ${formatDistance(Math.max(0, totalM - traveledM))} to go`;
+  }
+
+  // Alight check: genuinely close to the leg's real destination coordinate,
+  // same consecutive-fix confirmation as the walk-leg check above (and
+  // updateActiveManeuver's own arrival check) — a single noisy fix near a
+  // station isn't enough.
+  const distToDestM = turf.distance(lngLat, destCoord, { units: 'meters' });
+  if (distToDestM <= CONFIG.TRANSIT_ALIGHT_RADIUS_M) {
+    state.transitLegArrivalStreak += 1;
+  } else {
+    state.transitLegArrivalStreak = 0;
+  }
+  if (state.transitLegArrivalStreak >= CONFIG.TRANSIT_ARRIVAL_CONFIRM_FIXES) {
+    advanceTransitLeg();
+  }
+}
+
+/** The transit-tracking equivalent of onPositionUpdate — branched to from
+ * there the moment state.transitTracking is true (see the guard at its very
+ * top), so normal drive/walk position handling never runs at the same time
+ * as this. Shares updatePuck/followCamera verbatim; everything after that is
+ * its own leg-type-scoped logic (updateTransitWalkLeg/updateTransitRideLeg
+ * above) rather than state.route-based. */
+function onTransitPositionUpdate(pos) {
+  const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
+  const lngLat = [lng, lat];
+  updateSpeedText(speed);
+
+  let headingDeg = state.lastHeading;
+  if (typeof heading === 'number' && !Number.isNaN(heading)) {
+    headingDeg = heading;
+  } else if (state.lastFix) {
+    const movedM = turf.distance([state.lastFix.lng, state.lastFix.lat], lngLat, { units: 'meters' });
+    if (movedM > 0.5) headingDeg = (turf.bearing([state.lastFix.lng, state.lastFix.lat], lngLat) + 360) % 360;
+  }
+  state.lastHeading = headingDeg;
+  state.lastFix = { lng, lat, t: pos.timestamp || Date.now() };
+
+  updatePuck(lngLat, headingDeg);
+  if (state.followMode) followCamera(lngLat, headingDeg);
+
+  const leg = state.transitItinerary && state.transitItinerary.legs[state.transitLegIndex];
+  if (!leg) return;
+  if (leg.mode === 'WALK' || leg.mode === 'CAR') updateTransitWalkLeg(leg, lngLat);
+  else updateTransitRideLeg(leg, lngLat);
+}
+
+/** Explicit "Start" tap for a Kochi-sourced transit itinerary — the same
+ * commitment-moment pattern as drive/walk's own startNavigation, just
+ * against state.transitItinerary instead of state.route. Guarded against
+ * running for an OTP2 itinerary (see itinerary.source) — which has no
+ * bundled schedule/station data for boarding detection at all — though the
+ * Start button is already hidden for one before this could ever be tapped
+ * (see the plan-button handler above). */
+async function startTransitNavigation(itinerary) {
+  if (!itinerary || itinerary.source !== 'kochi' || state.transitTracking || state.navigating) return;
+  if (!('geolocation' in navigator)) {
+    showStatus('This browser does not support GPS location, so live tracking is not available.', 'error');
+    return;
+  }
+  state.transitTracking = true;
+  state.transitLegIndex = 0;
+  state.followMode = true;
+  state.lastFix = null;
+  state.lastHeading = 0;
+  acquireWakeLock();
+  if (isNativePlatform()) setPipNavigating(true).catch(() => {});
+
+  // Same "the live puck takes over" handoff startNavigation does — never two
+  // overlapping GPS watches/markers.
+  stopIdleLocationShare();
+  if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
+  if (state.myLocationMarker) { state.myLocationMarker.remove(); state.myLocationMarker = null; }
+  if (state.idleLocationWatchId != null) { navigator.geolocation.clearWatch(state.idleLocationWatchId); state.idleLocationWatchId = null; disableDeviceOrientation(); }
+
+  resetTransitLegTrackingState();
+  replaceTopBackLayer(navigatingBackGuard); // same "back warns, doesn't exit" guard drive/walk navigation uses
+  el.searchCard.classList.add('hidden');
+  el.placeCard.classList.add('hidden');
+  el.navBanner.classList.remove('hidden');
+  el.navSpeed.classList.remove('hidden');
+  updateSpeedText(null);
+  el.bottomSheet.classList.remove('expanded', 'half');
+  el.startNavBtn.classList.add('hidden');
+  el.cancelRouteBtn.classList.add('hidden');
+  el.endNavBtn.classList.remove('hidden');
+  updateLocateBtnState();
+
+  showStatus('Getting your location…', 'info');
+  try {
+    state.watchId = await startLocationWatch(onPositionUpdate, onPositionError, CONFIG.GEOLOCATION_OPTIONS, {
+      title: 'Tracking your Kochi transit trip',
+      message: 'Tracking your location for live transit guidance.',
+    });
+    clearStatus();
+  } catch (err) {
+    showStatus('Could not start location tracking: ' + err.message, 'error');
+    endTransitNavigation();
+  }
+}
+
+/** Manual "End" tap, plus the automatic end-of-trip path from
+ * advanceTransitLeg. Mirrors endNavigation's cleanup (watch, wake lock,
+ * back-guard, puck, voice) adapted for a transit itinerary — but unlike
+ * endNavigation's drive/walk cleanup, this deliberately leaves state.route/
+ * state.transitItinerary alone, so tapping "Start" again (el.startNavBtn is
+ * shown again below) resumes tracking from leg 0 rather than needing a
+ * fresh re-plan. */
+function endTransitNavigation({ arrived = false } = {}) {
+  replaceTopBackLayer(cancelPlannedRoute);
+  if (state.watchId != null) stopLocationWatch(state.watchId).catch(() => { /* best-effort cleanup */ });
+  state.watchId = null;
+  state.transitTracking = false;
+  releaseWakeLock();
+  if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+
+  if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
+  if (isNativePlatform()) stopNative().catch(() => {});
+  else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+
+  el.navBanner.classList.add('hidden');
+  el.navSpeed.classList.add('hidden');
+  el.endNavBtn.classList.add('hidden');
+  el.startNavBtn.classList.remove('hidden');
+  el.cancelRouteBtn.classList.remove('hidden');
+  el.searchCard.classList.remove('hidden');
+  highlightTransitLeg(-1);
+  updateLocateBtnState();
+
+  showStatus(arrived ? 'You have arrived at your destination.' : 'Trip tracking ended.', 'success');
+}
+
+el.startNavBtn.addEventListener('click', () => {
+  if (state.travelMode === 'transit') startTransitNavigation(state.transitItinerary);
+  else startNavigation();
+});
+el.endNavBtn.addEventListener('click', () => {
+  if (state.transitTracking) endTransitNavigation();
+  else endNavigation({ showSummary: true });
+});
 
 // ============================================================================
 // PWA installability
