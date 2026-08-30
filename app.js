@@ -7428,9 +7428,9 @@ function renderTransitManeuverList(legs) {
   legs.forEach((leg, i) => {
     const li = document.createElement('li');
     let instruction;
-    if (leg.mode === 'WALK') {
+    if (leg.mode === 'WALK' || leg.mode === 'CAR') {
       const destName = i === legs.length - 1 ? 'your destination' : (leg.to && leg.to.name) || 'the next stop';
-      instruction = `Walk to ${destName}`;
+      instruction = `${leg.mode === 'WALK' ? 'Walk' : 'Drive'} to ${destName}`;
     } else {
       const routeName = leg.route || leg.routeShortName || leg.mode;
       const headsign = leg.headsign ? ` towards ${leg.headsign}` : '';
