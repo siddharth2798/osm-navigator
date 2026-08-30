@@ -9,6 +9,8 @@ import { resolveMapsUrl } from './lib/resolve-maps-url.js';
 import { openChargePoi } from './lib/opencharge-poi.js';
 import { valhallaProxy } from './lib/valhalla-proxy.js';
 import { nearbyFlights } from './lib/flights-proxy.js';
+import { tomtomTrafficFlow } from './lib/tomtom-traffic-proxy.js';
+import { tomtomPlacesSearch } from './lib/tomtom-places-proxy.js';
 
 export default {
   async fetch(request, env) {
@@ -25,6 +27,15 @@ export default {
     // has to actually exist on whatever's live, regardless of which
     // branch's UI code calls it.
     if (url.pathname === '/api/flights') return nearbyFlights(url, env);
+    // Confirmed live (curl against the deployed *.workers.dev domain) that
+    // these two 404'd — functions/api/traffic.js and functions/api/places.js
+    // are Cloudflare PAGES Functions, but this app is deployed as a plain
+    // Worker (see wrangler.jsonc's `main`), which never executes functions/
+    // at all. TomTom live traffic and the Places fallback have never
+    // actually reached TomTom on this deployment, web or native, regardless
+    // of CONFIG.TOMTOM_FEATURES_ENABLED/the Settings toggle being on.
+    if (url.pathname === '/api/traffic') return tomtomTrafficFlow(url, env);
+    if (url.pathname === '/api/places') return tomtomPlacesSearch(url, env);
     return env.ASSETS.fetch(request);
   },
 };
