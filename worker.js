@@ -9,6 +9,8 @@ import { resolveMapsUrl } from './lib/resolve-maps-url.js';
 import { openChargePoi } from './lib/opencharge-poi.js';
 import { valhallaProxy } from './lib/valhalla-proxy.js';
 import { nearbyFlights } from './lib/flights-proxy.js';
+import { tomtomTrafficFlow } from './lib/tomtom-traffic-proxy.js';
+import { tomtomPlacesSearch } from './lib/tomtom-places-proxy.js';
 
 export default {
   async fetch(request, env) {
@@ -18,6 +20,11 @@ export default {
     if (url.pathname === '/api/valhalla-route') return valhallaProxy('route', request, env);
     if (url.pathname === '/api/valhalla-height') return valhallaProxy('height', request, env);
     if (url.pathname === '/api/flights') return nearbyFlights(url, env);
+    // Ported from main (ab45626) — functions/api/traffic.js and
+    // functions/api/places.js are Cloudflare PAGES Functions, which never
+    // run under this app's actual plain-Worker deployment path at all.
+    if (url.pathname === '/api/traffic') return tomtomTrafficFlow(url, env);
+    if (url.pathname === '/api/places') return tomtomPlacesSearch(url, env);
     return env.ASSETS.fetch(request);
   },
 };
