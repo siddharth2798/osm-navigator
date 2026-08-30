@@ -1231,6 +1231,10 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .m-body { min-width: 0; padding-top: 2px; }
 #maneuver-list li .instr { font-weight: 500; font-size: 14px; }
 #maneuver-list li .meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+/* Real, time-sensitive departure info (see formatWaitText in app.js) —
+   accent-colored so it reads as more actionable than the plain
+   distance/duration line right below it. */
+#maneuver-list li .meta.next-departure { color: var(--accent); font-weight: 600; }
 #maneuver-list li.active { background: var(--panel-2); }
 #maneuver-list li.active .m-icon { background: var(--accent); color: #fff; }
 #maneuver-list li.done { opacity: 0.45; }

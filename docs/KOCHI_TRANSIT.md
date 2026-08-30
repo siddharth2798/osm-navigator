@@ -43,3 +43,9 @@ Both print a summary (station/route counts, any missing coordinates) and overwri
 ## Rendering
 
 No new rendering code beyond `CAR` support for park-and-ride legs — the existing transit map layers already color `FERRY` legs cyan and `RAIL`/`SUBWAY`/`TRAM` legs purple (Kochi Metro's GTFS `route_type` is 1, "Subway/Metro," which falls into that same purple bucket), and `renderTransitManeuverList` already builds "Board X, ride N stops, alight at Y" text generically off any itinerary-shaped object — `buildKochiItinerary`'s output just fits that same shape.
+
+Each ride leg also carries a real `waitS` (seconds until the next actual departure, computed from the bundled schedule — see `planKochiMetroRideLeg`/`planKochiWaterMetroRideLegs`), shown as a "Next departure in N min" line. This field simply doesn't exist on an OTP2 leg, so that rendering path is untouched — no mode check needed, just `leg.waitS != null`.
+
+## Not yet built: live tracking during the ride
+
+Transit mode is still planning/rendering only — no live GPS-guided tracking once you've boarded (see `docs/LIMITATIONS.md`). The building blocks mostly already exist (this app's own puck marker, GPS-fix handling, and `turf.nearestPointOnLine` line-snapping, all reused from drive/walk mode) and a concrete design has been scoped, but it's a real feature addition, not implemented yet.

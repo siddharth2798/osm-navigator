@@ -455,6 +455,17 @@ function formatDuration(s) {
   return h + ' h ' + (mins % 60) + ' min';
 }
 
+/** "in 4 min" / "in under a minute" for a Kochi transit ride leg's waitS
+ * (see planKochiMetroRideLeg/planKochiWaterMetroRideLegs) — null when
+ * there's no real next departure to report (e.g. after the last train of
+ * the day), in which case the caller just omits the line entirely rather
+ * than showing a wrong or empty time. */
+function formatWaitText(waitS) {
+  if (waitS == null) return null;
+  const mins = Math.round(waitS / 60);
+  return mins < 1 ? 'in under a minute' : `in ${mins} min`;
+}
+
 function formatBytes(n) {
   if (!n) return '0 MB';
   const mb = n / (1024 * 1024);
@@ -7042,6 +7053,10 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
     duration: Math.abs(stations[toIdx].offsetS - stations[fromIdx].offsetS),
     intermediateStops: new Array(Math.max(0, orderedSegment.length - 2)), // only .length is ever read by renderTransitManeuverList
     geometry: orderedSegment.map((s) => [s.lon, s.lat]), // connects real station coordinates — not the physical rail curve (no shapes.txt data bundled), close enough at map scale for an elevated single line
+    // waitS: seconds until the next real train departs stations[fromIdx], or
+    // null if none left today — surfaced in renderTransitManeuverList below.
+    // Absent/undefined on an OTP2 leg, so that rendering path is untouched.
+    waitS,
   };
 }
 
@@ -7093,10 +7108,12 @@ function planKochiWaterMetroRideLegs(from, to, now) {
   const stationByName = new Map(kochiTransitData.waterMetro.stations.map((s) => [s.name, s]));
   let cursorS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
   return path.map((routeEntry) => {
+    const beforeS = cursorS; // "now" for the first hop, the previous hop's real arrival for a transfer
     const sailing = nextSailingAfter(routeEntry, cursorS) || routeEntry.sailings[0];
     const [dh, dm, ds] = sailing.departure.split(':').map(Number);
     const [ah, am, as] = sailing.arrival.split(':').map(Number);
-    let durationS = (ah * 3600 + am * 60 + as) - (dh * 3600 + dm * 60 + ds);
+    const departureS = dh * 3600 + dm * 60 + ds;
+    let durationS = (ah * 3600 + am * 60 + as) - departureS;
     if (durationS < 0) durationS += 24 * 3600; // arrival past midnight
     cursorS = ah * 3600 + am * 60 + as;
     const fromS = stationByName.get(routeEntry.from);
@@ -7109,6 +7126,10 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       duration: durationS,
       intermediateStops: [],
       geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
+      // waitS: seconds until this hop's real sailing departs — "next boat"
+      // for the first hop, "transfer wait" for a second one. Absent on an
+      // OTP2 leg, same as the metro leg above.
+      waitS: Math.max(0, departureS - beforeS),
     };
   });
 }
@@ -7292,9 +7313,15 @@ function renderTransitManeuverList(legs) {
       const stops = stopCount ? `, ride ${stopCount} stop${stopCount === 1 ? '' : 's'}` : '';
       instruction = `Board ${routeName}${headsign}${stops}, alight at ${(leg.to && leg.to.name) || 'the stop'}`;
     }
+    // waitS only exists on a Kochi-planned leg (see planKochiMetroRideLeg/
+    // planKochiWaterMetroRideLegs) — an OTP2 leg has no such field, so
+    // waitText is always null there and this line is simply omitted,
+    // leaving OTP2 rendering exactly as it was.
+    const waitText = leg.waitS != null ? formatWaitText(leg.waitS) : null;
     li.innerHTML = `<div class="m-icon">${transitLegIcon(leg.mode)}</div>
       <div class="m-body">
         <div class="instr">${escapeHtml(instruction)}</div>
+        ${waitText ? `<div class="meta next-departure">Next departure ${escapeHtml(waitText)}</div>` : ''}
         <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}</div>
       </div>`;
     el.maneuverList.appendChild(li);
