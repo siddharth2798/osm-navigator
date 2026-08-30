@@ -7431,8 +7431,13 @@ function findKochiTransferPoints() {
  * Step 3: ranks survivors by total distanceM ascending (shortest = default,
  * same convention as drive mode's own primary Valhalla trip), dedupes by
  * ride-leg signature keeping the shorter on a collision, caps to
- * KOCHI_MAX_ITINERARY_OPTIONS. */
-async function buildKochiItineraries(from, to) {
+ * KOCHI_MAX_ITINERARY_OPTIONS. `toName` labels the final leg's own
+ * destination — 'your destination' by default (a plain two-point trip),
+ * but buildKochiMultiStopItinerary passes the real stop name for every
+ * segment except the last, so a multi-stop trip's maneuver list reads
+ * "Walk to StopName" rather than a misleading "Walk to your destination"
+ * partway through the trip. */
+async function buildKochiItineraries(from, to, toName = 'your destination') {
   if (!CONFIG.KOCHI_TRANSIT_ENABLED) return null;
   await loadKochiTransitData();
   const { metro, waterMetro } = kochiTransitData;
@@ -7473,7 +7478,7 @@ async function buildKochiItineraries(from, to) {
         segments: [
           { type: 'access', from, to: metroFrom, toName: metroFrom.name },
           { type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, idx, now)] },
-          { type: 'access', from: metro.stations[idx], to, toName: 'your destination' },
+          { type: 'access', from: metro.stations[idx], to, toName },
         ],
       });
     });
@@ -7484,7 +7489,7 @@ async function buildKochiItineraries(from, to) {
       segments: [
         { type: 'access', from, to: ferryFrom, toName: ferryFrom.name },
         { type: 'ride', legs: planKochiWaterMetroRideLegs(ferryFrom.name, ferryTo.name, now) },
-        { type: 'access', from: ferryTo, to, toName: 'your destination' },
+        { type: 'access', from: ferryTo, to, toName },
       ],
     });
   }
@@ -7503,7 +7508,7 @@ async function buildKochiItineraries(from, to) {
               { type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, tp.metroIndex, now)] },
               { type: 'access', from: tp.metroStation, to: tp.waterStation, toName: tp.waterStation.name },
               { type: 'ride', legs: planKochiWaterMetroRideLegs(tp.waterStation.name, ferryTo.name, now) },
-              { type: 'access', from: ferryTo, to, toName: 'your destination' },
+              { type: 'access', from: ferryTo, to, toName },
             ],
           });
         }
@@ -7519,7 +7524,7 @@ async function buildKochiItineraries(from, to) {
               { type: 'ride', legs: planKochiWaterMetroRideLegs(ferryFrom.name, tp.waterStation.name, now) },
               { type: 'access', from: tp.waterStation, to: tp.metroStation, toName: tp.metroStation.name },
               { type: 'ride', legs: [planKochiMetroRideLeg(tp.metroIndex, metroTo.index, now)] },
-              { type: 'access', from: metroTo, to, toName: 'your destination' },
+              { type: 'access', from: metroTo, to, toName },
             ],
           });
         }
@@ -7569,30 +7574,11 @@ if (transitModeBtn) transitModeBtn.classList.toggle('hidden', !TRANSIT_ENABLED);
 if (modeButtons.filter((b) => !b.classList.contains('hidden')).length > 1) {
   el.travelModeToggle.classList.remove('hidden');
 }
-// Stops aren't supported by transit routing at all — requestTransitItineraries
-// only ever takes state.from/state.to (contrast the drive/walk branch,
-// which passes getStops()) — so leaving the stops UI visible in transit
-// mode used to mean any stops already added just silently vanished from
-// the plan the moment Transit actually ran, with zero feedback. Called
-// from every place state.travelMode gets set, not just the mode-button
-// click handler, so a restored/shared trip in transit mode starts with
-// this hidden too.
-function updateStopsUiForTravelMode() {
-  const isTransit = state.travelMode === 'transit';
-  el.stopsContainer.classList.toggle('hidden', isTransit);
-  el.addStopBtn.classList.toggle('hidden', isTransit);
-}
-
 modeButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     state.travelMode = btn.dataset.mode;
     modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
     el.routeAvoidToggle.classList.toggle('hidden', state.travelMode !== 'drive');
-    if (state.travelMode === 'transit' && el.stopsContainer.children.length) {
-      showStatus("Stops aren't supported for transit directions — showing a direct trip instead.", 'info');
-      clearStops();
-    }
-    updateStopsUiForTravelMode();
     el.planBtn.classList.remove('hidden'); // travel mode changed — any route already shown was planned for the old mode
   });
 });
@@ -7627,26 +7613,85 @@ function transitLegIcon(mode) {
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 }
 
-/** Tries the bundled Kochi planner first (see buildKochiItineraries above),
- * falling back to OTP2 (if configured — see requestOtp2TransitRoute below)
- * only when Kochi's doesn't produce any candidate, either because it's
- * disabled or because neither endpoint is anywhere near the bundled
- * network. A thrown error from the Kochi planner (e.g. a Valhalla hiccup on
- * a walk/drive leg) is logged and treated the same as "no candidates" from
- * it, not surfaced directly — OTP2 (or the final error) still gets a
- * chance. Always returns an ARRAY — wraps the OTP2 result (a single
- * itinerary) as a length-1 array too, so the caller never branches on
- * shape. */
-async function requestTransitItineraries(from, to) {
+/** Multi-stop Kochi transit: plans each consecutive leg of the trip
+ * (waypoints[0]->waypoints[1], waypoints[1]->waypoints[2], ...)
+ * independently via buildKochiItineraries — fired together (Promise.all),
+ * safely serialized under the hood by the same valhallaLimiter/
+ * selfHostedValhallaLimiter every other Valhalla call already shares, not
+ * one giant sequential chain — then concatenates the best (first-ranked,
+ * i.e. shortest) candidate from each segment into one itinerary. Segments
+ * are independent of each other (the metro/ferry networks one segment
+ * resolves against don't interact with another's), so picking each one's
+ * own shortest option is provably the shortest whole-trip total too — no
+ * combinatorial search across segments needed.
+ *
+ * Deliberately surfaces no per-segment alternatives for a multi-stop trip
+ * (unlike a plain two-point trip — see buildKochiItineraries' own capped
+ * options): showing every segment's own alternatives would multiply the
+ * choices by the number of stops for little real benefit, and stitching
+ * each segment's best keeps this bounded and fast. Each segment is also
+ * planned against "now," same as a plain two-point trip — not against an
+ * estimated arrival time at that segment's own start after however long
+ * the trip so far would take, since live tracking already re-verifies
+ * boarding against real GPS/time once you actually get there regardless
+ * of what was estimated at planning time (see updateTransitRideLeg).
+ *
+ * Returns null (not a thrown error) if ANY segment can't be planned via
+ * Kochi's bundled network at all — same contract buildKochiItineraries'
+ * own null already has, so the caller's fallback logic doesn't need a
+ * separate case for this. */
+async function buildKochiMultiStopItinerary(waypoints) {
+  const segments = await Promise.all(
+    waypoints.slice(0, -1).map((from, i) => {
+      // Every segment except the true final one ends at a stop, not the
+      // trip's real destination — see buildKochiItineraries' own toName
+      // param for why this matters (a misleading "Walk to your
+      // destination" partway through the trip otherwise).
+      const isLastSegment = i === waypoints.length - 2;
+      const toName = isLastSegment ? 'your destination' : shortLabel(waypoints[i + 1]);
+      return buildKochiItineraries(from, waypoints[i + 1], toName);
+    }),
+  );
+  if (segments.some((s) => !s || !s.length)) return null;
+  const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked shortest-first
+  return [{
+    legs: chosen.flatMap((it) => it.legs),
+    duration: chosen.reduce((sum, it) => sum + it.duration, 0),
+    distanceM: chosen.reduce((sum, it) => sum + (it.distanceM || 0), 0),
+    source: 'kochi',
+  }];
+}
+
+/** Tries the bundled Kochi planner first (see buildKochiItineraries/
+ * buildKochiMultiStopItinerary above), falling back to OTP2 (if configured
+ * — see requestOtp2TransitRoute below) only when Kochi's doesn't produce
+ * any candidate, either because it's disabled or because some point along
+ * the trip is nowhere near the bundled network. A thrown error from the
+ * Kochi planner (e.g. a Valhalla hiccup on a walk/drive leg) is logged and
+ * treated the same as "no candidates" from it, not surfaced directly —
+ * OTP2 (or the final error) still gets a chance. Always returns an ARRAY —
+ * wraps the OTP2 result (a single itinerary) as a length-1 array too, so
+ * the caller never branches on shape.
+ *
+ * `stops` (optional intermediate waypoints, same shape/order as the
+ * drive/walk branch's own getStops()) has no OTP2 equivalent at all — its
+ * classic REST planner takes only fromPlace/toPlace, no intermediate
+ * points — so a multi-stop trip that Kochi's planner can't produce fails
+ * outright with a clear error instead of silently falling through to an
+ * OTP2 request that would drop the stops without saying so. */
+async function requestTransitItineraries(from, to, stops = []) {
   try {
-    const itineraries = await buildKochiItineraries(from, to);
+    const itineraries = stops.length
+      ? await buildKochiMultiStopItinerary([from, ...stops, to])
+      : await buildKochiItineraries(from, to);
     if (itineraries && itineraries.length) {
-      resolverDebugLog(`Kochi transit: found ${itineraries.length} itinerary option(s).`, 'success');
+      resolverDebugLog(`Kochi transit: found ${itineraries.length} itinerary option(s)${stops.length ? ` (${stops.length} stop${stops.length === 1 ? '' : 's'})` : ''}.`, 'success');
       return itineraries;
     }
   } catch (err) {
     resolverDebugLog(`Kochi transit: planning failed — ${err.message}`, 'error');
   }
+  if (stops.length) throw new Error("Transit with stops could only be planned through Kochi's bundled network, and this trip doesn't fit it end to end — try removing a stop.");
   if (!CONFIG.OTP2_URL) throw new Error('No transit route could be found between those two points.');
   return [await requestOtp2TransitRoute(from, to)];
 }
@@ -7836,7 +7881,7 @@ el.planBtn.addEventListener('click', async () => {
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
     if (state.travelMode === 'transit') {
-      const itineraries = await requestTransitItineraries(state.from, state.to);
+      const itineraries = await requestTransitItineraries(state.from, state.to, getStops());
       state.transitItineraryOptions = itineraries;
       state.selectedTransitItineraryIndex = 0;
       await renderTransitRoute(itineraries[0]);
@@ -8245,7 +8290,6 @@ function applyShareLink(payload) {
   if (mode === 'transit' && !TRANSIT_ENABLED) { mode = 'drive'; modeFellBack = true; }
   state.travelMode = mode;
   modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
-  updateStopsUiForTravelMode();
 
   goToDirections({ from: payload.from, to: payload.to }); // also clears/redraws stops+markers, opens directions UI, pushes its own back layer
   stops.forEach((s) => addStopRow(s));
@@ -9956,7 +10000,6 @@ if (shareTargetText) {
         state.to = saved.to;
         state.travelMode = saved.travelMode || 'drive';
         modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === state.travelMode));
-        updateStopsUiForTravelMode();
 
         await awaitMapLoad();
         map.getSource('route').setData(state.route.lineFeature);
