@@ -470,6 +470,12 @@ function formatDuration(s) {
   return h + ' h ' + (mins % 60) + ' min';
 }
 
+// How many upcoming real departures planKochiMetroRideLeg/
+// planKochiWaterMetroRideLegs collect for the "Next departures in X, Y, Z
+// min" line — display-only, unrelated to boarding detection (see waitS/
+// departureAtMs on those legs, which always stay just the first one).
+const TRANSIT_UPCOMING_DEPARTURES = 3;
+
 /** "in 4 min" / "in under a minute" for a Kochi transit ride leg's waitS
  * (see planKochiMetroRideLeg/planKochiWaterMetroRideLegs) — null when
  * there's no real next departure to report (e.g. after the last train of
@@ -479,6 +485,19 @@ function formatWaitText(waitS) {
   if (waitS == null) return null;
   const mins = Math.round(waitS / 60);
   return mins < 1 ? 'in under a minute' : `in ${mins} min`;
+}
+
+/** "in 2, 17, 32 min" for a Kochi ride leg's waitsS (see
+ * planKochiMetroRideLeg/planKochiWaterMetroRideLegs) — the next few real
+ * departures, not just the immediate one, so you can see whether it's worth
+ * rushing for this one or just catching the next. Falls back to
+ * formatWaitText's single-departure phrasing when there's only one (or
+ * none) left today, rather than a one-item list reading like "in 2 min"
+ * with an orphaned comma. */
+function formatWaitsText(waitsS) {
+  if (!waitsS || !waitsS.length) return null;
+  if (waitsS.length === 1) return formatWaitText(waitsS[0]);
+  return 'in ' + waitsS.map((s) => { const m = Math.round(s / 60); return m < 1 ? '<1' : String(m); }).join(', ') + ' min';
 }
 
 function formatBytes(n) {
@@ -7063,12 +7082,22 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
   const totalOffsetS = stations[stations.length - 1].offsetS - stations[0].offsetS;
   const boardOffsetS = directionId === 0 ? stations[fromIdx].offsetS : (totalOffsetS - stations[fromIdx].offsetS);
   const nowS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-  let waitS = null;
+  // Collects up to TRANSIT_UPCOMING_DEPARTURES real departures, not just the
+  // immediate one — startTimes is already the day's full ordered trip list,
+  // so this is just "keep going" instead of "stop at the first match".
+  // waitS/departureAtMs below stay the FIRST entry only — boarding
+  // detection (updateTransitRideLeg) needs exactly the next departure, not
+  // a list.
+  const waitsS = [];
   for (const t of startTimes) {
     const [h, m, s] = t.split(':').map(Number);
     const boardS = h * 3600 + m * 60 + s + boardOffsetS;
-    if (boardS >= nowS) { waitS = boardS - nowS; break; }
+    if (boardS >= nowS) {
+      waitsS.push(boardS - nowS);
+      if (waitsS.length >= TRANSIT_UPCOMING_DEPARTURES) break;
+    }
   }
+  const waitS = waitsS.length ? waitsS[0] : null;
   if (waitS != null) resolverDebugLog(`Kochi Metro: next train from ${stations[fromIdx].name} in about ${Math.round(waitS / 60)} min.`);
 
   return {
@@ -7091,6 +7120,11 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
     // null if none left today — surfaced in renderTransitManeuverList below.
     // Absent/undefined on an OTP2 leg, so that rendering path is untouched.
     waitS,
+    // waitsS: the next up-to-TRANSIT_UPCOMING_DEPARTURES real departures
+    // (waitsS[0] === waitS) — lets the UI show "in 2, 17, 32 min" instead of
+    // just the immediate one. Boarding detection still only ever uses waitS/
+    // departureAtMs above, not this list.
+    waitsS,
     // Absolute real-world departure time (ms since epoch) for the origin
     // station, or null if there's no train left today — waitS above is
     // genuinely "seconds from now" for this leg (single hop, no transfer),
@@ -7137,6 +7171,25 @@ function nextSailingAfter(routeEntry, afterS) {
   return null;
 }
 
+/** Same lookup as nextSailingAfter, but collects up to `count` sailings
+ * instead of stopping at the first — for the "Next departures in X, Y, Z
+ * min" display line. Deliberately does NOT fall back to tomorrow's first
+ * sailing the way the single-sailing lookup's caller does below (that
+ * fallback exists so boarding detection always has *something* to anchor
+ * to); a short or empty list here just means fewer real sailings are left
+ * today, which the caller/formatter already handle. */
+function nextSailingsAfter(routeEntry, afterS, count) {
+  const out = [];
+  for (const sailing of routeEntry.sailings) {
+    const [h, m, s] = sailing.departure.split(':').map(Number);
+    if (h * 3600 + m * 60 + s >= afterS) {
+      out.push(sailing);
+      if (out.length >= count) break;
+    }
+  }
+  return out;
+}
+
 /** One leg per hop in findKochiWaterMetroPath's result, each using a real
  * sailing time from the bundled schedule (not an average) — picks the next
  * sailing after the previous leg's real arrival time, so a transfer's wait
@@ -7156,7 +7209,8 @@ function planKochiWaterMetroRideLegs(from, to, now) {
   let cursorS = nowS;
   return path.map((routeEntry) => {
     const beforeS = cursorS; // "now" for the first hop, the previous hop's real arrival for a transfer
-    const sailing = nextSailingAfter(routeEntry, cursorS) || routeEntry.sailings[0];
+    const upcomingSailings = nextSailingsAfter(routeEntry, cursorS, TRANSIT_UPCOMING_DEPARTURES);
+    const sailing = upcomingSailings[0] || routeEntry.sailings[0];
     const [dh, dm, ds] = sailing.departure.split(':').map(Number);
     const [ah, am, as] = sailing.arrival.split(':').map(Number);
     const departureS = dh * 3600 + dm * 60 + ds;
@@ -7178,6 +7232,14 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       // for the first hop, "transfer wait" for a second one. Absent on an
       // OTP2 leg, same as the metro leg above.
       waitS: Math.max(0, departureS - beforeS),
+      // waitsS: the next few real sailings (waitsS[0] === waitS, when any
+      // are left today — see nextSailingsAfter's own comment on why it has
+      // no next-day fallback), same "in X, Y, Z min" display purpose as the
+      // metro leg's own waitsS above.
+      waitsS: upcomingSailings.map((sl) => {
+        const [sh, sm, ss] = sl.departure.split(':').map(Number);
+        return Math.max(0, (sh * 3600 + sm * 60 + ss) - beforeS);
+      }),
       // Absolute real-world departure time (ms since epoch) for THIS hop's
       // own origin jetty — deliberately computed against nowS (fixed, see
       // above), not beforeS/cursorS: waitS above intentionally measures a
@@ -7376,15 +7438,18 @@ function renderTransitManeuverList(legs) {
       const stops = stopCount ? `, ride ${stopCount} stop${stopCount === 1 ? '' : 's'}` : '';
       instruction = `Board ${routeName}${headsign}${stops}, alight at ${(leg.to && leg.to.name) || 'the stop'}`;
     }
-    // waitS only exists on a Kochi-planned leg (see planKochiMetroRideLeg/
+    // waitsS only exists on a Kochi-planned leg (see planKochiMetroRideLeg/
     // planKochiWaterMetroRideLegs) — an OTP2 leg has no such field, so
     // waitText is always null there and this line is simply omitted,
-    // leaving OTP2 rendering exactly as it was.
-    const waitText = leg.waitS != null ? formatWaitText(leg.waitS) : null;
+    // leaving OTP2 rendering exactly as it was. formatWaitsText itself
+    // drops back to the single-departure phrasing when only one (or zero)
+    // real departures are left today.
+    const waitText = leg.waitsS ? formatWaitsText(leg.waitsS) : null;
+    const waitLabel = leg.waitsS && leg.waitsS.length > 1 ? 'Next departures' : 'Next departure';
     li.innerHTML = `<div class="m-icon">${transitLegIcon(leg.mode)}</div>
       <div class="m-body">
         <div class="instr">${escapeHtml(instruction)}</div>
-        ${waitText ? `<div class="meta next-departure">Next departure ${escapeHtml(waitText)}</div>` : ''}
+        ${waitText ? `<div class="meta next-departure">${waitLabel} ${escapeHtml(waitText)}</div>` : ''}
         <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}</div>
       </div>`;
     el.maneuverList.appendChild(li);
