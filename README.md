@@ -36,6 +36,7 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **EV charging station details** via Open Charge Map — connector type, power, operator, cost, and an honestly-labeled operational status. Falls back to a plain OSM pin without a configured Open Charge Map key.
 - **Paste a Google Maps link** — a full link or `maps.app.goo.gl` short link resolves straight to that place, including places with no street address (Plus Codes decode automatically). Also registers as an Android Share target.
 - **Directions** — multi-stop routing (up to 8, drag to reorder), a plain-text "X to Y" shortcut, Drive/Walk/Transit modes, avoid-tolls/avoid-highways. Route cards lead with distance, not Valhalla's time estimate — that estimate has no live traffic behind it, unless TomTom live traffic is configured (see [Setup](docs/SETUP.md)).
+- **Kochi Metro + Kochi Water Metro routing**, bundled with real station/schedule data — no self-hosted transit server needed. Transit mode plans a real walk-or-drive-to-station, ride, walk-or-drive-to-destination itinerary using each system's own actual timetable (see [docs/KOCHI_TRANSIT.md](docs/KOCHI_TRANSIT.md) for where the data comes from and its caveats). A self-hosted [OpenTripPlanner 2](https://www.opentripplanner.org/) instance can cover a different city's transit on top of this.
 - **Long-press to pin a place** (4-second press) — fills the search box, or sets it as the destination directly if you're already mid-trip.
 - **Your location, always visible** — a live "you are here" marker with a heading wedge, shown automatically as soon as GPS resolves, toggleable from the locate button.
 - **Satellite view**, **Home & Work shortcuts**, **elevation profile** for walking routes — plus, on this experimental branch (not yet on `main`), spoken incline heads-up cues, a steep-route advisory, per-alternative elevation badges, and a live effort readout (see [Known limitations](docs/LIMITATIONS.md)).
@@ -60,6 +61,7 @@ See [docs/SETUP.md](docs/SETUP.md) for configuring your own services and deployi
 
 - [Privacy](docs/PRIVACY.md) — what leaves your device, and to whom.
 - [Self-hosting & configuration](docs/SETUP.md) — running it, configuring services, deploying, data freshness.
+- [Kochi Metro + Kochi Water Metro transit](docs/KOCHI_TRANSIT.md) — where the bundled data comes from, its caveats, and how to regenerate it.
 - [The optional Android shell](docs/ANDROID.md) — building, installing, and running the native Android wrapper.
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Known limitations](docs/LIMITATIONS.md)
