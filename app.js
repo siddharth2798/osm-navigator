@@ -78,6 +78,7 @@ const el = {
   categoryChips: document.getElementById('category-chips'),
   openNowChip: document.getElementById('open-now-chip'),
   routeOptionsRow: document.getElementById('route-options'),
+  transitItineraryOptionsRow: document.getElementById('transit-itinerary-options'),
   elevationProfile: document.getElementById('elevation-profile'),
   routeChips: document.getElementById('route-chips'),
   routeChipsInline: document.getElementById('route-chips-inline'),
@@ -126,6 +127,7 @@ const el = {
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
   navSpeed: document.getElementById('nav-speed'),
+  boardConfirmBtn: document.getElementById('board-confirm-btn'),
   trafficBadge: document.getElementById('traffic-badge'),
   maneuverList: document.getElementById('maneuver-list'),
   offlinePanel: document.getElementById('offline-panel'),
@@ -192,6 +194,8 @@ const state = {
   avoidHighways: false, // drive-only; see costingOptionsFor()
   filterOpenNow: false, // category/along-route search modifier; see applyOpenNowFilter
   transitItinerary: null, // last-planned OTP2 itinerary, kept separate from `route` since it's a different shape
+  transitItineraryOptions: [], // every candidate from requestTransitItineraries for the currently-planned trip — mirrors routeOptions naming, but a separate, lighter mechanism (see renderTransitItineraryOptions)
+  selectedTransitItineraryIndex: 0, // which entry of transitItineraryOptions is currently drawn/active
   pendingQuickPlaceKind: null, // 'home' | 'work' while the next place picked from search should be saved as a quick place, not routed to
   originMarker: null,
   destMarker: null,
@@ -254,6 +258,7 @@ const state = {
   transitRideBoarded: false,   // current ride leg only — see updateTransitRideLeg's boarding-detection comment
   transitRideOffRouteSince: null, // current ride leg only — generous, no-reroute deviation grace (TRANSIT_RIDE_DEVIATION_*), separate from offRouteSince above
   transitRideHidden: false,    // current ride leg only — true once a sustained deviation means its live progress readout is no longer trustworthy
+  transitRideStationIdx: null, // last-rendered "next station" index for the current ride leg's station-progress list — ratchets DOM updates rather than rebuilding on every GPS fix
 };
 
 // ============================================================================
@@ -6943,9 +6948,9 @@ function highlightManeuver(idx) {
 // Transit mode: bundled Kochi Metro + Kochi Water Metro, or OpenTripPlanner 2
 //
 // Two independent transit sources feed the same rendering/maneuver-list code
-// below (requestTransitRoute picks whichever actually produces a result):
+// below (requestTransitItineraries picks whichever actually produces a result):
 //
-// 1. Kochi Metro + Kochi Water Metro (buildKochiItinerary and everything it
+// 1. Kochi Metro + Kochi Water Metro (buildKochiItineraries and everything it
 //    calls, right below) — real station/schedule data bundled at
 //    vendor/kochi-metro.json / vendor/kochi-water-metro.json (see
 //    scripts/build-kochi-metro-data.mjs / build-water-metro-data.mjs and
@@ -7006,6 +7011,18 @@ function loadKochiTransitData() {
 // through to OTP2 (if configured) or the plain "no route" error.
 const KOCHI_WALK_MAX_M = 1200;
 const KOCHI_DRIVE_MAX_M = 15000;
+// Alighting up to this many stations short of/past the nearest-to-destination
+// metro station is still worth considering as an alternative (e.g. riding
+// three more stops to Edapally/Cochin University/Kalamassery instead of the
+// nearest station, then driving less) — see buildKochiItineraries.
+const KOCHI_METRO_ALIGHT_WINDOW = 2;
+// Cap on how many metro+water-metro combined candidates (through any
+// transfer point) get built per plan — keeps the total spec count bounded
+// even if the bundled data ever grows more transfer points.
+const KOCHI_MAX_COMBINED_SPECS = 2;
+// Mirrors drive mode's own requestRoute(..., 2, ...) → primary + 2
+// alternates — same "how many is actually useful to show" ceiling.
+const KOCHI_MAX_ITINERARY_OPTIONS = 3;
 
 /** Nearest entry in `stations` (metro stations or water-metro jetties, both
  * plain {name/lat/lon, ...} arrays) to a point, or null if the array is
@@ -7050,6 +7067,19 @@ async function driveOrWalkLeg(from, to, toName) {
     maneuvers: built.maneuvers,
     to: { name: toName },
   };
+}
+
+/** Same-leg dedup for buildKochiItineraries' Step 2: keys purely on
+ * coordinates (not toName — two specs sharing coordinates always share the
+ * same real-world target, so its label is the same too), and caches the
+ * PROMISE itself, not the awaited result — checked/set synchronously, before
+ * any await, so concurrent candidate-building shares one in-flight Valhalla
+ * call for an identical leg (e.g. every metro-only spec's identical origin→
+ * boarding-station first mile) instead of firing one request each. */
+function cachedDriveOrWalkLeg(cache, from, to, toName) {
+  const key = `${from.lon},${from.lat}|${to.lon},${to.lat}`;
+  if (!cache.has(key)) cache.set(key, driveOrWalkLeg(from, to, toName));
+  return cache.get(key);
 }
 
 /** Kochi Metro is a single line (confirmed at data-build time — see
@@ -7255,53 +7285,183 @@ function planKochiWaterMetroRideLegs(from, to, now) {
   });
 }
 
-/** Tries Kochi Metro and Kochi Water Metro, picks whichever needs less
- * total first/last-mile walking/driving when both could plausibly serve
- * this trip, and returns null (not a thrown error — see requestTransitRoute)
- * when neither can, so the caller can fall through to OTP2 or the final
- * "no route" error instead of hard-failing on a query nowhere near Kochi. */
-async function buildKochiItinerary(from, to) {
+// Cached lazily the first time it's needed — recomputed only if the data
+// were ever reloaded mid-session (it isn't, today), same "no reason to redo
+// trivial work" reasoning as other one-shot caches in this file.
+let kochiTransferPointsCache = null;
+
+/** Every (metroStation, waterMetroJetty) pair within CONFIG.KOCHI_TRANSFER_MAX_M
+ * of each other — a real-world walkable transfer point between the two
+ * independent Kochi transit networks (e.g. Metro's "Vyttila" station and
+ * Water Metro's "Vytilla" jetty, 222m apart). Purely coordinate-based — no
+ * hardcoded station names — so this keeps working if either bundled dataset
+ * is regenerated with different names/positions/order. The ~25×10 pair count
+ * is trivial to brute-force; no need for anything cleverer at this size. */
+function findKochiTransferPoints() {
+  if (kochiTransferPointsCache) return kochiTransferPointsCache;
+  const { metro, waterMetro } = kochiTransitData;
+  const points = [];
+  metro.stations.forEach((metroStation, metroIndex) => {
+    if (metroStation.lat == null || metroStation.lon == null) return;
+    waterMetro.stations.forEach((waterStation) => {
+      if (waterStation.lat == null || waterStation.lon == null) return;
+      const distM = turf.distance([metroStation.lon, metroStation.lat], [waterStation.lon, waterStation.lat], { units: 'meters' });
+      if (distM <= CONFIG.KOCHI_TRANSFER_MAX_M) points.push({ metroStation, metroIndex, waterStation, distM });
+    });
+  });
+  kochiTransferPointsCache = points;
+  return points;
+}
+
+/** Builds every plausible Kochi-transit candidate itinerary between `from`
+ * and `to`, resolves their first/last-mile legs via Valhalla (deduped — see
+ * cachedDriveOrWalkLeg), ranks them, and returns null (not a thrown error —
+ * see requestTransitItineraries) when nothing plausible exists at all, so
+ * the caller can fall through to OTP2 or the final "no route" error instead
+ * of hard-failing on a query nowhere near Kochi.
+ *
+ * Step 1 (this function, synchronous/free): builds up to ~6 candidate specs
+ * using only turf.distance + the already-synchronous planKochiMetroRideLeg/
+ * findKochiWaterMetroPath/planKochiWaterMetroRideLegs — metro-only (offset
+ * 0, the default, plus the 2 next-best alighting stations within
+ * KOCHI_METRO_ALIGHT_WINDOW by straight-line distance to the destination),
+ * ferry-only (1, unchanged from before), and metro+ferry combined through
+ * every real transfer point found by findKochiTransferPoints (both
+ * directions, capped at KOCHI_MAX_COMBINED_SPECS).
+ * Step 2: resolves every spec's walk/drive access legs via
+ * cachedDriveOrWalkLeg sharing one per-call Map, drops any spec whose access
+ * leg comes back null (unreasonable distance).
+ * Step 3: ranks survivors by total distanceM ascending (shortest = default,
+ * same convention as drive mode's own primary Valhalla trip), dedupes by
+ * ride-leg signature keeping the shorter on a collision, caps to
+ * KOCHI_MAX_ITINERARY_OPTIONS. */
+async function buildKochiItineraries(from, to) {
   if (!CONFIG.KOCHI_TRANSIT_ENABLED) return null;
   await loadKochiTransitData();
   const { metro, waterMetro } = kochiTransitData;
+  const now = new Date();
 
   const metroFrom = nearestKochiStation(from.lat, from.lon, metro.stations);
   const metroTo = nearestKochiStation(to.lat, to.lon, metro.stations);
-  const metroFeasible = metroFrom && metroTo && metroFrom.index !== metroTo.index
-    && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M;
+  const metroFeasible = !!(metroFrom && metroTo && metroFrom.index !== metroTo.index
+    && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M);
 
   const ferryFrom = nearestKochiStation(from.lat, from.lon, waterMetro.stations);
   const ferryTo = nearestKochiStation(to.lat, to.lon, waterMetro.stations);
-  const ferryPath = ferryFrom && ferryTo && ferryFrom.name !== ferryTo.name
-    && ferryFrom.distanceM <= KOCHI_DRIVE_MAX_M && ferryTo.distanceM <= KOCHI_DRIVE_MAX_M
-    ? findKochiWaterMetroPath(ferryFrom.name, ferryTo.name) : null;
+  const ferryFeasible = !!(ferryFrom && ferryTo && ferryFrom.name !== ferryTo.name
+    && ferryFrom.distanceM <= KOCHI_DRIVE_MAX_M && ferryTo.distanceM <= KOCHI_DRIVE_MAX_M);
+  const ferryPath = ferryFeasible ? findKochiWaterMetroPath(ferryFrom.name, ferryTo.name) : null;
 
   if (!metroFeasible && !ferryPath) return null;
-  const useMetro = metroFeasible && (!ferryPath || (metroFrom.distanceM + metroTo.distanceM) <= (ferryFrom.distanceM + ferryTo.distanceM));
 
-  const now = new Date();
-  const legs = [];
-  if (useMetro) {
-    const firstLeg = await driveOrWalkLeg(from, metroFrom, metroFrom.name);
-    if (!firstLeg) return null;
-    legs.push(firstLeg, planKochiMetroRideLeg(metroFrom.index, metroTo.index, now));
-    const lastLeg = await driveOrWalkLeg(metroTo, to, 'your destination');
-    if (!lastLeg) return null;
-    legs.push(lastLeg);
-  } else {
-    const firstLeg = await driveOrWalkLeg(from, ferryFrom, ferryFrom.name);
-    if (!firstLeg) return null;
-    legs.push(firstLeg, ...planKochiWaterMetroRideLegs(ferryFrom.name, ferryTo.name, now));
-    const lastLeg = await driveOrWalkLeg(ferryTo, to, 'your destination');
-    if (!lastLeg) return null;
-    legs.push(lastLeg);
+  // ---- Step 1: free candidate specs ----
+  // A spec is just an ordered list of segments: 'access' (needs a real
+  // Valhalla walk/drive call, resolved in Step 2) or 'ride' (already-built
+  // leg object(s), free — see planKochiMetroRideLeg/planKochiWaterMetroRideLegs).
+  const specs = [];
+
+  if (metroFeasible) {
+    const candidates = [];
+    for (let offset = -KOCHI_METRO_ALIGHT_WINDOW; offset <= KOCHI_METRO_ALIGHT_WINDOW; offset++) {
+      const idx = metroTo.index + offset;
+      if (idx < 0 || idx >= metro.stations.length || idx === metroFrom.index) continue;
+      const station = metro.stations[idx];
+      candidates.push({ offset, idx, distToDestM: turf.distance([station.lon, station.lat], [to.lon, to.lat], { units: 'meters' }) });
+    }
+    const zero = candidates.find((c) => c.offset === 0);
+    const others = candidates.filter((c) => c.offset !== 0).sort((a, b) => a.distToDestM - b.distToDestM);
+    const chosen = (zero ? [zero] : []).concat(others.slice(0, zero ? 2 : 3));
+    chosen.forEach(({ idx }) => {
+      specs.push({
+        segments: [
+          { type: 'access', from, to: metroFrom, toName: metroFrom.name },
+          { type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, idx, now)] },
+          { type: 'access', from: metro.stations[idx], to, toName: 'your destination' },
+        ],
+      });
+    });
   }
 
-  // source: 'kochi' — tags this as a live-trackable itinerary (see
-  // startTransitNavigation/state.transitTracking below), unlike an OTP2
-  // itinerary, which has no bundled schedule/station data to detect
-  // boarding/alighting against and so never gets a Start button at all.
-  return { legs, duration: legs.reduce((sum, l) => sum + l.duration, 0), source: 'kochi' };
+  if (ferryPath) {
+    specs.push({
+      segments: [
+        { type: 'access', from, to: ferryFrom, toName: ferryFrom.name },
+        { type: 'ride', legs: planKochiWaterMetroRideLegs(ferryFrom.name, ferryTo.name, now) },
+        { type: 'access', from: ferryTo, to, toName: 'your destination' },
+      ],
+    });
+  }
+
+  if (metroFeasible && ferryFeasible) {
+    const combined = [];
+    for (const tp of findKochiTransferPoints()) {
+      if (combined.length >= KOCHI_MAX_COMBINED_SPECS) break;
+      // metro-first: origin --metro--> transfer point --walk/drive--> transfer jetty --ferry--> destination
+      if (tp.metroIndex !== metroFrom.index && tp.waterStation.name !== ferryTo.name) {
+        const ferryHopPath = findKochiWaterMetroPath(tp.waterStation.name, ferryTo.name);
+        if (ferryHopPath) {
+          combined.push({
+            segments: [
+              { type: 'access', from, to: metroFrom, toName: metroFrom.name },
+              { type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, tp.metroIndex, now)] },
+              { type: 'access', from: tp.metroStation, to: tp.waterStation, toName: tp.waterStation.name },
+              { type: 'ride', legs: planKochiWaterMetroRideLegs(tp.waterStation.name, ferryTo.name, now) },
+              { type: 'access', from: ferryTo, to, toName: 'your destination' },
+            ],
+          });
+        }
+      }
+      if (combined.length >= KOCHI_MAX_COMBINED_SPECS) break;
+      // ferry-first: origin --ferry--> transfer jetty --walk/drive--> transfer point --metro--> destination
+      if (tp.waterStation.name !== ferryFrom.name && tp.metroIndex !== metroTo.index) {
+        const ferryHopPath = findKochiWaterMetroPath(ferryFrom.name, tp.waterStation.name);
+        if (ferryHopPath) {
+          combined.push({
+            segments: [
+              { type: 'access', from, to: ferryFrom, toName: ferryFrom.name },
+              { type: 'ride', legs: planKochiWaterMetroRideLegs(ferryFrom.name, tp.waterStation.name, now) },
+              { type: 'access', from: tp.waterStation, to: tp.metroStation, toName: tp.metroStation.name },
+              { type: 'ride', legs: [planKochiMetroRideLeg(tp.metroIndex, metroTo.index, now)] },
+              { type: 'access', from: metroTo, to, toName: 'your destination' },
+            ],
+          });
+        }
+      }
+    }
+    specs.push(...combined.slice(0, KOCHI_MAX_COMBINED_SPECS));
+  }
+
+  if (!specs.length) return null;
+
+  // ---- Step 2: resolve access legs, deduped/shared via one per-call cache ----
+  const legCache = new Map();
+  const built = await Promise.all(specs.map(async (spec) => {
+    const legs = [];
+    for (const seg of spec.segments) {
+      if (seg.type === 'ride') { legs.push(...seg.legs); continue; }
+      const accessLeg = await cachedDriveOrWalkLeg(legCache, seg.from, seg.to, seg.toName);
+      if (!accessLeg) return null;
+      legs.push(accessLeg);
+    }
+    return {
+      legs,
+      duration: legs.reduce((sum, l) => sum + (l.duration || 0), 0),
+      distanceM: legs.reduce((sum, l) => sum + (l.distance || 0), 0),
+      source: 'kochi',
+    };
+  }));
+
+  // ---- Step 3: rank, dedupe, cap ----
+  const survivors = built.filter(Boolean);
+  if (!survivors.length) return null;
+  const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> shortest survivor seen for it
+  survivors.forEach((it) => {
+    const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY')
+      .map((l) => `${l.mode}:${l.from.name}>${l.to.name}`).join('|');
+    const existing = bySignature.get(sig);
+    if (!existing || it.distanceM < existing.distanceM) bySignature.set(sig, it);
+  });
+  return [...bySignature.values()].sort((a, b) => a.distanceM - b.distanceM).slice(0, KOCHI_MAX_ITINERARY_OPTIONS);
 }
 
 const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
@@ -7312,7 +7472,7 @@ if (transitModeBtn) transitModeBtn.classList.toggle('hidden', !TRANSIT_ENABLED);
 if (modeButtons.filter((b) => !b.classList.contains('hidden')).length > 1) {
   el.travelModeToggle.classList.remove('hidden');
 }
-// Stops aren't supported by transit routing at all — requestTransitRoute
+// Stops aren't supported by transit routing at all — requestTransitItineraries
 // only ever takes state.from/state.to (contrast the drive/walk branch,
 // which passes getStops()) — so leaving the stops UI visible in transit
 // mode used to mean any stops already added just silently vanished from
@@ -7370,25 +7530,28 @@ function transitLegIcon(mode) {
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 }
 
-/** Tries the bundled Kochi planner first (see buildKochiItinerary above),
+/** Tries the bundled Kochi planner first (see buildKochiItineraries above),
  * falling back to OTP2 (if configured — see requestOtp2TransitRoute below)
- * only when Kochi's doesn't produce a route, either because it's disabled
- * or because neither endpoint is anywhere near the bundled network. A
- * thrown error from the Kochi planner (e.g. a Valhalla hiccup on the
- * walk/drive leg) is logged and treated the same as "no route" from it,
- * not surfaced directly — OTP2 (or the final error) still gets a chance. */
-async function requestTransitRoute(from, to) {
+ * only when Kochi's doesn't produce any candidate, either because it's
+ * disabled or because neither endpoint is anywhere near the bundled
+ * network. A thrown error from the Kochi planner (e.g. a Valhalla hiccup on
+ * a walk/drive leg) is logged and treated the same as "no candidates" from
+ * it, not surfaced directly — OTP2 (or the final error) still gets a
+ * chance. Always returns an ARRAY — wraps the OTP2 result (a single
+ * itinerary) as a length-1 array too, so the caller never branches on
+ * shape. */
+async function requestTransitItineraries(from, to) {
   try {
-    const itinerary = await buildKochiItinerary(from, to);
-    if (itinerary) {
-      resolverDebugLog(`Kochi transit: found an itinerary with ${itinerary.legs.length} leg(s).`, 'success');
-      return itinerary;
+    const itineraries = await buildKochiItineraries(from, to);
+    if (itineraries && itineraries.length) {
+      resolverDebugLog(`Kochi transit: found ${itineraries.length} itinerary option(s).`, 'success');
+      return itineraries;
     }
   } catch (err) {
     resolverDebugLog(`Kochi transit: planning failed — ${err.message}`, 'error');
   }
   if (!CONFIG.OTP2_URL) throw new Error('No transit route could be found between those two points.');
-  return requestOtp2TransitRoute(from, to);
+  return [await requestOtp2TransitRoute(from, to)];
 }
 
 /** OTP2's classic REST trip planner endpoint — stable across OTP1/OTP2,
@@ -7451,6 +7614,7 @@ function renderTransitManeuverList(legs) {
         <div class="instr">${escapeHtml(instruction)}</div>
         ${waitText ? `<div class="meta next-departure">${waitLabel} ${escapeHtml(waitText)}</div>` : ''}
         <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}</div>
+        ${leg.mode === 'SUBWAY' && leg.stations ? '<ol class="station-progress hidden"></ol>' : ''}
       </div>`;
     el.maneuverList.appendChild(li);
   });
@@ -7489,6 +7653,78 @@ async function renderTransitRoute(itinerary) {
   el.bottomSheet.classList.remove('hidden');
 }
 
+/** Label parts for one itinerary's card — "Metro"/"Water Metro" — derived
+ * purely from which leg modes are present, never hardcoded per station, so
+ * this keeps working if the candidate search above or the bundled data
+ * changes what combinations are possible. */
+function kochiItineraryBaseParts(itinerary) {
+  const parts = [];
+  if (itinerary.legs.some((l) => l.mode === 'SUBWAY')) parts.push('Metro');
+  if (itinerary.legs.some((l) => l.mode === 'FERRY')) parts.push('Water Metro');
+  return parts;
+}
+
+/** One label per itinerary in `itineraries` — e.g. "Metro + Water Metro",
+ * "Metro" — with a disambiguating "(via StationName)" suffix added ONLY
+ * when two itineraries would otherwise share an identical label (e.g. two
+ * metro-only alternatives alighting at different nearby stations — see the
+ * KOCHI_METRO_ALIGHT_WINDOW candidates in buildKochiItineraries). */
+function buildTransitItineraryLabels(itineraries) {
+  const labels = itineraries.map((it) => kochiItineraryBaseParts(it).join(' + '));
+  const counts = new Map();
+  labels.forEach((l) => counts.set(l, (counts.get(l) || 0) + 1));
+  return itineraries.map((itinerary, i) => {
+    if (counts.get(labels[i]) <= 1) return labels[i];
+    const rideLeg = itinerary.legs.find((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY');
+    const viaName = rideLeg && rideLeg.to && rideLeg.to.name;
+    return viaName ? `${labels[i]} (via ${viaName})` : labels[i];
+  });
+}
+
+/** Builds/replaces the Kochi-itinerary alternative cards — a separate,
+ * lighter mechanism from state.routeOptions/renderRouteOptions/
+ * selectRouteOption (that pipeline is deeply Valhalla-trip-object-specific:
+ * traffic overlays, buildRouteOptionTags's Fastest/Shortest/tolls
+ * comparison, gray-alternate-line drawing — none of it applies to a
+ * {legs, duration, distanceM, source} object). Reuses the exact same
+ * .route-option-card/dist/time/tag/.active CSS purely for a visually
+ * consistent card. Hides the row entirely when there's nothing meaningful
+ * to choose between (fewer than 2 options) — never shown for a single
+ * lonely result or for OTP2's always-length-1 array. */
+function renderTransitItineraryOptions() {
+  el.transitItineraryOptionsRow.innerHTML = '';
+  const options = state.transitItineraryOptions;
+  if (options.length < 2) {
+    el.transitItineraryOptionsRow.classList.add('hidden');
+    return;
+  }
+  const labels = buildTransitItineraryLabels(options);
+  options.forEach((itinerary, i) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'route-option-card' + (i === state.selectedTransitItineraryIndex ? ' active' : '');
+    card.innerHTML = `<div class="route-option-dist">${formatDistance(itinerary.distanceM || 0)}</div>
+      <div class="route-option-time">${formatDuration(itinerary.duration)}</div>
+      <div class="route-option-tag">${escapeHtml(labels[i])}</div>`;
+    card.addEventListener('click', () => selectTransitItineraryOption(i));
+    el.transitItineraryOptionsRow.appendChild(card);
+  });
+  el.transitItineraryOptionsRow.classList.remove('hidden');
+}
+
+/** Switches the active card to transitItineraryOptions[index] — no network
+ * call, everything needed is already sitting in memory from the initial
+ * requestTransitItineraries response. Mirrors selectRouteOption's own "no
+ * switching once committed" guard, checking state.transitTracking (this
+ * itinerary's own live-tracking flag) instead of state.navigating. */
+async function selectTransitItineraryOption(index) {
+  if (state.transitTracking || index === state.selectedTransitItineraryIndex || !state.transitItineraryOptions[index]) return;
+  state.selectedTransitItineraryIndex = index;
+  await renderTransitRoute(state.transitItineraryOptions[index]);
+  renderTransitItineraryOptions(); // refreshes active-card highlighting
+  updateSheetPeekHeight();
+}
+
 el.planBtn.addEventListener('click', async () => {
   if (!state.from || !state.to) {
     showStatus('Please pick both a starting point and a destination from the suggestion list.', 'error');
@@ -7503,15 +7739,18 @@ el.planBtn.addEventListener('click', async () => {
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
     if (state.travelMode === 'transit') {
-      const itinerary = await requestTransitRoute(state.from, state.to);
-      await renderTransitRoute(itinerary);
+      const itineraries = await requestTransitItineraries(state.from, state.to);
+      state.transitItineraryOptions = itineraries;
+      state.selectedTransitItineraryIndex = 0;
+      await renderTransitRoute(itineraries[0]);
+      renderTransitItineraryOptions();
       el.bottomSheet.classList.remove('expanded', 'half');
       // Live GPS-guided tracking (startTransitNavigation) only exists for a
-      // Kochi-sourced itinerary (see itinerary.source in buildKochiItinerary)
+      // Kochi-sourced itinerary (see itinerary.source in buildKochiItineraries)
       // — an OTP2 itinerary has no bundled schedule/station data to detect
       // boarding/alighting against, so it still gets no Start button, exactly
       // as before.
-      el.startNavBtn.classList.toggle('hidden', itinerary.source !== 'kochi');
+      el.startNavBtn.classList.toggle('hidden', itineraries[0].source !== 'kochi');
       el.cancelRouteBtn.classList.remove('hidden');
       el.shareRouteBtn.classList.remove('hidden');
       updateSheetPeekHeight(); // see the same call in the drive/walk branch below for why this needs to happen after the buttons above are actually visible
@@ -7606,6 +7845,7 @@ new ResizeObserver(syncMapControlsClearance).observe(el.bottomSheet);
  * changed (route rendered, alternates shown/hidden). */
 function updateSheetPeekHeight() {
   const routeOptionsHeight = el.routeOptionsRow.classList.contains('hidden') ? 0 : el.routeOptionsRow.offsetHeight;
+  const transitItineraryOptionsHeight = el.transitItineraryOptionsRow.classList.contains('hidden') ? 0 : el.transitItineraryOptionsRow.offsetHeight;
   const elevationHeight = el.elevationProfile.classList.contains('hidden') ? 0 : el.elevationProfile.offsetHeight;
   // #maneuver-list has no .hidden toggle of its own (unlike #poi-results-list)
   // — it stays in normal flow even with zero <li> items, and its own
@@ -7613,7 +7853,7 @@ function updateSheetPeekHeight() {
   // testing confirmed this: the sum below without this term consistently
   // undercounted the sheet's actual scrollHeight by exactly that padding,
   // clipping the bottom of the peek state by a few pixels.
-  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + elevationHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
+  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + transitItineraryOptionsHeight + elevationHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
   // Only actually apply it as the live inline max-height while at rest in
   // the peek state — .half/.expanded's own CSS max-height must stay in
   // charge otherwise, and an active drag is already driving this same
@@ -7725,6 +7965,8 @@ function cancelPlannedRoute() {
   state.transitItinerary = null;
   state.routeOptions = [];
   state.selectedRouteIndex = 0;
+  state.transitItineraryOptions = [];
+  state.selectedTransitItineraryIndex = 0;
   state.from = null;
   state.to = null;
   map.getSource('route').setData(emptyFeatureCollection());
@@ -7732,6 +7974,8 @@ function cancelPlannedRoute() {
   map.getSource('route-alternates').setData(emptyFeatureCollection());
   clearTraveledRouteSegment();
   el.routeOptionsRow.classList.add('hidden');
+  el.transitItineraryOptionsRow.classList.add('hidden');
+  el.transitItineraryOptionsRow.innerHTML = '';
 
   resetToRouteView();
   el.bottomSheet.classList.add('hidden');
@@ -9115,7 +9359,7 @@ function renderTripSummary({ arrived, distanceM, elapsedS, ascentM, descentM, ef
 
 // ============================================================================
 // Kochi transit live tracking — GPS-guided progress through a Kochi-sourced
-// itinerary (buildKochiItinerary; see itinerary.source === 'kochi') only. An
+// itinerary (buildKochiItineraries; see itinerary.source === 'kochi') only. An
 // OTP2 itinerary never gets a Start button in the first place (see the
 // plan-button handler above), so none of this ever runs against one —
 // there's no bundled schedule/station data to detect boarding/alighting
@@ -9152,6 +9396,14 @@ function resetTransitLegTrackingState() {
   state.transitRideBoarded = false;
   state.transitRideOffRouteSince = null;
   state.transitRideHidden = false;
+  state.transitRideStationIdx = null;
+  el.boardConfirmBtn.classList.add('hidden');
+  // Defensive: clears/hides the NEW current leg's own station-progress list
+  // (if it has one) so a stale highlighted list from a previous visit to
+  // this same leg index never flashes before fresh GPS data repopulates it.
+  const newLegLi = el.maneuverList.children[state.transitLegIndex];
+  const newLegStationList = newLegLi && newLegLi.querySelector('.station-progress');
+  if (newLegStationList) { newLegStationList.classList.add('hidden'); newLegStationList.innerHTML = ''; }
   state.transitLegLineFeature = leg && leg.geometry && leg.geometry.length > 1 ? turf.lineString(leg.geometry) : null;
   highlightTransitLeg(state.transitLegIndex);
   if (!leg) return;
@@ -9178,6 +9430,29 @@ function highlightTransitLeg(idx) {
   });
   const activeLi = idx >= 0 ? el.maneuverList.children[idx] : null;
   if (activeLi) activeLi.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+/** Locates the current SUBWAY leg's own <ol class="station-progress"> (see
+ * renderTransitManeuverList) and (re)builds one <li> per station the FIRST
+ * time it's called for this leg, then on every subsequent call just toggles
+ * classes — same .active/.done classes highlightTransitLeg already uses for
+ * leg-level highlighting, just one level deeper (per-station instead of
+ * per-leg). Never called for a FERRY leg — water metro has no intermediate-
+ * stop data (see updateTransitRideLeg). */
+function renderStationProgress(legIndex, stations, currentIdx) {
+  const li = el.maneuverList.children[legIndex];
+  const list = li && li.querySelector('.station-progress');
+  if (!list) return;
+  if (!list.children.length) {
+    list.innerHTML = stations.map((s) => `<li>${escapeHtml(s.name)}</li>`).join('');
+  }
+  [...list.children].forEach((row, i) => {
+    row.classList.toggle('done', i < currentIdx);
+    row.classList.toggle('active', i === currentIdx);
+  });
+  list.classList.remove('hidden');
+  const activeRow = list.children[currentIdx];
+  if (activeRow) activeRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 /** Advances to the next leg, or ends the trip if that was the last one —
@@ -9275,12 +9550,31 @@ function updateTransitRideLeg(leg, lngLat) {
 
   if (!state.transitRideBoarded) {
     const distToOriginM = turf.distance(lngLat, originCoord, { units: 'meters' });
+    const withinBoardingRadius = distToOriginM <= CONFIG.TRANSIT_BOARDING_RADIUS_M;
+    // Manual boarding confirm: shown purely on GPS proximity, deliberately
+    // NOT gated on the scheduled departure time having passed yet (unlike
+    // the automatic detection just below) — fixes a latent gap where
+    // boarding early (ahead of the "scheduled" time) could never be
+    // confirmed at all until that clock time arrived. See
+    // docs/KOCHI_TRANSIT.md's "Live tracking during the ride" section.
+    if (withinBoardingRadius) {
+      if (el.boardConfirmBtn.classList.contains('hidden')) {
+        el.boardConfirmBtn.textContent = leg.mode === 'FERRY' ? "I'm on the boat" : "I'm on the train";
+        el.boardConfirmBtn.classList.remove('hidden');
+      }
+    } else {
+      el.boardConfirmBtn.classList.add('hidden');
+    }
+
     // leg.departureAtMs is null only when there's no real departure left to
     // check against (e.g. the last train of the day already ran) — falls
     // back to proximity alone rather than never being able to board at all.
+    // This automatic path stays as the fallback for anyone who doesn't tap
+    // the confirm button above.
     const pastDeparture = leg.departureAtMs == null || Date.now() >= leg.departureAtMs;
-    if (distToOriginM <= CONFIG.TRANSIT_BOARDING_RADIUS_M && pastDeparture) {
+    if (withinBoardingRadius && pastDeparture) {
       state.transitRideBoarded = true;
+      el.boardConfirmBtn.classList.add('hidden');
     } else {
       el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
       el.navBannerInstruction.textContent = `Head to ${(leg.from && leg.from.name) || 'the platform'}`;
@@ -9324,6 +9618,10 @@ function updateTransitRideLeg(leg, lngLat) {
     el.navBannerIcon.innerHTML = transitLegIcon(leg.mode);
     el.navBannerInstruction.textContent = `Next stop: ${stations[nextIdx].name}`;
     el.navBannerDistance.textContent = stopsRemaining > 0 ? `${stopsRemaining} stop${stopsRemaining === 1 ? '' : 's'} to go` : 'Arriving';
+    if (nextIdx !== state.transitRideStationIdx) {
+      renderStationProgress(state.transitLegIndex, stations, nextIdx);
+      state.transitRideStationIdx = nextIdx;
+    }
   } else {
     // FERRY (or a metro leg somehow missing its stations array) — no
     // intermediate-stop data to count, so percent-of-distance + a plain
@@ -9418,6 +9716,7 @@ async function startTransitNavigation(itinerary) {
   el.bottomSheet.classList.remove('expanded', 'half');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
+  el.transitItineraryOptionsRow.classList.add('hidden'); // no more switching itineraries once you're committed
   el.endNavBtn.classList.remove('hidden');
   updateLocateBtnState();
 
@@ -9455,10 +9754,13 @@ function endTransitNavigation({ arrived = false } = {}) {
 
   el.navBanner.classList.add('hidden');
   el.navSpeed.classList.add('hidden');
+  el.boardConfirmBtn.classList.add('hidden');
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');
   el.searchCard.classList.remove('hidden');
+  renderTransitItineraryOptions(); // typically re-shows the row (only if >=2 options) with correct active-card highlighting
+  updateSheetPeekHeight();
   highlightTransitLeg(-1);
   updateLocateBtnState();
 
@@ -9472,6 +9774,10 @@ el.startNavBtn.addEventListener('click', () => {
 el.endNavBtn.addEventListener('click', () => {
   if (state.transitTracking) endTransitNavigation();
   else endNavigation({ showSummary: true });
+});
+el.boardConfirmBtn.addEventListener('click', () => {
+  state.transitRideBoarded = true;
+  el.boardConfirmBtn.classList.add('hidden');
 });
 
 // ============================================================================

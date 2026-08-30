@@ -360,7 +360,7 @@ export const CONFIG = {
   // are small enough that this app just does nearest-station lookup + plain
   // stop-counting/graph traversal itself, reusing the existing Valhalla-
   // backed walk/drive routing for the first/last mile (see
-  // buildKochiItinerary in app.js). This is Kochi-specific bundled data —
+  // buildKochiItineraries in app.js). This is Kochi-specific bundled data —
   // same spirit as GEOCODE_COUNTRY_CODES defaulting to 'in' below, this
   // maintainer's own bias, not a generic default. Set to false if you don't
   // want this showing on your own deployment.
@@ -371,13 +371,22 @@ export const CONFIG = {
   // 'https://otp.mydomain.com'. Leave empty if Kochi (above) is all you
   // need. Only tried when the Kochi planner can't produce a route for the
   // query (disabled, or neither endpoint near the bundled network) — see
-  // requestTransitRoute in app.js. With both this and KOCHI_TRANSIT_ENABLED
+  // requestTransitItineraries in app.js. With both this and KOCHI_TRANSIT_ENABLED
   // empty/false, the transit mode toggle simply never appears.
   OTP2_URL: '',
 
+  // Two stations/jetties within this many metres of each other count as a
+  // real-world walkable transfer point between the two independent Kochi
+  // networks — e.g. Metro's "Vyttila" station and Water Metro's "Vytilla"
+  // jetty are 222m apart. Deliberately well under KOCHI_WALK_MAX_M (app.js)
+  // so two genuinely unrelated stations near each other don't get wrongly
+  // linked. See findKochiTransferPoints in app.js — purely coordinate-based,
+  // no hardcoded station names.
+  KOCHI_TRANSFER_MAX_M: 400,
+
   // --- Kochi transit live tracking ------------------------------------------
   // GPS-guided live tracking during a Kochi-sourced transit itinerary (see
-  // buildKochiItinerary/startTransitNavigation in app.js) — walk/drive legs
+  // buildKochiItineraries/startTransitNavigation in app.js) — walk/drive legs
   // reuse the same turn-by-turn banner as normal navigation; ride legs
   // (metro/ferry) get a "next stop"/percent-of-distance readout instead.
   // Never applies to an OTP2-planned itinerary — no bundled schedule/station

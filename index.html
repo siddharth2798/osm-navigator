@@ -305,6 +305,14 @@
       </div>
     </div>
 
+    <!-- "I'm on the train"/"I'm on the boat" manual boarding confirm — shown
+         by updateTransitRideLeg the moment GPS is within
+         CONFIG.TRANSIT_BOARDING_RADIUS_M of the current ride leg's origin,
+         regardless of whether the scheduled departure time has passed yet
+         (fixes early-boarding — see docs/KOCHI_TRANSIT.md). Label text is
+         set dynamically in JS (mode-dependent). -->
+    <button id="board-confirm-btn" class="hidden" type="button"></button>
+
     <!-- ============ Live speed readout, shown only while navigating ============ -->
     <div id="nav-speed" class="hidden">— km/h</div>
 
@@ -472,6 +480,12 @@
          sheet-actions below, so a route with alternates is never scrolled
          past to reach Start. -->
     <div id="route-options" class="hidden"></div>
+
+    <!-- Kochi-planned transit itinerary alternatives — same card CSS as
+         #route-options above, but a separate, lighter DOM row (see
+         renderTransitItineraryOptions in app.js): only shown for a
+         Kochi-sourced itinerary with 2+ real candidates. -->
+    <div id="transit-itinerary-options" class="hidden"></div>
 
     <!-- Walk-mode only: ascent/descent summary + a hand-drawn elevation
          chart, computed once (static, no live position tracking) after the

@@ -724,6 +724,21 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 }
 #nav-speed.hidden { display: none; }
 
+/* Manual boarding-confirm pill — CTA-styled like #start-nav-btn so it reads
+   as the one clear affirmative action while waiting to board. */
+#board-confirm-btn {
+  align-self: flex-start;
+  background: var(--accent-2);
+  color: #06240f;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: var(--shadow);
+}
+#board-confirm-btn.hidden { display: none; }
+
 /* "Heavy traffic ahead" indicator — same small-pill treatment as #nav-speed
    right above it (inherits #top-overlay's placement/safe-area handling for
    free), amber text rather than --danger's red since this is informational,
@@ -1050,6 +1065,22 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .route-option-elevation { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 .route-option-elevation.hidden { display: none; }
 
+/* Kochi-planned transit itinerary alternatives (see #transit-itinerary-options
+   in index.html / renderTransitItineraryOptions in app.js) — a separate DOM
+   row from #route-options above, but reusing the exact same
+   .route-option-card/dist/time/tag/.active classes for a visually identical
+   card; only the container itself needs its own rule. */
+#transit-itinerary-options {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 12px 10px;
+  scrollbar-width: none;
+}
+#transit-itinerary-options::-webkit-scrollbar { display: none; }
+#transit-itinerary-options.hidden { display: none; }
+
 /* Walk-mode elevation profile — static chart, computed once per route. */
 #elevation-profile { flex-shrink: 0; padding: 4px 16px 8px; }
 #elevation-profile.hidden { display: none; }
@@ -1238,6 +1269,22 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 #maneuver-list li.active { background: var(--panel-2); }
 #maneuver-list li.active .m-icon { background: var(--accent); color: #fff; }
 #maneuver-list li.done { opacity: 0.45; }
+
+/* Per-station progress list nested inside a SUBWAY leg's own <li> (see
+   renderStationProgress in app.js) — Google-Maps-style full station list
+   while riding, one level deeper than the leg-level .active/.done
+   highlightTransitLeg already applies. Capped height with its own scroll:
+   a 20-station ride nested inside one leg row would otherwise blow up the
+   sheet. The existing "#maneuver-list li.done { opacity: 0.45; }" rule just
+   above already applies here for free (plain descendant selector matches
+   any nested <li>, not just direct children) — no separate dulled-state
+   rule needed. */
+.station-progress { list-style: none; margin: 8px 0 0; padding: 0; max-height: 160px; overflow-y: auto; }
+.station-progress li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; color: var(--text-dim); }
+.station-progress li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+.station-progress li.active { color: var(--text); font-weight: 600; }
+.station-progress li.active::before { width: 9px; height: 9px; background: var(--accent); }
+.station-progress.hidden { display: none; }
 
 /* ---------------------------------------------------------------- Mapillary viewer */
 
