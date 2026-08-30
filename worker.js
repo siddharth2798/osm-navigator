@@ -20,9 +20,13 @@ export default {
     if (url.pathname === '/api/valhalla-route') return valhallaProxy('route', request, env);
     if (url.pathname === '/api/valhalla-height') return valhallaProxy('height', request, env);
     if (url.pathname === '/api/flights') return nearbyFlights(url, env);
-    // Ported from main (ab45626) — functions/api/traffic.js and
-    // functions/api/places.js are Cloudflare PAGES Functions, which never
-    // run under this app's actual plain-Worker deployment path at all.
+    // Confirmed live (curl against the deployed *.workers.dev domain) that
+    // these two 404'd — functions/api/traffic.js and functions/api/places.js
+    // are Cloudflare PAGES Functions, but this app is deployed as a plain
+    // Worker (see wrangler.jsonc's `main`), which never executes functions/
+    // at all. TomTom live traffic and the Places fallback have never
+    // actually reached TomTom on this deployment, web or native, regardless
+    // of CONFIG.TOMTOM_FEATURES_ENABLED/the Settings toggle being on.
     if (url.pathname === '/api/traffic') return tomtomTrafficFlow(url, env);
     if (url.pathname === '/api/places') return tomtomPlacesSearch(url, env);
     return env.ASSETS.fetch(request);

@@ -160,8 +160,11 @@
           Add stop
         </button>
         <!-- Shown once more than one mode is available — Drive+Walk always
-             (walking needs no external service), Transit only if OTP2_URL is
-             set (see app.js). Icons mirror transitLegIcon's WALK/BUS glyphs. -->
+             (walking needs no external service), Transit if either
+             KOCHI_TRANSIT_ENABLED (bundled Kochi Metro/Water Metro data, on
+             by default) or OTP2_URL (a self-hosted instance for a different
+             city) is set — see TRANSIT_ENABLED in app.js. Icons mirror
+             transitLegIcon's WALK/BUS glyphs. -->
         <div id="travel-mode-toggle" class="hidden">
           <button type="button" class="mode-btn active" data-mode="drive">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -310,6 +313,14 @@
         <div id="nav-banner-distance">—</div>
       </div>
     </div>
+
+    <!-- "I'm on the train"/"I'm on the boat" manual boarding confirm — shown
+         by updateTransitRideLeg the moment GPS is within
+         CONFIG.TRANSIT_BOARDING_RADIUS_M of the current ride leg's origin,
+         regardless of whether the scheduled departure time has passed yet
+         (fixes early-boarding — see docs/KOCHI_TRANSIT.md). Label text is
+         set dynamically in JS (mode-dependent). -->
+    <button id="board-confirm-btn" class="hidden" type="button"></button>
 
     <!-- ============ Live speed readout, shown only while navigating ============ -->
     <div id="nav-speed" class="hidden">— km/h</div>
@@ -486,6 +497,12 @@
          sheet-actions below, so a route with alternates is never scrolled
          past to reach Start. -->
     <div id="route-options" class="hidden"></div>
+
+    <!-- Kochi-planned transit itinerary alternatives — same card CSS as
+         #route-options above, but a separate, lighter DOM row (see
+         renderTransitItineraryOptions in app.js): only shown for a
+         Kochi-sourced itinerary with 2+ real candidates. -->
+    <div id="transit-itinerary-options" class="hidden"></div>
 
     <!-- Walk-mode only: ascent/descent summary + a hand-drawn elevation
          chart, computed once (static, no live position tracking) after the
@@ -771,7 +788,7 @@
         </details>
         <details class="docs-item">
           <summary>Drive, walk, or transit<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>
-          <div class="docs-item-body"><p>Once both ends of a trip are set, switch between Drive/Walk (and Transit, if configured) — switching re-plans the trip instantly.</p></div>
+          <div class="docs-item-body"><p>Once both ends of a trip are set, switch between Drive/Walk and Transit — switching re-plans the trip instantly. Transit routes through Kochi Metro and Kochi Water Metro using their own real timetables, walking or driving to the nearest station as needed (or a self-hosted transit server for a different city, if configured).</p><p>For a Kochi Metro/Water Metro trip specifically, a "Start" button appears once it's planned, same as Drive/Walk — tapping it turns on live GPS tracking through every leg of the trip: real turn-by-turn directions while walking or driving to the station, then a "next stop"/stops-remaining readout while riding the metro, or a percent-of-distance readout on the water metro. A trip planned through a self-hosted transit server has no live tracking, planning only.</p></div>
         </details>
         <details class="docs-item">
           <summary>Avoiding tolls or highways<svg class="docs-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5 L16 12 L9 19"/></svg></summary>

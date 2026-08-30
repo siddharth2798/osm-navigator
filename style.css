@@ -214,9 +214,15 @@ button {
 .search-top { display: flex; align-items: center; gap: 6px; }
 .search-fields { flex: 1; min-width: 0; }
 
-.search-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
+.search-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 10px; transition: background 0.1s ease; }
 .search-row.plain { padding: 6px 4px; }
 .search-icon { flex-shrink: 0; color: var(--text-dim); }
+/* Dragging a stop above the starting-point row or below the destination
+   row highlights that row as the drop target — see stopDragPromoteTarget
+   in app.js — the same accent-tinted-background language .route-option-
+   card.active already uses elsewhere for "this is the thing that'll
+   happen" feedback. */
+.search-row.stop-drop-target { background: rgba(61,139,253,0.14); }
 
 /* Once several stops are added, the list scrolls internally instead of
    pushing the rest of the card (Get Directions, the map below it) further
@@ -229,6 +235,12 @@ button {
   max-height: 18dvh;
   overflow-y: auto;
 }
+/* A stop row's suggestions dropdown is position:absolute — overflow:auto
+   above would otherwise clip it to this box's own tiny height regardless
+   of z-index (see showSuggestionList/hideSuggestionList in app.js, which
+   toggle this class exactly while one of this container's own dropdowns
+   is open). */
+#stops-container.stops-suggestions-open { overflow: visible; }
 
 /* One-tap POI category chips (Google-Maps style) — a single horizontally
    scrollable row, never more, so it can't turn into the kind of permanent
@@ -746,6 +758,21 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 }
 #nav-speed.hidden { display: none; }
 
+/* Manual boarding-confirm pill — CTA-styled like #start-nav-btn so it reads
+   as the one clear affirmative action while waiting to board. */
+#board-confirm-btn {
+  align-self: flex-start;
+  background: var(--accent-2);
+  color: #06240f;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: var(--shadow);
+}
+#board-confirm-btn.hidden { display: none; }
+
 /* "Heavy traffic ahead" indicator — same small-pill treatment as #nav-speed
    right above it (inherits #top-overlay's placement/safe-area handling for
    free), amber text rather than --danger's red since this is informational,
@@ -1072,6 +1099,22 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .route-option-elevation { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 .route-option-elevation.hidden { display: none; }
 
+/* Kochi-planned transit itinerary alternatives (see #transit-itinerary-options
+   in index.html / renderTransitItineraryOptions in app.js) — a separate DOM
+   row from #route-options above, but reusing the exact same
+   .route-option-card/dist/time/tag/.active classes for a visually identical
+   card; only the container itself needs its own rule. */
+#transit-itinerary-options {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 12px 10px;
+  scrollbar-width: none;
+}
+#transit-itinerary-options::-webkit-scrollbar { display: none; }
+#transit-itinerary-options.hidden { display: none; }
+
 /* Walk-mode elevation profile — static chart, computed once per route. */
 #elevation-profile { flex-shrink: 0; padding: 4px 16px 8px; }
 #elevation-profile.hidden { display: none; }
@@ -1253,9 +1296,29 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .m-body { min-width: 0; padding-top: 2px; }
 #maneuver-list li .instr { font-weight: 500; font-size: 14px; }
 #maneuver-list li .meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+/* Real, time-sensitive departure info (see formatWaitText in app.js) —
+   accent-colored so it reads as more actionable than the plain
+   distance/duration line right below it. */
+#maneuver-list li .meta.next-departure { color: var(--accent); font-weight: 600; }
 #maneuver-list li.active { background: var(--panel-2); }
 #maneuver-list li.active .m-icon { background: var(--accent); color: #fff; }
 #maneuver-list li.done { opacity: 0.45; }
+
+/* Per-station progress list nested inside a SUBWAY leg's own <li> (see
+   renderStationProgress in app.js) — Google-Maps-style full station list
+   while riding, one level deeper than the leg-level .active/.done
+   highlightTransitLeg already applies. Capped height with its own scroll:
+   a 20-station ride nested inside one leg row would otherwise blow up the
+   sheet. The existing "#maneuver-list li.done { opacity: 0.45; }" rule just
+   above already applies here for free (plain descendant selector matches
+   any nested <li>, not just direct children) — no separate dulled-state
+   rule needed. */
+.station-progress { list-style: none; margin: 8px 0 0; padding: 0; max-height: 160px; overflow-y: auto; }
+.station-progress li { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; color: var(--text-dim); }
+.station-progress li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+.station-progress li.active { color: var(--text); font-weight: 600; }
+.station-progress li.active::before { width: 9px; height: 9px; background: var(--accent); }
+.station-progress.hidden { display: none; }
 
 /* ---------------------------------------------------------------- Mapillary viewer */
 

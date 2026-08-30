@@ -353,12 +353,82 @@ export const CONFIG = {
   OPENCHARGEMAP_SEARCH_RADIUS_KM: 15,
 
   // --- Transit -------------------------------------------------------------
-  // Point at a self-hosted OpenTripPlanner 2 instance loaded with your OSM
-  // extract + a GTFS feed, e.g. 'https://otp.mydomain.com'. Leave empty and
-  // the transit mode toggle simply never appears — there's no public OTP2
-  // demo server to default to (unlike Valhalla), and a GTFS feed is specific
-  // to whichever local transit agency you care about.
+  // Bundled Kochi Metro + Kochi Water Metro routing — real station/schedule
+  // data (vendor/kochi-metro.json, vendor/kochi-water-metro.json; see
+  // docs/KOCHI_TRANSIT.md for where it comes from and scripts/build-*.mjs to
+  // regenerate it) with no self-hosted service needed at all: both networks
+  // are small enough that this app just does nearest-station lookup + plain
+  // stop-counting/graph traversal itself, reusing the existing Valhalla-
+  // backed walk/drive routing for the first/last mile (see
+  // buildKochiItineraries in app.js). This is Kochi-specific bundled data —
+  // same spirit as GEOCODE_COUNTRY_CODES defaulting to 'in' below, this
+  // maintainer's own bias, not a generic default. Set to false if you don't
+  // want this showing on your own deployment.
+  KOCHI_TRANSIT_ENABLED: true,
+
+  // Point at a self-hosted OpenTripPlanner 2 instance for a DIFFERENT city's
+  // transit, loaded with your own OSM extract + a GTFS feed, e.g.
+  // 'https://otp.mydomain.com'. Leave empty if Kochi (above) is all you
+  // need. Only tried when the Kochi planner can't produce a route for the
+  // query (disabled, or neither endpoint near the bundled network) — see
+  // requestTransitItineraries in app.js. With both this and KOCHI_TRANSIT_ENABLED
+  // empty/false, the transit mode toggle simply never appears.
   OTP2_URL: '',
+
+  // Two stations/jetties within this many metres of each other count as a
+  // real-world walkable transfer point between the two independent Kochi
+  // networks — e.g. Metro's "Vyttila" station and Water Metro's "Vytilla"
+  // jetty are 222m apart. Deliberately well under KOCHI_WALK_MAX_M (app.js)
+  // so two genuinely unrelated stations near each other don't get wrongly
+  // linked. See findKochiTransferPoints in app.js — purely coordinate-based,
+  // no hardcoded station names.
+  KOCHI_TRANSFER_MAX_M: 400,
+
+  // --- Kochi transit live tracking ------------------------------------------
+  // GPS-guided live tracking during a Kochi-sourced transit itinerary (see
+  // buildKochiItineraries/startTransitNavigation in app.js) — walk/drive legs
+  // reuse the same turn-by-turn banner as normal navigation; ride legs
+  // (metro/ferry) get a "next stop"/percent-of-distance readout instead.
+  // Never applies to an OTP2-planned itinerary — no bundled schedule/station
+  // data exists to detect boarding against a generic transit backend.
+
+  // Within this many metres of a ride leg's origin station/jetty coordinate
+  // AND at/after its real scheduled departure (see leg.departureAtMs), the
+  // rider is considered "boarded" — deliberately requiring both, not
+  // proximity alone, so standing on the platform before the train actually
+  // arrives doesn't falsely read as already riding it. Wider than
+  // DEVIATION_THRESHOLD_M above: a station/jetty is a real building, not a
+  // point on a line, and GPS indoors/on a platform is routinely noisier than
+  // out on an open road.
+  TRANSIT_BOARDING_RADIUS_M: 80,
+
+  // Within this many metres of a leg's real destination coordinate, the
+  // rider is considered to have arrived/alighted and tracking advances to
+  // the next leg (or ends the trip, on the last one) — used for both a
+  // walk/drive leg's own destination and a ride leg's destination
+  // station/jetty. See TRANSIT_ARRIVAL_CONFIRM_FIXES below for why a single
+  // fix within this radius isn't enough on its own.
+  TRANSIT_ALIGHT_RADIUS_M: 80,
+
+  // Same reasoning as ARRIVAL_CONFIRM_FIXES above, applied to every leg-
+  // completion check in the transit-tracking state machine (walk/drive leg
+  // reaching its own end, or a ride leg reaching its destination station/
+  // jetty) — one noisy fix inside the radius isn't trustworthy alone.
+  TRANSIT_ARRIVAL_CONFIRM_FIXES: 2,
+
+  // A ride leg can't be "rerouted" (you can't reroute a train) — see
+  // docs/KOCHI_TRANSIT.md. If a live fix drifts more than this many metres
+  // from the ride leg's expected geometry for longer than
+  // TRANSIT_RIDE_DEVIATION_DURATION_MS, the live progress readout for that
+  // leg is just silently hidden rather than guessed at or errored on, and
+  // reappears automatically once back in range. Deliberately much more
+  // generous than DEVIATION_THRESHOLD_M/DEVIATION_DURATION_MS above: a real
+  // train/boat's GPS-visible position can legitimately sit well off the
+  // straight station-to-station line this app draws (curves, open water,
+  // multipath near a station roof), and there's no reroute action to take
+  // anyway — this only ever decides whether to keep trusting the readout.
+  TRANSIT_RIDE_DEVIATION_THRESHOLD_M: 300,
+  TRANSIT_RIDE_DEVIATION_DURATION_MS: 20000,
 
   // --- Weather badge -----------------------------------------------------
   // Shows current conditions (emoji + temperature) at a selected place, and
