@@ -65,6 +65,8 @@ python3 -m http.server 8080
 
 See [docs/SETUP.md](docs/SETUP.md) for configuring your own services and deploying your own copy.
 
+`npm test` runs the unit test suite (`node:test`, no dependencies to install) — see [Running the tests](docs/SETUP.md#running-the-tests).
+
 ## Documentation
 
 - [Privacy](docs/PRIVACY.md) — what leaves your device, and to whom.

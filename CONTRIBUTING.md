@@ -15,7 +15,7 @@ Open a [GitHub issue](https://github.com/siddharth2798/osm-navigator/issues). Us
 
 Small, focused PRs are easiest to review — a bug fix, a docs correction, a self-contained feature. Before writing a larger one, consider opening an issue first to check it fits the project's scope (below), so you're not investing time in something likely to be declined for being out of scope rather than for its implementation.
 
-There's no build step and no test suite — `node --check app.js` (and any other changed `.js` file) catches syntax errors; manual testing in a real browser is otherwise how this codebase verifies itself. Please actually exercise the feature/fix you're changing before opening a PR, the same way the existing code was built.
+There's no build step. `npm test` runs a `node:test` unit suite against the pure logic and server-side proxy modules in `lib/*.js` (see [Running the tests](docs/SETUP.md#running-the-tests)) — run it, and add cases for any `lib/*.js` behavior your PR changes. `app.js` itself (the DOM-heavy UI layer) has no automated coverage — `node --check app.js` (and any other changed `.js` file) catches syntax errors, but manual testing in a real browser is how that part of the codebase verifies itself. Please actually exercise the feature/fix you're changing before opening a PR, the same way the existing code was built.
 
 ## Out of scope
 

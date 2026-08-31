@@ -11,6 +11,10 @@ python3 -m http.server 8080
 
 `app.js` is loaded as an ES module, so `file://` won't work — it has to be served over `http://` or `https://`.
 
+## Running the tests
+
+`npm test` runs a Node-native (`node:test`) unit suite against `lib/*.js` — the pure logic and the Cloudflare-Worker-side proxy modules extracted out of `app.js` specifically so they're testable without a browser (see the top of each `tests/*.test.js` file for what it covers and why). Requires no dependencies beyond Node itself. There's no browser/UI test layer — after any change, still manually verify in a real browser per "Running it locally" above.
+
 ## Configuring your own services
 
 Every URL and tunable lives at the top of **`config.js`**, each commented with what it does — that file, not this doc, is the source of truth.
