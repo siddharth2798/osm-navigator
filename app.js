@@ -1437,6 +1437,7 @@ async function startIdleLocationShare({ silent = false } = {}) {
       // preference order the nav puck already uses in onPositionUpdate.
       const headingDeg = typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : compassHeadingDeg;
       updateMyLocationMarker(lngLat, headingDeg);
+      maybeCheckFlightsIdle(lngLat); // no-op unless the flight-tracking toggle is actually on — see its own doc comment
     },
     (err) => {
       // Without this reset, the very next tap hits stopIdleLocationShare's
@@ -3043,7 +3044,12 @@ function maybeCheckTraffic(traveledM) {
 // CONFIG.FLIGHT_TRACKING_ENABLED in config.js and docs/FLIGHT_TRACKING.md).
 // Shows nearby aircraft on the map while navigating: an alert above the
 // search box when one crosses close to your live position, or every
-// aircraft the query returns once you're near a bundled airport. Backed by
+// aircraft the query returns once you're near a bundled airport. Also
+// works with no trip planned at all — toggling it on while just browsing
+// (see maybeCheckFlightsIdle) rides the same idle GPS watch that powers
+// the "you are here" marker and always plots every nearby aircraft, same
+// as the near-airport view, since there's no "en route" sliver of sky to
+// prioritize when you're not actually going anywhere. Backed by
 // api.adsb.lol via this app's own /api/flights proxy — see
 // lib/flights-proxy.js for why a proxy is needed with no secret involved
 // (it's purely a CORS relay, adsb.lol needs no API key today).
@@ -3123,6 +3129,24 @@ function maybeCheckFlights(traveledM, lngLat) {
   runFlightCheckin(lngLat);
 }
 
+/** Idle-mode counterpart to maybeCheckFlights above — fires off the same
+ * position feed that drives the "you are here" marker (startIdleLocationShare's
+ * own watchPosition callback) instead of the real navigation GPS watch, so
+ * the feature also works while just browsing the map, not only mid-trip.
+ * Deliberately mirrors maybeCheckFlights' own pacing/in-flight/backoff
+ * guards exactly (and shares the same state fields) rather than duplicating
+ * that logic with its own copy — the two can never fire at once anyway,
+ * since exactly one of state.navigating is true at a time. */
+function maybeCheckFlightsIdle(lngLat) {
+  if (state.navigating || !state.flightTrackingEnabled) return;
+  if (state.flightCheckInFlight) return;
+  const now = Date.now();
+  if (state.flightBackoffUntil != null && now < state.flightBackoffUntil) return;
+  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < CONFIG.FLIGHT_POLL_INTERVAL_MS) return;
+  state.lastFlightCheckAt = now;
+  runFlightCheckin(lngLat, { idle: true });
+}
+
 /** adsb.lol documents "dynamic rate limiting based on environment load"
  * with no fixed published cap (see docs/FLIGHT_TRACKING.md) — a 429 means
  * back off, not keep polling at the normal cadence into an endpoint
@@ -3162,12 +3186,16 @@ function aircraftApproachDistM(lngLat, a) {
   return turf.pointToLineDistance(lngLat, turf.lineString([current, projected]), { units: 'meters' });
 }
 
-async function runFlightCheckin(lngLat) {
+async function runFlightCheckin(lngLat, { idle = false } = {}) {
   state.flightCheckInFlight = true;
   try {
     await loadFlightRefData();
     const nearAirport = nearestAirportWithin(lngLat, CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M);
-    const radiusNm = nearAirport ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
+    // Idle mode has no "en route" concept to keep the default radius tight
+    // for — there's no trip whose sliver of sky matters more than the rest
+    // — so it always uses the wider regional radius, same as being near an
+    // airport does while driving.
+    const radiusNm = idle || nearAirport ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
     const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
     const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
     if (!res.ok) {
@@ -3229,7 +3257,7 @@ async function runFlightCheckin(lngLat) {
       });
       state.flightOverheadAircraft = overhead;
       refreshFlightBadge();
-      updateFlightLayer(nearAirport ? aircraft : overhead);
+      updateFlightLayer(idle || nearAirport ? aircraft : overhead);
     } catch (err) {
       resolverDebugLog(`Flight tracking: rendering the result failed — ${err.message}`, 'error');
     }
@@ -3358,6 +3386,14 @@ if (CONFIG.FLIGHT_TRACKING_ENABLED) {
     el.flightTrackingBtn.setAttribute('aria-label', `Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`);
     showStatus(`Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`, 'info');
     if (!state.flightTrackingEnabled) resetFlightTracking();
+    // Turning this on while just browsing (not navigating) needs its own
+    // position feed to poll from — maybeCheckFlightsIdle rides on whatever
+    // drives the "you are here" marker, which isn't necessarily running
+    // yet (the locate button is a separate, independent toggle). silent:
+    // true because this is a side effect of the tap, not the user asking
+    // to be located — same "automatic on-open share" semantics as this
+    // app's own startup call, just triggered by this toggle instead.
+    else if (!state.navigating && state.idleLocationWatchId == null) startIdleLocationShare({ silent: true });
   });
 }
 
