@@ -7340,10 +7340,17 @@ function findKochiTransferPoints() {
  * Step 2: resolves every spec's walk/drive access legs via
  * cachedDriveOrWalkLeg sharing one per-call Map, drops any spec whose access
  * leg comes back null (unreasonable distance).
- * Step 3: ranks survivors by total distanceM ascending (shortest = default,
- * same convention as drive mode's own primary Valhalla trip), dedupes by
- * ride-leg signature keeping the shorter on a collision, caps to
- * KOCHI_MAX_ITINERARY_OPTIONS. `toName` labels the final leg's own
+ * Step 3: ranks survivors by total duration ascending (fastest = default) —
+ * not distance: ride-leg duration is schedule-exact (no traffic involved at
+ * all), and Valhalla's access-leg duration, even without live traffic, is
+ * still road-aware (speed limits/road class/turns), so it's a meaningfully
+ * better time proxy than raw distance, which has no notion of road speed.
+ * Dedupes by ride-leg signature keeping the faster on a collision, then
+ * drops any survivor that's both slower AND at-least-as-expensive as
+ * another survivor (Pareto dominance — only when both fares are actually
+ * known, never guessed) before capping to KOCHI_MAX_ITINERARY_OPTIONS, so
+ * the alternatives shown are genuinely different tradeoffs rather than
+ * near-duplicates plus a strictly-worse option. `toName` labels the final leg's own
  * destination — 'your destination' by default (a plain two-point trip),
  * but buildKochiMultiStopItinerary passes the real stop name for every
  * segment except the last, so a multi-stop trip's maneuver list reads
@@ -7540,14 +7547,27 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
   // ---- Step 3: rank, dedupe, cap ----
   const survivors = built.filter(Boolean);
   if (!survivors.length) return null;
-  const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> shortest survivor seen for it
+  const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> fastest survivor seen for it
   survivors.forEach((it) => {
     const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY' || l.mode === 'BUS')
       .map((l) => `${l.mode}:${l.from.name}>${l.to.name}`).join('|');
     const existing = bySignature.get(sig);
-    if (!existing || it.distanceM < existing.distanceM) bySignature.set(sig, it);
+    if (!existing || it.duration < existing.duration) bySignature.set(sig, it);
   });
-  return [...bySignature.values()].sort((a, b) => a.distanceM - b.distanceM).slice(0, KOCHI_MAX_ITINERARY_OPTIONS);
+  const ranked = [...bySignature.values()].sort((a, b) => a.duration - b.duration);
+  // Pareto dominance: drop a candidate once an already-kept one (guaranteed
+  // faster-or-equal, since `ranked` is sorted) is ALSO cheaper-or-equal —
+  // only when both fares are actually known, so an itinerary with an
+  // unpriced leg is never dropped on a guess. Keeps the shown alternatives
+  // as genuinely different tradeoffs instead of near-duplicates plus a
+  // strictly-worse option.
+  const kept = [];
+  ranked.forEach((candidate) => {
+    const dominated = kept.some((better) => better.totalFareINR != null && candidate.totalFareINR != null
+      && better.totalFareINR <= candidate.totalFareINR);
+    if (!dominated) kept.push(candidate);
+  });
+  return kept.slice(0, KOCHI_MAX_ITINERARY_OPTIONS);
 }
 
 const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
@@ -7603,10 +7623,10 @@ function transitLegIcon(mode) {
  * safely serialized under the hood by the same valhallaLimiter/
  * selfHostedValhallaLimiter every other Valhalla call already shares, not
  * one giant sequential chain — then concatenates the best (first-ranked,
- * i.e. shortest) candidate from each segment into one itinerary. Segments
+ * i.e. fastest) candidate from each segment into one itinerary. Segments
  * are independent of each other (the metro/ferry networks one segment
  * resolves against don't interact with another's), so picking each one's
- * own shortest option is provably the shortest whole-trip total too — no
+ * own fastest option is provably the fastest whole-trip total too — no
  * combinatorial search across segments needed.
  *
  * Deliberately surfaces no per-segment alternatives for a multi-stop trip
@@ -7637,7 +7657,7 @@ async function buildKochiMultiStopItinerary(waypoints) {
     }),
   );
   if (segments.some((s) => !s || !s.length)) return null;
-  const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked shortest-first
+  const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked fastest-first
   // Same partial-total handling as buildKochiItineraries' own Step 2 — a
   // multi-stop trip is priced only when at least one segment is, and
   // flagged partial unless every segment resolved a full fare itself.
