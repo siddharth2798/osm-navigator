@@ -27,10 +27,21 @@ package-lock.json
 .dev.vars
 
 # worker.js is bundled directly via wrangler.jsonc's "main" field, and
-# functions/ + lib/ are server-side source (a Pages Function entry point and
-# the module it shares with worker.js) — none of these are meant to be
-# fetchable as plain static files.
+# functions/ is server-side source (a Pages Functions entry point) — neither
+# is meant to be fetchable as a plain static file.
+#
+# lib/ is NOT excluded, on purpose, even though most of its modules
+# (resolve-maps-url.js, opencharge-poi.js, tomtom-*.js, valhalla-proxy.js,
+# flights-proxy.js) are server-side-only, shared between worker.js and
+# functions/api/*.js. Since app.js's own extracted-for-testability modules
+# (format-utils.js, text-utils.js, google-maps-url.js, kochi-geo.js,
+# stop-drag-utils.js, transit-labels.js — see tests/) live in this same
+# directory and are `import`ed by app.js AT RUNTIME IN THE BROWSER,
+# excluding lib/ here 404s those imports and breaks the entire app (an ES
+# module import failure aborts the whole script) — confirmed live on the
+# deployed Worker. None of the server-side proxy modules contain secrets
+# (those are all read from Cloudflare env vars/secrets, never hardcoded),
+# so there's no harm in the whole directory being publicly fetchable.
 worker.js
 wrangler.jsonc
 functions/
-lib/
