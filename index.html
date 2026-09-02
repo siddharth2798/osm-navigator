@@ -313,8 +313,18 @@
          set dynamically in JS (mode-dependent). -->
     <button id="board-confirm-btn" class="hidden" type="button"></button>
 
-    <!-- ============ Live speed readout, shown only while navigating ============ -->
-    <div id="nav-speed" class="hidden">— km/h</div>
+    <!-- ============ Live speed readout + speed-limit sign, shown only while
+         navigating. Grouped in one row so the sign sits right next to the
+         driver's own speed — same layout Google Maps uses. The sign itself
+         (drive mode only, see updateSpeedLimitSign in app.js) has its own
+         independent hidden state within the row: it disappears between
+         known road segments instead of showing a stale number. ============ -->
+    <div id="nav-speed-row" class="hidden">
+      <div id="speed-limit-sign" class="hidden" role="status" aria-label="Speed limit">
+        <span id="speed-limit-value">—</span>
+      </div>
+      <div id="nav-speed">— km/h</div>
+    </div>
 
     <!-- ============ "Heavy traffic ahead" indicator — drive-mode navigation
          only, and only ever shown if TOMTOM_FEATURES_ENABLED is true. See

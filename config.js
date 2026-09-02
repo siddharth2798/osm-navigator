@@ -113,6 +113,15 @@ export const CONFIG = {
   // small on long routes. Only used for walk-mode routes.
   ELEVATION_MAX_POINTS: 150,
 
+  // Same idea, for the /trace_attributes call that builds the live
+  // speed-limit sign on a drive-mode route (see fetchSpeedLimitProfile).
+  // Higher than ELEVATION_MAX_POINTS on purpose: trace_attributes' own
+  // edge_walk matching needs enough shape density to correctly snap
+  // through complex interchanges on a long highway drive, which elevation
+  // sampling never has to worry about (a slightly-off height sample is
+  // never as wrong as snapping onto the wrong road entirely).
+  SPEED_LIMIT_MAX_POINTS: 500,
+
   // --- Map tiles: OpenFreeMap (no API key needed) -----------------------------
   MAP_STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
 

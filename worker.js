@@ -19,6 +19,7 @@ export default {
     if (url.pathname === '/api/opencharge-poi') return openChargePoi(url, env);
     if (url.pathname === '/api/valhalla-route') return valhallaProxy('route', request, env);
     if (url.pathname === '/api/valhalla-height') return valhallaProxy('height', request, env);
+    if (url.pathname === '/api/valhalla-trace_attributes') return valhallaProxy('trace_attributes', request, env);
     // Not used by main's own app.js (the flight-tracking overlay itself is
     // personal/flight-tracking-only, see docs/FLIGHT_TRACKING.md) — this
     // route only needs to live here because Cloudflare's Git-integration

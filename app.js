@@ -132,7 +132,10 @@ const el = {
   navBannerIcon: document.getElementById('nav-banner-icon'),
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
+  navSpeedRow: document.getElementById('nav-speed-row'),
   navSpeed: document.getElementById('nav-speed'),
+  speedLimitSign: document.getElementById('speed-limit-sign'),
+  speedLimitValue: document.getElementById('speed-limit-value'),
   boardConfirmBtn: document.getElementById('board-confirm-btn'),
   trafficBadge: document.getElementById('traffic-badge'),
   maneuverList: document.getElementById('maneuver-list'),
@@ -5697,8 +5700,9 @@ async function valhallaTarget(points) {
   return { base: CONFIG.VALHALLA_URL, selfHosted: false };
 }
 
-/** POSTs `body` to Valhalla's `action` endpoint (`route` or `height`),
- * through valhallaTarget's self-hosted/public choice. When the self-hosted
+/** POSTs `body` to Valhalla's `action` endpoint (`route`, `height`, or
+ * `trace_attributes`), through valhallaTarget's self-hosted/public choice.
+ * When the self-hosted
  * proxy comes back 501 (SELF_HOSTED_VALHALLA_URL not set on this
  * deployment), transparently retries against the public server instead of
  * surfacing an error — mirrors fetchNearbyChargingStations' handling of
@@ -5970,8 +5974,9 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
 // ============================================================================
 
 /** Evenly downsamples a route's [lng,lat] coords to at most maxPoints, so a
- * long walking route doesn't send an oversized /height request body. */
-function sampleCoordsForHeight(coords, maxPoints) {
+ * long route doesn't send an oversized request body — used for both /height
+ * (walk-mode elevation) and /trace_attributes (drive-mode speed limits). */
+function sampleCoords(coords, maxPoints) {
   if (coords.length <= maxPoints) return coords;
   const step = (coords.length - 1) / (maxPoints - 1);
   const sampled = [];
@@ -6007,7 +6012,7 @@ function isDegenerateElevation(rangeHeight) {
  * server (routing itself stays wherever it already was) rather than
  * showing a misleadingly flat chart for a route that isn't. */
 async function fetchElevationProfile(coords) {
-  const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
+  const shape = sampleCoords(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
   const { res, selfHosted } = await fetchValhalla('height', shape, { range: true, shape });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
   const data = await res.json();
@@ -6031,6 +6036,104 @@ async function fetchElevationProfile(coords) {
     } catch (_) { /* keep the self-hosted (flat) result below rather than losing the chart entirely */ }
   }
   return data.range_height;
+}
+
+/** Returns a [{startM, speedLimitKmh, isGuessed}, ...] profile (sorted
+ * ascending by startM) for the given route coords, via Valhalla's
+ * /trace_attributes — the one Valhalla action that actually carries OSM
+ * `maxspeed` data (a plain /route response never does; confirmed against
+ * both Valhalla's own docs and this app's own buildRouteState, which reads
+ * every field a maneuver object actually has). `shape_match: 'edge_walk'`
+ * (not map_snap/walk_or_snap) is deliberate: this shape IS a route
+ * Valhalla itself just generated, not a noisy raw GPS trace, so it should
+ * snap onto exactly the edges that route already used rather than
+ * re-guessing a path.
+ *
+ * NOT yet verified against a live response — the public Valhalla demo
+ * server (CONFIG.VALHALLA_URL) was unreachable for this entire feature's
+ * implementation. Field names (`speed_limit`, `speed_type`,
+ * `begin_shape_index`/`end_shape_index`) come from Valhalla's own
+ * documented trace_attributes schema, and every read below is defensive —
+ * a missing/unexpected field just drops that edge rather than throwing —
+ * so a schema surprise fails safe (the sign never shows) instead of
+ * breaking navigation. Re-verify live once the demo server is reachable
+ * again, or against a self-hosted instance.
+ *
+ * Returns null (not a thrown error, from the caller's .catch) when nothing
+ * usable comes back — this is a nice-to-have overlay, never worth
+ * interrupting or blocking navigation over, same philosophy as
+ * fetchElevationProfile. */
+async function fetchSpeedLimitProfile(coords) {
+  const sampled = sampleCoords(coords, CONFIG.SPEED_LIMIT_MAX_POINTS);
+  const shape = sampled.map(([lon, lat]) => ({ lat, lon }));
+  const { res } = await fetchValhalla('trace_attributes', shape, { shape, shape_match: 'edge_walk', costing: 'auto' });
+  if (!res.ok) throw new Error(`Speed limit service returned HTTP ${res.status}.`);
+  const data = await res.json();
+  const edges = data.edges;
+  if (!Array.isArray(edges) || !edges.length) throw new Error('No edge attributes returned.');
+
+  // Cumulative distance to each sampled shape point, in the same order
+  // edge_walk's begin_shape_index/end_shape_index index into — turns an
+  // edge's shape-index range into a real distance-along-route value the
+  // live traveledM (see onPositionUpdate) can be compared against
+  // directly, the same role cumulative distance plays in rangeHeight above.
+  const cumDistM = [0];
+  for (let i = 1; i < sampled.length; i++) {
+    cumDistM.push(cumDistM[i - 1] + turf.distance(sampled[i - 1], sampled[i], { units: 'meters' }));
+  }
+
+  const profile = [];
+  edges.forEach((edge) => {
+    const speedLimitKmh = typeof edge.speed_limit === 'number' ? edge.speed_limit : null;
+    if (speedLimitKmh == null) return; // no posted/known limit for this edge — nothing to show
+    const beginIdx = edge.begin_shape_index;
+    if (typeof beginIdx !== 'number' || beginIdx < 0 || beginIdx >= cumDistM.length) return;
+    profile.push({
+      startM: cumDistM[beginIdx],
+      speedLimitKmh,
+      // 'tagged' is a real posted-limit OSM maxspeed tag; anything else
+      // ('road_class'/similar) is Valhalla's own guess from the road's
+      // classification, not an actual sign — de-emphasized in the UI (see
+      // updateSpeedLimitSign) so a guess never looks as authoritative as a
+      // real one.
+      isGuessed: edge.speed_type !== 'tagged',
+    });
+  });
+  profile.sort((a, b) => a.startM - b.startM);
+  return profile.length ? profile : null;
+}
+
+/** Fire-and-forget: kicks off /trace_attributes for the currently-rendered
+ * route and stores the result on it if/when it resolves — drive-mode
+ * counterpart to updateElevationProfileForRoute above, same stale-response
+ * guard (a route replaced/canceled while this was in flight is silently
+ * discarded rather than mutating a route that's no longer current). */
+function updateSpeedLimitProfileForRoute() {
+  const myRoute = state.route;
+  fetchSpeedLimitProfile(myRoute.coords)
+    .then((profile) => {
+      if (state.route !== myRoute || state.travelMode !== 'drive') return; // stale
+      myRoute.speedLimitProfile = profile;
+    })
+    .catch((err) => {
+      resolverDebugLog(`Speed limits: failed to fetch — ${err.message}`, 'warn');
+      // Non-fatal — see fetchSpeedLimitProfile's own comment.
+    });
+}
+
+/** Step-function lookup: which speed-limit segment covers `distM` — unlike
+ * interpolateHeightM's smooth interpolation (elevation changes
+ * continuously), a speed limit is constant across a whole road segment
+ * then jumps at the boundary, so this just finds the last segment whose
+ * startM is at or before distM. `profile` is assumed sorted ascending by
+ * startM (guaranteed by fetchSpeedLimitProfile's own sort). */
+function speedLimitAt(profile, distM) {
+  let current = null;
+  for (const seg of profile) {
+    if (seg.startM > distM) break;
+    current = seg;
+  }
+  return current;
 }
 
 /** Classic Ramer–Douglas–Peucker polyline simplification: recursively keeps
@@ -6870,6 +6973,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
 
   if (state.travelMode === 'walk') updateElevationProfileForRoute();
   else hideElevationProfile();
+  if (state.travelMode === 'drive') updateSpeedLimitProfileForRoute();
 
   // Persists the route so a killed/reloaded tab mid-drive can restore it
   // without a network round trip. Non-fatal if it fails — the trip keeps
@@ -9000,6 +9104,7 @@ function onPositionUpdate(pos) {
   state.traveledM = traveledM;
   updateTraveledRouteSegment(traveledM);
   updateLiveAscent(traveledM);
+  updateSpeedLimitSign(traveledM);
 
   updateActiveManeuver(traveledM, lngLat);
   checkDeviation(offsetM, lngLat);
@@ -9046,6 +9151,28 @@ function updateLiveAscent(traveledM) {
   }
   state.lastElevationHeightM = heightM;
   if (!el.effortBtn.classList.contains('hidden')) updateEffortBtnLabel();
+}
+
+/** Updates the round speed-limit sign from state.route.speedLimitProfile —
+ * only set once fetchSpeedLimitProfile resolves (see
+ * updateSpeedLimitProfileForRoute), so this is naturally a no-op until
+ * then, same "quietly populate if/when it resolves" pattern as
+ * updateLiveAscent/rangeHeight above. Hides the sign entirely rather than
+ * leaving a stale number on screen once traveledM runs past the last known
+ * segment (e.g. the profile fetch came back partial, or a reroute swapped
+ * in a new state.route before this one's profile had a chance to load —
+ * the stale-response guard in updateSpeedLimitProfileForRoute already
+ * stops an OLD route's profile from ending up on a NEW route's object, but
+ * a brand new route's own profile simply not having arrived yet looks
+ * identical here, and both should just hide the sign, not show a wrong
+ * number). */
+function updateSpeedLimitSign(traveledM) {
+  if (state.travelMode !== 'drive' || !state.route.speedLimitProfile) { el.speedLimitSign.classList.add('hidden'); return; }
+  const seg = speedLimitAt(state.route.speedLimitProfile, traveledM);
+  if (!seg) { el.speedLimitSign.classList.add('hidden'); return; }
+  el.speedLimitValue.textContent = String(Math.round(seg.speedLimitKmh));
+  el.speedLimitSign.classList.toggle('guessed', seg.isGuessed);
+  el.speedLimitSign.classList.remove('hidden');
 }
 
 let lastTripResaveAt = 0;
@@ -9330,8 +9457,9 @@ async function startNavigation({ resuming = false } = {}) {
     el.searchCard.classList.add('hidden');
     el.placeCard.classList.add('hidden');
     el.navBanner.classList.remove('hidden');
-    el.navSpeed.classList.remove('hidden');
+    el.navSpeedRow.classList.remove('hidden');
     updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
+    el.speedLimitSign.classList.add('hidden'); // fresh start too — no stale sign from a previous trip until the first fix resolves one
     refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
     el.bottomSheet.classList.remove('expanded', 'half');
     el.startNavBtn.classList.add('hidden');
@@ -9429,7 +9557,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
 
   el.navBanner.classList.add('hidden');
-  el.navSpeed.classList.add('hidden');
+  el.navSpeedRow.classList.add('hidden');
   refreshWeatherBadge(); // re-evaluate now state.navigating is false — shows a place card's weather if one's still open, else hides
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
@@ -9848,8 +9976,9 @@ async function startTransitNavigation(itinerary) {
   el.searchCard.classList.add('hidden');
   el.placeCard.classList.add('hidden');
   el.navBanner.classList.remove('hidden');
-  el.navSpeed.classList.remove('hidden');
+  el.navSpeedRow.classList.remove('hidden');
   updateSpeedText(null);
+  el.speedLimitSign.classList.add('hidden'); // drive-only feature (see updateSpeedLimitSign) — never populated during transit tracking
   el.bottomSheet.classList.remove('expanded', 'half');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
@@ -9890,7 +10019,7 @@ function endTransitNavigation({ arrived = false } = {}) {
   else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 
   el.navBanner.classList.add('hidden');
-  el.navSpeed.classList.add('hidden');
+  el.navSpeedRow.classList.add('hidden');
   el.boardConfirmBtn.classList.add('hidden');
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
