@@ -8367,6 +8367,12 @@ async function renderTransitRoute(itinerary) {
 
   await awaitMapLoad();
   map.getSource('route').setData(emptyFeatureCollection()); // clear any driving route
+  // A previous drive/walk plan's gray alternate lines and TomTom-colored
+  // traffic overlay live on their own sources, drawn independently of
+  // 'route' — clearing that alone would leave both still visible under
+  // this transit itinerary if the mode was switched without cancelling.
+  map.getSource('route-alternates').setData(emptyFeatureCollection());
+  map.getSource('route-traffic').setData(emptyFeatureCollection());
   map.getSource('transit-route').setData({ type: 'FeatureCollection', features });
 
   const allCoords = features.flatMap((f) => f.geometry.coordinates);
@@ -8681,6 +8687,11 @@ function cancelPlannedRoute() {
   map.getSource('route').setData(emptyFeatureCollection());
   map.getSource('transit-route').setData(emptyFeatureCollection());
   map.getSource('route-alternates').setData(emptyFeatureCollection());
+  // The TomTom-colored traffic overlay (see paintRouteOptionsTrafficOverlay/
+  // runTrafficCheckin) is its own source, painted on top of whichever route
+  // line was selected — clearing 'route' alone leaves those red/amber/green
+  // dashes floating on the map with nothing under them.
+  map.getSource('route-traffic').setData(emptyFeatureCollection());
   clearTraveledRouteSegment();
   el.routeOptionsRow.classList.add('hidden');
   el.transitItineraryOptionsRow.classList.add('hidden');
