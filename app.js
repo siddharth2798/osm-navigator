@@ -2057,6 +2057,21 @@ async function nominatimSearch(qParam, extraParams = '') {
   }));
 }
 
+/** [lon, lat] of the user's current live position, if known — the real
+ * navigation GPS fix while driving, or the idle "you are here" marker's
+ * position (see startIdleLocationShare/updateMyLocationMarker) otherwise.
+ * Null when neither is available (GPS never resolved, permission denied,
+ * or the idle share was never started). Used to bias plain-text search
+ * results toward wherever the user actually is — see geocodeSearch. */
+function currentLiveLngLat() {
+  if (state.navigating && state.lastFix) return [state.lastFix.lng, state.lastFix.lat];
+  if (state.myLocationMarker) {
+    const ll = state.myLocationMarker.getLngLat();
+    return [ll.lng, ll.lat];
+  }
+  return null;
+}
+
 /** Adds `.distanceM` (straight-line, not route distance) from `lat,lon` to
  * every result and sorts nearest-first — used for every "near X" style
  * result list so it reads the way Google Maps' POI lists do. */
@@ -4161,27 +4176,51 @@ async function geocodeSearch(query, opts = {}) {
   // have this problem (the place always resolves to the same anchor), so it
   // stays cached as normal.
   const isNearMe = !!nearMatch && NEAR_ME_KEYWORDS.has(nearMatch[2].trim().toLowerCase());
-  if (!isNearMe && nominatimCache.has(cacheKey)) return nominatimCache.get(cacheKey);
 
-  let results = nearMatch
-    ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
-    : await nominatimSearch(trimmed);
+  let results;
+  if (!isNearMe && nominatimCache.has(cacheKey)) {
+    results = nominatimCache.get(cacheKey);
+  } else {
+    results = nearMatch
+      ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
+      : await nominatimSearch(trimmed);
 
-  // Fuzzy fallback only applies to a plain place-name search — a "near X"
-  // query already does its own two-step anchor lookup with its own error
-  // message, and layering fuzzy retries onto both halves of that would be a
-  // lot of extra requests for a much rarer case.
-  let aborted = false;
-  if (!results.length && !nearMatch) {
-    if (opts.onFallbackStart) opts.onFallbackStart();
-    ({ results, aborted } = await geocodeFuzzyFallback(trimmed, opts.shouldAbort));
+    // Fuzzy fallback only applies to a plain place-name search — a "near X"
+    // query already does its own two-step anchor lookup with its own error
+    // message, and layering fuzzy retries onto both halves of that would be
+    // a lot of extra requests for a much rarer case.
+    let aborted = false;
+    if (!results.length && !nearMatch) {
+      if (opts.onFallbackStart) opts.onFallbackStart();
+      ({ results, aborted } = await geocodeFuzzyFallback(trimmed, opts.shouldAbort));
+    }
+
+    // Don't cache an aborted attempt — it stopped early because it became
+    // irrelevant, not because Nominatim was actually asked and came up
+    // empty. Caching it as [] here would let a later, real search for this
+    // exact string be wrongly answered from cache instead of actually
+    // trying.
+    if (!aborted && !isNearMe) nominatimCache.set(cacheKey, results);
   }
 
-  // Don't cache an aborted attempt — it stopped early because it became
-  // irrelevant, not because Nominatim was actually asked and came up empty.
-  // Caching it as [] here would let a later, real search for this exact
-  // string be wrongly answered from cache instead of actually trying.
-  if (!aborted && !isNearMe) nominatimCache.set(cacheKey, results);
+  // Bias plain-text results toward wherever the user actually is right
+  // now, closest first (the "DLF New Town Heights" bug: Nominatim's own
+  // relevance ranking has no idea one match is 2km away and another is
+  // on the other side of the country). Deliberately AFTER the cache
+  // read/write above, not baked into the cached value itself — the right
+  // order depends on the user's CURRENT position, which the cache key
+  // (the query text alone) knows nothing about, so a stale cached order
+  // would go wrong the next time this exact text is searched from
+  // somewhere else. "Near X" queries are skipped — they already have
+  // their own explicit anchor (X, not the user) and its own ordering.
+  if (!nearMatch) {
+    const liveLngLat = currentLiveLngLat();
+    if (liveLngLat) {
+      const sorted = decorateWithDistance(results, liveLngLat[1], liveLngLat[0]);
+      if (results.correctedQuery) sorted.correctedQuery = results.correctedQuery;
+      results = sorted;
+    }
+  }
   return results;
 }
 
@@ -4282,10 +4321,12 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
     li.className = 'result-item';
 
     const { primary, secondary } = splitPlaceLabel(r.label);
-    // Distance/hours meta line — only present on results that came from a
-    // category/along-route search (decorateWithDistance + extratags=1);
-    // plain live-typed autocomplete results never have these, so the line
-    // just doesn't render for those, no separate code path needed.
+    // Distance/hours meta line — present on results from a category/
+    // along-route search (decorateWithDistance + extratags=1), and now
+    // also on plain live-typed autocomplete results whenever the user's
+    // current position is known (see geocodeSearch's own use of
+    // decorateWithDistance/currentLiveLngLat). Simply absent otherwise, no
+    // separate code path needed either way.
     const metaParts = [];
     if (r.distanceM != null) metaParts.push(formatDistance(r.distanceM) + ' ' + distanceSuffix);
     if (r.openingHours) metaParts.push(r.openingHours);
