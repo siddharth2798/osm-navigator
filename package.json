@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Personal turn-by-turn navigation PWA — this file exists only to support the optional Capacitor native Android shell. The web app itself has no build step; open index.html directly or serve the folder statically.",
   "scripts": {
-    "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js native-tts.js native-audio-focus.js native-back.js native-pip.js style.css manifest.json sw.js www/ && cp -r icons www/icons && cp -r vendor www/vendor",
+    "cap:copy": "rm -rf www && mkdir -p www && cp index.html app.js config.js idb.js native-location.js native-tts.js native-audio-focus.js native-back.js native-pip.js style.css manifest.json sw.js www/ && cp -r icons www/icons && cp -r vendor www/vendor && cp -r lib www/lib",
     "cap:sync": "npm run cap:copy && cap sync android",
     "test": "node --test"
   },
