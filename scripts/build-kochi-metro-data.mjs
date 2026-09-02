@@ -62,6 +62,8 @@ function main() {
     const routes = parseCsv(readFileSync(join(extracted, 'routes.txt'), 'utf8'));
     const stopTimes = parseCsv(readFileSync(join(extracted, 'stop_times.txt'), 'utf8'));
     const feedInfo = parseCsv(readFileSync(join(extracted, 'feed_info.txt'), 'utf8'))[0];
+    const fareAttributes = parseCsv(readFileSync(join(extracted, 'fare_attributes.txt'), 'utf8'));
+    const fareRules = parseCsv(readFileSync(join(extracted, 'fare_rules.txt'), 'utf8'));
 
     if (new Set(routes.map((r) => r.route_id)).size > 1) {
       throw new Error(`Expected a single route (single line) — found ${routes.length}. This script's ordered-array assumption no longer holds; needs a real graph model instead.`);
@@ -121,6 +123,17 @@ function main() {
       weekend: { direction0: startTimesFor('WE', '0'), direction1: startTimesFor('WE', '1') },
     };
 
+    // Flat fare per (origin, destination) station-id pair, straight from the
+    // feed's own fare_rules.txt/fare_attributes.txt — station ids here are
+    // the exact same stop_ids already stored as each station's `id` above,
+    // so app.js can look this up directly with no name-matching needed.
+    const priceByFareId = new Map(fareAttributes.map((f) => [f.fare_id, Number(f.price)]));
+    const fares = {};
+    fareRules.forEach((r) => {
+      const price = priceByFareId.get(r.fare_id);
+      if (price != null) fares[`${r.origin_id}-${r.destination_id}`] = price;
+    });
+
     const output = {
       source: 'Kochi Metro Rail Limited open data (https://kochimetro.org/open-data/)',
       attribution: 'Contains data provided by Kochi Metro Rail Limited',
@@ -130,10 +143,12 @@ function main() {
       // direction 0 = stations[0] -> stations[last]; direction 1 = reverse.
       stations,
       schedule,
+      // INR, keyed "<originStationId>-<destinationStationId>".
+      fares,
     };
 
     writeFileSync(OUTPUT_PATH, JSON.stringify(output));
-    console.log(`Wrote ${OUTPUT_PATH} — ${stations.length} stations, ${schedule.weekday.direction0.length + schedule.weekday.direction1.length} weekday trips, ${schedule.weekend.direction0.length + schedule.weekend.direction1.length} weekend trips.`);
+    console.log(`Wrote ${OUTPUT_PATH} — ${stations.length} stations, ${schedule.weekday.direction0.length + schedule.weekday.direction1.length} weekday trips, ${schedule.weekend.direction0.length + schedule.weekend.direction1.length} weekend trips, ${Object.keys(fares).length} fare rules.`);
     console.log(`Feed date range: ${feedInfo.feed_start_date} - ${feedInfo.feed_end_date} (stale end date is fine — see this script's header comment).`);
   } finally {
     rmSync(workDir, { recursive: true, force: true });

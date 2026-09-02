@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes } from '../lib/format-utils.js';
+import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from '../lib/format-utils.js';
 
 test('formatDistance shows meters under 950m, km above', () => {
   assert.equal(formatDistance(0), '0 m');
@@ -37,4 +37,10 @@ test('formatBytes: zero/falsy, MB range, GB range', () => {
   assert.equal(formatBytes(0), '0 MB');
   assert.equal(formatBytes(5 * 1024 * 1024), '5.0 MB');
   assert.equal(formatBytes(1500 * 1024 * 1024), '1.46 GB');
+});
+
+test('formatFareINR: exact amount, and the "from ₹X" partial-total form', () => {
+  assert.equal(formatFareINR(80), '₹80');
+  assert.equal(formatFareINR(80, false), '₹80');
+  assert.equal(formatFareINR(80, true), 'from ₹80');
 });

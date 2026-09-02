@@ -742,12 +742,20 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-weight: 600;
 }
 
-/* Small live speed readout — a second, smaller card under the next-turn
-   banner rather than a separately-positioned floating badge, so it inherits
-   #top-overlay's placement/safe-area handling for free instead of needing
-   its own fixed-position math around the map controls. */
-#nav-speed {
+/* Live speed readout + speed-limit sign, side by side — a second, smaller
+   row under the next-turn banner rather than a separately-positioned
+   floating badge, so it inherits #top-overlay's placement/safe-area
+   handling for free instead of needing its own fixed-position math around
+   the map controls. */
+#nav-speed-row {
   align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#nav-speed-row.hidden { display: none; }
+
+#nav-speed {
   background: var(--panel);
   border-radius: 12px;
   padding: 6px 12px;
@@ -756,7 +764,40 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-weight: 700;
   color: var(--text);
 }
-#nav-speed.hidden { display: none; }
+
+/* Round red-ring speed-limit sign — deliberately styled like a real Indian
+   road sign (white face, red ring), not a rounded-square pill like every
+   other overlay card here, so it reads at a glance the same way a real
+   sign would. Drive mode only; hidden between known road segments (see
+   updateSpeedLimitSign in app.js) rather than showing a stale number. */
+#speed-limit-sign {
+  flex: none; /* a fixed-size circle, never squashed by the flex row */
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid var(--danger);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow);
+}
+#speed-limit-sign.hidden { display: none; }
+#speed-limit-sign #speed-limit-value {
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  color: #111;
+}
+/* A guessed limit (Valhalla's own road-class default, not a real posted
+   maxspeed tag — see fetchSpeedLimitProfile) gets a dashed, muted ring
+   instead of solid red, so it never looks as authoritative as a real
+   sign. */
+#speed-limit-sign.guessed {
+  border-style: dashed;
+  border-color: var(--text-dim);
+}
+#speed-limit-sign.guessed #speed-limit-value { color: var(--text-dim); }
 
 /* Manual boarding-confirm pill — CTA-styled like #start-nav-btn so it reads
    as the one clear affirmative action while waiting to board. */

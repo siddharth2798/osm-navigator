@@ -11,10 +11,10 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
-import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes } from './lib/format-utils.js';
+import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
-import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure } from './lib/kochi-geo.js';
+import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure, feederRouteMetroEnd } from './lib/kochi-geo.js';
 import { stopDragPromoteTarget } from './lib/stop-drag-utils.js';
 import { kochiItineraryBaseParts, buildTransitItineraryLabels } from './lib/transit-labels.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
@@ -132,7 +132,10 @@ const el = {
   navBannerIcon: document.getElementById('nav-banner-icon'),
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
+  navSpeedRow: document.getElementById('nav-speed-row'),
   navSpeed: document.getElementById('nav-speed'),
+  speedLimitSign: document.getElementById('speed-limit-sign'),
+  speedLimitValue: document.getElementById('speed-limit-value'),
   boardConfirmBtn: document.getElementById('board-confirm-btn'),
   trafficBadge: document.getElementById('traffic-badge'),
   flightBadge: document.getElementById('flight-badge'),
@@ -6089,8 +6092,9 @@ async function valhallaTarget(points) {
   return { base: CONFIG.VALHALLA_URL, selfHosted: false };
 }
 
-/** POSTs `body` to Valhalla's `action` endpoint (`route` or `height`),
- * through valhallaTarget's self-hosted/public choice. When the self-hosted
+/** POSTs `body` to Valhalla's `action` endpoint (`route`, `height`, or
+ * `trace_attributes`), through valhallaTarget's self-hosted/public choice.
+ * When the self-hosted
  * proxy comes back 501 (SELF_HOSTED_VALHALLA_URL not set on this
  * deployment), transparently retries against the public server instead of
  * surfacing an error — mirrors fetchNearbyChargingStations' handling of
@@ -6362,8 +6366,9 @@ async function requestRoute(from, to, stops = [], wantAlternates = 0, costing = 
 // ============================================================================
 
 /** Evenly downsamples a route's [lng,lat] coords to at most maxPoints, so a
- * long walking route doesn't send an oversized /height request body. */
-function sampleCoordsForHeight(coords, maxPoints) {
+ * long route doesn't send an oversized request body — used for both /height
+ * (walk-mode elevation) and /trace_attributes (drive-mode speed limits). */
+function sampleCoords(coords, maxPoints) {
   if (coords.length <= maxPoints) return coords;
   const step = (coords.length - 1) / (maxPoints - 1);
   const sampled = [];
@@ -6399,7 +6404,7 @@ function isDegenerateElevation(rangeHeight) {
  * server (routing itself stays wherever it already was) rather than
  * showing a misleadingly flat chart for a route that isn't. */
 async function fetchElevationProfile(coords) {
-  const shape = sampleCoordsForHeight(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
+  const shape = sampleCoords(coords, CONFIG.ELEVATION_MAX_POINTS).map(([lon, lat]) => ({ lat, lon }));
   const { res, selfHosted } = await fetchValhalla('height', shape, { range: true, shape });
   if (!res.ok) throw new Error(`Elevation service returned HTTP ${res.status}.`);
   const data = await res.json();
@@ -6423,6 +6428,104 @@ async function fetchElevationProfile(coords) {
     } catch (_) { /* keep the self-hosted (flat) result below rather than losing the chart entirely */ }
   }
   return data.range_height;
+}
+
+/** Returns a [{startM, speedLimitKmh, isGuessed}, ...] profile (sorted
+ * ascending by startM) for the given route coords, via Valhalla's
+ * /trace_attributes — the one Valhalla action that actually carries OSM
+ * `maxspeed` data (a plain /route response never does; confirmed against
+ * both Valhalla's own docs and this app's own buildRouteState, which reads
+ * every field a maneuver object actually has). `shape_match: 'edge_walk'`
+ * (not map_snap/walk_or_snap) is deliberate: this shape IS a route
+ * Valhalla itself just generated, not a noisy raw GPS trace, so it should
+ * snap onto exactly the edges that route already used rather than
+ * re-guessing a path.
+ *
+ * NOT yet verified against a live response — the public Valhalla demo
+ * server (CONFIG.VALHALLA_URL) was unreachable for this entire feature's
+ * implementation. Field names (`speed_limit`, `speed_type`,
+ * `begin_shape_index`/`end_shape_index`) come from Valhalla's own
+ * documented trace_attributes schema, and every read below is defensive —
+ * a missing/unexpected field just drops that edge rather than throwing —
+ * so a schema surprise fails safe (the sign never shows) instead of
+ * breaking navigation. Re-verify live once the demo server is reachable
+ * again, or against a self-hosted instance.
+ *
+ * Returns null (not a thrown error, from the caller's .catch) when nothing
+ * usable comes back — this is a nice-to-have overlay, never worth
+ * interrupting or blocking navigation over, same philosophy as
+ * fetchElevationProfile. */
+async function fetchSpeedLimitProfile(coords) {
+  const sampled = sampleCoords(coords, CONFIG.SPEED_LIMIT_MAX_POINTS);
+  const shape = sampled.map(([lon, lat]) => ({ lat, lon }));
+  const { res } = await fetchValhalla('trace_attributes', shape, { shape, shape_match: 'edge_walk', costing: 'auto' });
+  if (!res.ok) throw new Error(`Speed limit service returned HTTP ${res.status}.`);
+  const data = await res.json();
+  const edges = data.edges;
+  if (!Array.isArray(edges) || !edges.length) throw new Error('No edge attributes returned.');
+
+  // Cumulative distance to each sampled shape point, in the same order
+  // edge_walk's begin_shape_index/end_shape_index index into — turns an
+  // edge's shape-index range into a real distance-along-route value the
+  // live traveledM (see onPositionUpdate) can be compared against
+  // directly, the same role cumulative distance plays in rangeHeight above.
+  const cumDistM = [0];
+  for (let i = 1; i < sampled.length; i++) {
+    cumDistM.push(cumDistM[i - 1] + turf.distance(sampled[i - 1], sampled[i], { units: 'meters' }));
+  }
+
+  const profile = [];
+  edges.forEach((edge) => {
+    const speedLimitKmh = typeof edge.speed_limit === 'number' ? edge.speed_limit : null;
+    if (speedLimitKmh == null) return; // no posted/known limit for this edge — nothing to show
+    const beginIdx = edge.begin_shape_index;
+    if (typeof beginIdx !== 'number' || beginIdx < 0 || beginIdx >= cumDistM.length) return;
+    profile.push({
+      startM: cumDistM[beginIdx],
+      speedLimitKmh,
+      // 'tagged' is a real posted-limit OSM maxspeed tag; anything else
+      // ('road_class'/similar) is Valhalla's own guess from the road's
+      // classification, not an actual sign — de-emphasized in the UI (see
+      // updateSpeedLimitSign) so a guess never looks as authoritative as a
+      // real one.
+      isGuessed: edge.speed_type !== 'tagged',
+    });
+  });
+  profile.sort((a, b) => a.startM - b.startM);
+  return profile.length ? profile : null;
+}
+
+/** Fire-and-forget: kicks off /trace_attributes for the currently-rendered
+ * route and stores the result on it if/when it resolves — drive-mode
+ * counterpart to updateElevationProfileForRoute above, same stale-response
+ * guard (a route replaced/canceled while this was in flight is silently
+ * discarded rather than mutating a route that's no longer current). */
+function updateSpeedLimitProfileForRoute() {
+  const myRoute = state.route;
+  fetchSpeedLimitProfile(myRoute.coords)
+    .then((profile) => {
+      if (state.route !== myRoute || state.travelMode !== 'drive') return; // stale
+      myRoute.speedLimitProfile = profile;
+    })
+    .catch((err) => {
+      resolverDebugLog(`Speed limits: failed to fetch — ${err.message}`, 'warn');
+      // Non-fatal — see fetchSpeedLimitProfile's own comment.
+    });
+}
+
+/** Step-function lookup: which speed-limit segment covers `distM` — unlike
+ * interpolateHeightM's smooth interpolation (elevation changes
+ * continuously), a speed limit is constant across a whole road segment
+ * then jumps at the boundary, so this just finds the last segment whose
+ * startM is at or before distM. `profile` is assumed sorted ascending by
+ * startM (guaranteed by fetchSpeedLimitProfile's own sort). */
+function speedLimitAt(profile, distM) {
+  let current = null;
+  for (const seg of profile) {
+    if (seg.startM > distM) break;
+    current = seg;
+  }
+  return current;
 }
 
 /** Classic Ramer–Douglas–Peucker polyline simplification: recursively keeps
@@ -7262,6 +7365,7 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
 
   if (state.travelMode === 'walk') updateElevationProfileForRoute();
   else hideElevationProfile();
+  if (state.travelMode === 'drive') updateSpeedLimitProfileForRoute();
 
   // Persists the route so a killed/reloaded tab mid-drive can restore it
   // without a network round trip. Non-fatal if it fails — the trip keeps
@@ -7351,8 +7455,9 @@ function loadKochiTransitData() {
     kochiTransitDataPromise = Promise.all([
       fetch('vendor/kochi-metro.json').then((r) => r.json()),
       fetch('vendor/kochi-water-metro.json').then((r) => r.json()),
-    ]).then(([metro, waterMetro]) => {
-      kochiTransitData = { metro, waterMetro };
+      fetch('vendor/kochi-feeder-bus.json').then((r) => r.json()),
+    ]).then(([metro, waterMetro, feederBus]) => {
+      kochiTransitData = { metro, waterMetro, feederBus };
       return kochiTransitData;
     }).catch((err) => {
       resolverDebugLog(`Kochi transit: failed to load reference data — ${err.message}`, 'error');
@@ -7381,6 +7486,12 @@ const KOCHI_METRO_ALIGHT_WINDOW = 2;
 // transfer point) get built per plan — keeps the total spec count bounded
 // even if the bundled data ever grows more transfer points.
 const KOCHI_MAX_COMBINED_SPECS = 2;
+// Same "how many is actually useful" bound as KOCHI_MAX_COMBINED_SPECS,
+// applied to metro+feeder-bus candidates (see buildKochiItineraries) —
+// keeps the total spec count (and the Valhalla calls Step 2 spends
+// resolving each one's access legs) bounded even as more feeder routes
+// get added to vendor/kochi-feeder-bus.json.
+const KOCHI_MAX_FEEDER_SPECS = 2;
 // Mirrors drive mode's own requestRoute(..., 2, ...) → primary + 2
 // alternates — same "how many is actually useful to show" ceiling.
 const KOCHI_MAX_ITINERARY_OPTIONS = 3;
@@ -7438,7 +7549,7 @@ function cachedDriveOrWalkLeg(cache, from, to, toName) {
  * combined with the bundled real trip-start times, a real "board at
  * roughly HH:MM" estimate — not a guessed average headway. */
 function planKochiMetroRideLeg(fromIdx, toIdx, now) {
-  const { stations, schedule } = kochiTransitData.metro;
+  const { stations, schedule, fares } = kochiTransitData.metro;
   const directionId = toIdx > fromIdx ? 0 : 1;
   const lo = Math.min(fromIdx, toIdx);
   const hi = Math.max(fromIdx, toIdx);
@@ -7484,6 +7595,12 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
     to: { name: stations[toIdx].name },
     distance: distanceM,
     duration: Math.abs(stations[toIdx].offsetS - stations[fromIdx].offsetS),
+    // Real flat fare (INR) for this exact station pair — straight from
+    // KMRL's own fare_rules.txt/fare_attributes.txt (see
+    // scripts/build-kochi-metro-data.mjs), keyed by the same stop_ids
+    // already stored as each station's `id`. Undefined (not shown) if the
+    // feed's own fare table somehow doesn't cover this pair.
+    fareINR: (fares || {})[`${stations[fromIdx].id}-${stations[toIdx].id}`],
     intermediateStops: new Array(Math.max(0, orderedSegment.length - 2)), // only .length is ever read by renderTransitManeuverList
     geometry: orderedSegment.map((s) => [s.lon, s.lat]), // connects real station coordinates — not the physical rail curve (no shapes.txt data bundled), close enough at map scale for an elevated single line
     // Ordered station list (origin→destination direction), same array this
@@ -7602,6 +7719,11 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       to: { name: routeEntry.to },
       distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
       duration: durationS,
+      // Transcribed from the official Water Metro fare chart (see
+      // vendor/kochi-water-metro.json's own fareSource note) — covers every
+      // real route this network has, but undefined (not shown) for a hop
+      // that somehow isn't one of the chart's listed pairs.
+      fareINR: (kochiTransitData.waterMetro.fares || {})[`${routeEntry.from}-${routeEntry.to}`],
       intermediateStops: [],
       geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
       // waitS: seconds until this hop's real sailing departs — "next boat"
@@ -7629,6 +7751,52 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       departureAtMs: now.getTime() + Math.max(0, departureS - nowS) * 1000,
     };
   });
+}
+
+/** One leg for a direct Metro Connect feeder-bus route — no transfer/
+ * path-finding needed (see feederRouteMetroEnd above), just a real
+ * departure-time lookup against `route.departures`. `route.arrivals`
+ * (when the source timetable image showed one) gives an exact ride
+ * duration for whichever trip actually matched; otherwise falls back to
+ * `route.durationEstimateS` — see vendor/kochi-feeder-bus.json's own
+ * per-route notes for which routes only have an estimate. */
+function planKochiFeederBusRideLeg(route, now) {
+  const { stations } = kochiTransitData.feederBus;
+  const fromS = stations.find((s) => s.name === route.from);
+  const toS = stations.find((s) => s.name === route.to);
+  const nowS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  const waitsS = [];
+  let matchedIndex = -1;
+  route.departures.forEach((t, i) => {
+    const [h, m, s] = t.split(':').map(Number);
+    const depS = h * 3600 + m * 60 + (s || 0);
+    if (depS >= nowS && waitsS.length < TRANSIT_UPCOMING_DEPARTURES) {
+      if (matchedIndex === -1) matchedIndex = i;
+      waitsS.push(depS - nowS);
+    }
+  });
+  const waitS = waitsS.length ? waitsS[0] : null;
+  let durationS = route.durationEstimateS || 0;
+  if (route.arrivals && matchedIndex !== -1) {
+    const [dh, dm, ds] = route.departures[matchedIndex].split(':').map(Number);
+    const [ah, am, as] = route.arrivals[matchedIndex].split(':').map(Number);
+    durationS = (ah * 3600 + am * 60 + (as || 0)) - (dh * 3600 + dm * 60 + (ds || 0));
+    if (durationS < 0) durationS += 24 * 3600; // arrival past midnight
+  }
+  return {
+    mode: 'BUS',
+    route: 'Metro Connect',
+    from: { name: route.from },
+    to: { name: route.to },
+    distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
+    duration: durationS,
+    fareINR: route.fareINR,
+    intermediateStops: route.intermediateStops || [],
+    geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
+    waitS,
+    waitsS,
+    departureAtMs: waitS != null ? now.getTime() + waitS * 1000 : null,
+  };
 }
 
 // Cached lazily the first time it's needed — recomputed only if the data
@@ -7668,10 +7836,17 @@ function findKochiTransferPoints() {
  * Step 2: resolves every spec's walk/drive access legs via
  * cachedDriveOrWalkLeg sharing one per-call Map, drops any spec whose access
  * leg comes back null (unreasonable distance).
- * Step 3: ranks survivors by total distanceM ascending (shortest = default,
- * same convention as drive mode's own primary Valhalla trip), dedupes by
- * ride-leg signature keeping the shorter on a collision, caps to
- * KOCHI_MAX_ITINERARY_OPTIONS. `toName` labels the final leg's own
+ * Step 3: ranks survivors by total duration ascending (fastest = default) —
+ * not distance: ride-leg duration is schedule-exact (no traffic involved at
+ * all), and Valhalla's access-leg duration, even without live traffic, is
+ * still road-aware (speed limits/road class/turns), so it's a meaningfully
+ * better time proxy than raw distance, which has no notion of road speed.
+ * Dedupes by ride-leg signature keeping the faster on a collision, then
+ * drops any survivor that's both slower AND at-least-as-expensive as
+ * another survivor (Pareto dominance — only when both fares are actually
+ * known, never guessed) before capping to KOCHI_MAX_ITINERARY_OPTIONS, so
+ * the alternatives shown are genuinely different tradeoffs rather than
+ * near-duplicates plus a strictly-worse option. `toName` labels the final leg's own
  * destination — 'your destination' by default (a plain two-point trip),
  * but buildKochiMultiStopItinerary passes the real stop name for every
  * segment except the last, so a multi-stop trip's maneuver list reads
@@ -7685,7 +7860,20 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
 
   const metroFrom = nearestKochiStation(from.lat, from.lon, metro.stations);
   const metroTo = nearestKochiStation(to.lat, to.lon, metro.stations);
+  // Requires DISTINCT boarding/alighting stations — this specifically gates
+  // "is there an actual metro RIDE in this trip," used by the metro-only
+  // candidate loop and the metro+ferry combined block below. A feeder bus
+  // can still be relevant even when this is false (e.g. both endpoints
+  // resolve to the same nearest station — see metroStationsReachable).
   const metroFeasible = !!(metroFrom && metroTo && metroFrom.index !== metroTo.index
+    && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M);
+  // Same distance check, WITHOUT requiring distinct stations — a trip from
+  // near Aluva to CIAL Airport has metroFrom === metroTo (Aluva is nearest
+  // to both), no metro ride needed at all, but the Aluva-CIAL feeder bus is
+  // still exactly the right answer. Gates the feeder-bus candidate block and
+  // the top-level early-return below; metroFeasible alone would wrongly
+  // return null before ever trying a feeder route in this exact case.
+  const metroStationsReachable = !!(metroFrom && metroTo
     && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M);
 
   const ferryFrom = nearestKochiStation(from.lat, from.lon, waterMetro.stations);
@@ -7694,7 +7882,7 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
     && ferryFrom.distanceM <= KOCHI_DRIVE_MAX_M && ferryTo.distanceM <= KOCHI_DRIVE_MAX_M);
   const ferryPath = ferryFeasible ? findKochiWaterMetroPath(ferryFrom.name, ferryTo.name) : null;
 
-  if (!metroFeasible && !ferryPath) return null;
+  if (!metroStationsReachable && !ferryPath) return null;
 
   // ---- Step 1: free candidate specs ----
   // A spec is just an ordered list of segments: 'access' (needs a real
@@ -7773,6 +7961,56 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
     specs.push(...combined.slice(0, KOCHI_MAX_COMBINED_SPECS));
   }
 
+  // Metro + Metro Connect feeder bus: unlike the metro+ferry combo above,
+  // there's no transfer-point search needed — every bundled feeder route
+  // already has one end sitting at a metro station's own premises (see
+  // feederRouteMetroEnd), so the "transfer point" is just that station.
+  // Cheaply pre-filters every route's FAR endpoint against `to`/`from`
+  // (a plain turf.distance, no Valhalla call) before ranking, so an
+  // obviously-irrelevant route (e.g. the airport feeder, when this trip
+  // isn't anywhere near Aluva) never costs a real access-leg request in
+  // Step 2 below.
+  if (metroStationsReachable && kochiTransitData.feederBus) {
+    const { feederBus } = kochiTransitData;
+    const feederCandidates = [];
+    feederBus.routes.forEach((route) => {
+      const metroStart = feederRouteMetroEnd(route.from, metro.stations, feederBus.stations, CONFIG.KOCHI_TRANSFER_MAX_M);
+      if (metroStart) {
+        const farStation = feederBus.stations.find((s) => s.name === route.to);
+        const farDistM = farStation ? turf.distance([farStation.lon, farStation.lat], [to.lon, to.lat], { units: 'meters' }) : Infinity;
+        if (farStation && farDistM <= KOCHI_DRIVE_MAX_M) {
+          feederCandidates.push({ direction: 'metro-first', route, metroStation: metroStart, farStation, farDistM });
+        }
+      }
+      const metroEnd = feederRouteMetroEnd(route.to, metro.stations, feederBus.stations, CONFIG.KOCHI_TRANSFER_MAX_M);
+      if (metroEnd) {
+        const farStation = feederBus.stations.find((s) => s.name === route.from);
+        const farDistM = farStation ? turf.distance([farStation.lon, farStation.lat], [from.lon, from.lat], { units: 'meters' }) : Infinity;
+        if (farStation && farDistM <= KOCHI_DRIVE_MAX_M) {
+          feederCandidates.push({ direction: 'feeder-first', route, metroStation: metroEnd, farStation, farDistM });
+        }
+      }
+    });
+    feederCandidates.sort((a, b) => a.farDistM - b.farDistM);
+    feederCandidates.slice(0, KOCHI_MAX_FEEDER_SPECS).forEach(({ direction, route, metroStation, farStation }) => {
+      if (direction === 'metro-first') {
+        const segments = [{ type: 'access', from, to: metroFrom, toName: metroFrom.name }];
+        // A rider whose nearest station already IS this route's metro-side
+        // stop needs no metro ride at all — straight onto the feeder bus.
+        if (metroStation.index !== metroFrom.index) segments.push({ type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, metroStation.index, now)] });
+        segments.push({ type: 'ride', legs: [planKochiFeederBusRideLeg(route, now)] });
+        segments.push({ type: 'access', from: farStation, to, toName });
+        specs.push({ segments });
+      } else {
+        const segments = [{ type: 'access', from, to: farStation, toName: farStation.name }];
+        segments.push({ type: 'ride', legs: [planKochiFeederBusRideLeg(route, now)] });
+        if (metroStation.index !== metroTo.index) segments.push({ type: 'ride', legs: [planKochiMetroRideLeg(metroStation.index, metroTo.index, now)] });
+        segments.push({ type: 'access', from: metroTo, to, toName });
+        specs.push({ segments });
+      }
+    });
+  }
+
   if (!specs.length) return null;
 
   // ---- Step 2: resolve access legs, deduped/shared via one per-call cache ----
@@ -7785,25 +8023,47 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
       if (!accessLeg) return null;
       legs.push(accessLeg);
     }
+    // Sum whatever ride legs (SUBWAY/FERRY/BUS) actually have a real fare —
+    // metro and the feeder buses/water-metro pairs the fare chart covers do,
+    // but coverage isn't total (see each leg-builder's own fareINR comment).
+    // fareIsPartial flags a total that's a floor, not the real full fare, so
+    // rendering can show "from ₹X" instead of implying a precise number.
+    const rideLegs = legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY' || l.mode === 'BUS');
+    const pricedLegs = rideLegs.filter((l) => l.fareINR != null);
     return {
       legs,
       duration: legs.reduce((sum, l) => sum + (l.duration || 0), 0),
       distanceM: legs.reduce((sum, l) => sum + (l.distance || 0), 0),
       source: 'kochi',
+      totalFareINR: pricedLegs.length ? pricedLegs.reduce((sum, l) => sum + l.fareINR, 0) : undefined,
+      fareIsPartial: pricedLegs.length > 0 && pricedLegs.length < rideLegs.length,
     };
   }));
 
   // ---- Step 3: rank, dedupe, cap ----
   const survivors = built.filter(Boolean);
   if (!survivors.length) return null;
-  const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> shortest survivor seen for it
+  const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> fastest survivor seen for it
   survivors.forEach((it) => {
-    const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY')
+    const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY' || l.mode === 'BUS')
       .map((l) => `${l.mode}:${l.from.name}>${l.to.name}`).join('|');
     const existing = bySignature.get(sig);
-    if (!existing || it.distanceM < existing.distanceM) bySignature.set(sig, it);
+    if (!existing || it.duration < existing.duration) bySignature.set(sig, it);
   });
-  return [...bySignature.values()].sort((a, b) => a.distanceM - b.distanceM).slice(0, KOCHI_MAX_ITINERARY_OPTIONS);
+  const ranked = [...bySignature.values()].sort((a, b) => a.duration - b.duration);
+  // Pareto dominance: drop a candidate once an already-kept one (guaranteed
+  // faster-or-equal, since `ranked` is sorted) is ALSO cheaper-or-equal —
+  // only when both fares are actually known, so an itinerary with an
+  // unpriced leg is never dropped on a guess. Keeps the shown alternatives
+  // as genuinely different tradeoffs instead of near-duplicates plus a
+  // strictly-worse option.
+  const kept = [];
+  ranked.forEach((candidate) => {
+    const dominated = kept.some((better) => better.totalFareINR != null && candidate.totalFareINR != null
+      && better.totalFareINR <= candidate.totalFareINR);
+    if (!dominated) kept.push(candidate);
+  });
+  return kept.slice(0, KOCHI_MAX_ITINERARY_OPTIONS);
 }
 
 const modeButtons = [...el.travelModeToggle.querySelectorAll('.mode-btn')];
@@ -7859,10 +8119,10 @@ function transitLegIcon(mode) {
  * safely serialized under the hood by the same valhallaLimiter/
  * selfHostedValhallaLimiter every other Valhalla call already shares, not
  * one giant sequential chain — then concatenates the best (first-ranked,
- * i.e. shortest) candidate from each segment into one itinerary. Segments
+ * i.e. fastest) candidate from each segment into one itinerary. Segments
  * are independent of each other (the metro/ferry networks one segment
  * resolves against don't interact with another's), so picking each one's
- * own shortest option is provably the shortest whole-trip total too — no
+ * own fastest option is provably the fastest whole-trip total too — no
  * combinatorial search across segments needed.
  *
  * Deliberately surfaces no per-segment alternatives for a multi-stop trip
@@ -7893,12 +8153,18 @@ async function buildKochiMultiStopItinerary(waypoints) {
     }),
   );
   if (segments.some((s) => !s || !s.length)) return null;
-  const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked shortest-first
+  const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked fastest-first
+  // Same partial-total handling as buildKochiItineraries' own Step 2 — a
+  // multi-stop trip is priced only when at least one segment is, and
+  // flagged partial unless every segment resolved a full fare itself.
+  const anyFareKnown = chosen.some((it) => it.totalFareINR != null);
   return [{
     legs: chosen.flatMap((it) => it.legs),
     duration: chosen.reduce((sum, it) => sum + it.duration, 0),
     distanceM: chosen.reduce((sum, it) => sum + (it.distanceM || 0), 0),
     source: 'kochi',
+    totalFareINR: anyFareKnown ? chosen.reduce((sum, it) => sum + (it.totalFareINR || 0), 0) : undefined,
+    fareIsPartial: anyFareKnown && chosen.some((it) => it.totalFareINR == null || it.fareIsPartial),
   }];
 }
 
@@ -7991,11 +8257,12 @@ function renderTransitManeuverList(legs) {
     // real departures are left today.
     const waitText = leg.waitsS ? formatWaitsText(leg.waitsS) : null;
     const waitLabel = leg.waitsS && leg.waitsS.length > 1 ? 'Next departures' : 'Next departure';
+    const fareText = leg.fareINR != null ? ` &middot; ${formatFareINR(leg.fareINR)}` : '';
     li.innerHTML = `<div class="m-icon">${transitLegIcon(leg.mode)}</div>
       <div class="m-body">
         <div class="instr">${escapeHtml(instruction)}</div>
         ${waitText ? `<div class="meta next-departure">${waitLabel} ${escapeHtml(waitText)}</div>` : ''}
-        <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}</div>
+        <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}${fareText}</div>
         ${leg.mode === 'SUBWAY' && leg.stations ? '<ol class="station-progress hidden"></ol>' : ''}
       </div>`;
     el.maneuverList.appendChild(li);
@@ -8031,7 +8298,8 @@ async function renderTransitRoute(itinerary) {
 
   renderTransitManeuverList(itinerary.legs);
   const totalDistM = itinerary.legs.reduce((sum, l) => sum + (l.distance || 0), 0);
-  el.sheetSummary.textContent = `${formatDistance(totalDistM)} · about ${formatDuration(itinerary.duration)}`;
+  const fareSuffix = itinerary.totalFareINR != null ? ` · ${formatFareINR(itinerary.totalFareINR, itinerary.fareIsPartial)}` : '';
+  el.sheetSummary.textContent = `${formatDistance(totalDistM)} · about ${formatDuration(itinerary.duration)}${fareSuffix}`;
   el.bottomSheet.classList.remove('hidden');
 }
 
@@ -8057,8 +8325,9 @@ function renderTransitItineraryOptions() {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'route-option-card' + (i === state.selectedTransitItineraryIndex ? ' active' : '');
+    const fareSuffix = itinerary.totalFareINR != null ? ` &middot; ${formatFareINR(itinerary.totalFareINR, itinerary.fareIsPartial)}` : '';
     card.innerHTML = `<div class="route-option-dist">${formatDistance(itinerary.distanceM || 0)}</div>
-      <div class="route-option-time">${formatDuration(itinerary.duration)}</div>
+      <div class="route-option-time">${formatDuration(itinerary.duration)}${fareSuffix}</div>
       <div class="route-option-tag">${escapeHtml(labels[i])}</div>`;
     card.addEventListener('click', () => selectTransitItineraryOption(i));
     el.transitItineraryOptionsRow.appendChild(card);
@@ -9227,6 +9496,7 @@ function onPositionUpdate(pos) {
   state.traveledM = traveledM;
   updateTraveledRouteSegment(traveledM);
   updateLiveAscent(traveledM);
+  updateSpeedLimitSign(traveledM);
 
   updateActiveManeuver(traveledM, lngLat);
   checkDeviation(offsetM, lngLat);
@@ -9274,6 +9544,28 @@ function updateLiveAscent(traveledM) {
   }
   state.lastElevationHeightM = heightM;
   if (!el.effortBtn.classList.contains('hidden')) updateEffortBtnLabel();
+}
+
+/** Updates the round speed-limit sign from state.route.speedLimitProfile —
+ * only set once fetchSpeedLimitProfile resolves (see
+ * updateSpeedLimitProfileForRoute), so this is naturally a no-op until
+ * then, same "quietly populate if/when it resolves" pattern as
+ * updateLiveAscent/rangeHeight above. Hides the sign entirely rather than
+ * leaving a stale number on screen once traveledM runs past the last known
+ * segment (e.g. the profile fetch came back partial, or a reroute swapped
+ * in a new state.route before this one's profile had a chance to load —
+ * the stale-response guard in updateSpeedLimitProfileForRoute already
+ * stops an OLD route's profile from ending up on a NEW route's object, but
+ * a brand new route's own profile simply not having arrived yet looks
+ * identical here, and both should just hide the sign, not show a wrong
+ * number). */
+function updateSpeedLimitSign(traveledM) {
+  if (state.travelMode !== 'drive' || !state.route.speedLimitProfile) { el.speedLimitSign.classList.add('hidden'); return; }
+  const seg = speedLimitAt(state.route.speedLimitProfile, traveledM);
+  if (!seg) { el.speedLimitSign.classList.add('hidden'); return; }
+  el.speedLimitValue.textContent = String(Math.round(seg.speedLimitKmh));
+  el.speedLimitSign.classList.toggle('guessed', seg.isGuessed);
+  el.speedLimitSign.classList.remove('hidden');
 }
 
 let lastTripResaveAt = 0;
@@ -9559,8 +9851,9 @@ async function startNavigation({ resuming = false } = {}) {
     el.searchCard.classList.add('hidden');
     el.placeCard.classList.add('hidden');
     el.navBanner.classList.remove('hidden');
-    el.navSpeed.classList.remove('hidden');
+    el.navSpeedRow.classList.remove('hidden');
     updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
+    el.speedLimitSign.classList.add('hidden'); // fresh start too — no stale sign from a previous trip until the first fix resolves one
     refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
     el.bottomSheet.classList.remove('expanded', 'half');
     el.startNavBtn.classList.add('hidden');
@@ -9659,7 +9952,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
 
   el.navBanner.classList.add('hidden');
-  el.navSpeed.classList.add('hidden');
+  el.navSpeedRow.classList.add('hidden');
   refreshWeatherBadge(); // re-evaluate now state.navigating is false — shows a place card's weather if one's still open, else hides
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
@@ -10078,8 +10371,9 @@ async function startTransitNavigation(itinerary) {
   el.searchCard.classList.add('hidden');
   el.placeCard.classList.add('hidden');
   el.navBanner.classList.remove('hidden');
-  el.navSpeed.classList.remove('hidden');
+  el.navSpeedRow.classList.remove('hidden');
   updateSpeedText(null);
+  el.speedLimitSign.classList.add('hidden'); // drive-only feature (see updateSpeedLimitSign) — never populated during transit tracking
   el.bottomSheet.classList.remove('expanded', 'half');
   el.startNavBtn.classList.add('hidden');
   el.cancelRouteBtn.classList.add('hidden');
@@ -10120,7 +10414,7 @@ function endTransitNavigation({ arrived = false } = {}) {
   else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 
   el.navBanner.classList.add('hidden');
-  el.navSpeed.classList.add('hidden');
+  el.navSpeedRow.classList.add('hidden');
   el.boardConfirmBtn.classList.add('hidden');
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
