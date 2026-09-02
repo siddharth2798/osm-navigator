@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { haversineDistanceM, nearestKochiStation, findKochiTransferPoints } from '../lib/kochi-geo.js';
+import { haversineDistanceM, nearestKochiStation, findKochiTransferPoints, feederRouteMetroEnd } from '../lib/kochi-geo.js';
 
 test('haversineDistanceM is zero for identical points', () => {
   assert.equal(haversineDistanceM(10.0, 76.3, 10.0, 76.3), 0);
@@ -64,4 +64,27 @@ test('findKochiTransferPoints skips entries with missing coordinates and returns
   const waterStations = [{ name: 'W', lat: 9.9664, lon: 76.3254 }];
   assert.deepEqual(findKochiTransferPoints(metroStations, waterStations, 10000), []);
   assert.deepEqual(findKochiTransferPoints([], [], 10000), []);
+});
+
+const metroStations = [
+  { name: 'Aluva', lat: 10.1099, lon: 76.3495 },
+  { name: 'Kalamassery', lat: 10.0586, lon: 76.322 },
+];
+const feederStations = [
+  { name: 'Aluva Metro Station', lat: 10.1099, lon: 76.3495 }, // same spot as the Aluva metro station itself
+  { name: 'CIAL Airport', lat: 10.154486, lon: 76.3924889 }, // genuinely far from every metro station
+];
+
+test('feederRouteMetroEnd finds the metro station at the same spot as a feeder stop', () => {
+  const result = feederRouteMetroEnd('Aluva Metro Station', metroStations, feederStations, 400);
+  assert.equal(result.name, 'Aluva');
+  assert.equal(result.index, 0);
+});
+
+test('feederRouteMetroEnd returns null when the feeder stop is too far from every metro station', () => {
+  assert.equal(feederRouteMetroEnd('CIAL Airport', metroStations, feederStations, 400), null);
+});
+
+test('feederRouteMetroEnd returns null for an unknown feeder station name', () => {
+  assert.equal(feederRouteMetroEnd('Nonexistent Stop', metroStations, feederStations, 400), null);
 });

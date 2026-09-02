@@ -11,10 +11,10 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
-import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes } from './lib/format-utils.js';
+import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
-import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure } from './lib/kochi-geo.js';
+import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure, feederRouteMetroEnd } from './lib/kochi-geo.js';
 import { stopDragPromoteTarget } from './lib/stop-drag-utils.js';
 import { kochiItineraryBaseParts, buildTransitItineraryLabels } from './lib/transit-labels.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
@@ -6959,8 +6959,9 @@ function loadKochiTransitData() {
     kochiTransitDataPromise = Promise.all([
       fetch('vendor/kochi-metro.json').then((r) => r.json()),
       fetch('vendor/kochi-water-metro.json').then((r) => r.json()),
-    ]).then(([metro, waterMetro]) => {
-      kochiTransitData = { metro, waterMetro };
+      fetch('vendor/kochi-feeder-bus.json').then((r) => r.json()),
+    ]).then(([metro, waterMetro, feederBus]) => {
+      kochiTransitData = { metro, waterMetro, feederBus };
       return kochiTransitData;
     }).catch((err) => {
       resolverDebugLog(`Kochi transit: failed to load reference data — ${err.message}`, 'error');
@@ -6989,6 +6990,12 @@ const KOCHI_METRO_ALIGHT_WINDOW = 2;
 // transfer point) get built per plan — keeps the total spec count bounded
 // even if the bundled data ever grows more transfer points.
 const KOCHI_MAX_COMBINED_SPECS = 2;
+// Same "how many is actually useful" bound as KOCHI_MAX_COMBINED_SPECS,
+// applied to metro+feeder-bus candidates (see buildKochiItineraries) —
+// keeps the total spec count (and the Valhalla calls Step 2 spends
+// resolving each one's access legs) bounded even as more feeder routes
+// get added to vendor/kochi-feeder-bus.json.
+const KOCHI_MAX_FEEDER_SPECS = 2;
 // Mirrors drive mode's own requestRoute(..., 2, ...) → primary + 2
 // alternates — same "how many is actually useful to show" ceiling.
 const KOCHI_MAX_ITINERARY_OPTIONS = 3;
@@ -7046,7 +7053,7 @@ function cachedDriveOrWalkLeg(cache, from, to, toName) {
  * combined with the bundled real trip-start times, a real "board at
  * roughly HH:MM" estimate — not a guessed average headway. */
 function planKochiMetroRideLeg(fromIdx, toIdx, now) {
-  const { stations, schedule } = kochiTransitData.metro;
+  const { stations, schedule, fares } = kochiTransitData.metro;
   const directionId = toIdx > fromIdx ? 0 : 1;
   const lo = Math.min(fromIdx, toIdx);
   const hi = Math.max(fromIdx, toIdx);
@@ -7092,6 +7099,12 @@ function planKochiMetroRideLeg(fromIdx, toIdx, now) {
     to: { name: stations[toIdx].name },
     distance: distanceM,
     duration: Math.abs(stations[toIdx].offsetS - stations[fromIdx].offsetS),
+    // Real flat fare (INR) for this exact station pair — straight from
+    // KMRL's own fare_rules.txt/fare_attributes.txt (see
+    // scripts/build-kochi-metro-data.mjs), keyed by the same stop_ids
+    // already stored as each station's `id`. Undefined (not shown) if the
+    // feed's own fare table somehow doesn't cover this pair.
+    fareINR: (fares || {})[`${stations[fromIdx].id}-${stations[toIdx].id}`],
     intermediateStops: new Array(Math.max(0, orderedSegment.length - 2)), // only .length is ever read by renderTransitManeuverList
     geometry: orderedSegment.map((s) => [s.lon, s.lat]), // connects real station coordinates — not the physical rail curve (no shapes.txt data bundled), close enough at map scale for an elevated single line
     // Ordered station list (origin→destination direction), same array this
@@ -7210,6 +7223,11 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       to: { name: routeEntry.to },
       distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
       duration: durationS,
+      // Transcribed from the official Water Metro fare chart (see
+      // vendor/kochi-water-metro.json's own fareSource note) — covers every
+      // real route this network has, but undefined (not shown) for a hop
+      // that somehow isn't one of the chart's listed pairs.
+      fareINR: (kochiTransitData.waterMetro.fares || {})[`${routeEntry.from}-${routeEntry.to}`],
       intermediateStops: [],
       geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
       // waitS: seconds until this hop's real sailing departs — "next boat"
@@ -7237,6 +7255,52 @@ function planKochiWaterMetroRideLegs(from, to, now) {
       departureAtMs: now.getTime() + Math.max(0, departureS - nowS) * 1000,
     };
   });
+}
+
+/** One leg for a direct Metro Connect feeder-bus route — no transfer/
+ * path-finding needed (see feederRouteMetroEnd above), just a real
+ * departure-time lookup against `route.departures`. `route.arrivals`
+ * (when the source timetable image showed one) gives an exact ride
+ * duration for whichever trip actually matched; otherwise falls back to
+ * `route.durationEstimateS` — see vendor/kochi-feeder-bus.json's own
+ * per-route notes for which routes only have an estimate. */
+function planKochiFeederBusRideLeg(route, now) {
+  const { stations } = kochiTransitData.feederBus;
+  const fromS = stations.find((s) => s.name === route.from);
+  const toS = stations.find((s) => s.name === route.to);
+  const nowS = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  const waitsS = [];
+  let matchedIndex = -1;
+  route.departures.forEach((t, i) => {
+    const [h, m, s] = t.split(':').map(Number);
+    const depS = h * 3600 + m * 60 + (s || 0);
+    if (depS >= nowS && waitsS.length < TRANSIT_UPCOMING_DEPARTURES) {
+      if (matchedIndex === -1) matchedIndex = i;
+      waitsS.push(depS - nowS);
+    }
+  });
+  const waitS = waitsS.length ? waitsS[0] : null;
+  let durationS = route.durationEstimateS || 0;
+  if (route.arrivals && matchedIndex !== -1) {
+    const [dh, dm, ds] = route.departures[matchedIndex].split(':').map(Number);
+    const [ah, am, as] = route.arrivals[matchedIndex].split(':').map(Number);
+    durationS = (ah * 3600 + am * 60 + (as || 0)) - (dh * 3600 + dm * 60 + (ds || 0));
+    if (durationS < 0) durationS += 24 * 3600; // arrival past midnight
+  }
+  return {
+    mode: 'BUS',
+    route: 'Metro Connect',
+    from: { name: route.from },
+    to: { name: route.to },
+    distance: fromS && toS ? turf.distance([fromS.lon, fromS.lat], [toS.lon, toS.lat], { units: 'meters' }) : 0,
+    duration: durationS,
+    fareINR: route.fareINR,
+    intermediateStops: route.intermediateStops || [],
+    geometry: fromS && toS ? [[fromS.lon, fromS.lat], [toS.lon, toS.lat]] : [],
+    waitS,
+    waitsS,
+    departureAtMs: waitS != null ? now.getTime() + waitS * 1000 : null,
+  };
 }
 
 // Cached lazily the first time it's needed — recomputed only if the data
@@ -7293,7 +7357,20 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
 
   const metroFrom = nearestKochiStation(from.lat, from.lon, metro.stations);
   const metroTo = nearestKochiStation(to.lat, to.lon, metro.stations);
+  // Requires DISTINCT boarding/alighting stations — this specifically gates
+  // "is there an actual metro RIDE in this trip," used by the metro-only
+  // candidate loop and the metro+ferry combined block below. A feeder bus
+  // can still be relevant even when this is false (e.g. both endpoints
+  // resolve to the same nearest station — see metroStationsReachable).
   const metroFeasible = !!(metroFrom && metroTo && metroFrom.index !== metroTo.index
+    && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M);
+  // Same distance check, WITHOUT requiring distinct stations — a trip from
+  // near Aluva to CIAL Airport has metroFrom === metroTo (Aluva is nearest
+  // to both), no metro ride needed at all, but the Aluva-CIAL feeder bus is
+  // still exactly the right answer. Gates the feeder-bus candidate block and
+  // the top-level early-return below; metroFeasible alone would wrongly
+  // return null before ever trying a feeder route in this exact case.
+  const metroStationsReachable = !!(metroFrom && metroTo
     && metroFrom.distanceM <= KOCHI_DRIVE_MAX_M && metroTo.distanceM <= KOCHI_DRIVE_MAX_M);
 
   const ferryFrom = nearestKochiStation(from.lat, from.lon, waterMetro.stations);
@@ -7302,7 +7379,7 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
     && ferryFrom.distanceM <= KOCHI_DRIVE_MAX_M && ferryTo.distanceM <= KOCHI_DRIVE_MAX_M);
   const ferryPath = ferryFeasible ? findKochiWaterMetroPath(ferryFrom.name, ferryTo.name) : null;
 
-  if (!metroFeasible && !ferryPath) return null;
+  if (!metroStationsReachable && !ferryPath) return null;
 
   // ---- Step 1: free candidate specs ----
   // A spec is just an ordered list of segments: 'access' (needs a real
@@ -7381,6 +7458,56 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
     specs.push(...combined.slice(0, KOCHI_MAX_COMBINED_SPECS));
   }
 
+  // Metro + Metro Connect feeder bus: unlike the metro+ferry combo above,
+  // there's no transfer-point search needed — every bundled feeder route
+  // already has one end sitting at a metro station's own premises (see
+  // feederRouteMetroEnd), so the "transfer point" is just that station.
+  // Cheaply pre-filters every route's FAR endpoint against `to`/`from`
+  // (a plain turf.distance, no Valhalla call) before ranking, so an
+  // obviously-irrelevant route (e.g. the airport feeder, when this trip
+  // isn't anywhere near Aluva) never costs a real access-leg request in
+  // Step 2 below.
+  if (metroStationsReachable && kochiTransitData.feederBus) {
+    const { feederBus } = kochiTransitData;
+    const feederCandidates = [];
+    feederBus.routes.forEach((route) => {
+      const metroStart = feederRouteMetroEnd(route.from, metro.stations, feederBus.stations, CONFIG.KOCHI_TRANSFER_MAX_M);
+      if (metroStart) {
+        const farStation = feederBus.stations.find((s) => s.name === route.to);
+        const farDistM = farStation ? turf.distance([farStation.lon, farStation.lat], [to.lon, to.lat], { units: 'meters' }) : Infinity;
+        if (farStation && farDistM <= KOCHI_DRIVE_MAX_M) {
+          feederCandidates.push({ direction: 'metro-first', route, metroStation: metroStart, farStation, farDistM });
+        }
+      }
+      const metroEnd = feederRouteMetroEnd(route.to, metro.stations, feederBus.stations, CONFIG.KOCHI_TRANSFER_MAX_M);
+      if (metroEnd) {
+        const farStation = feederBus.stations.find((s) => s.name === route.from);
+        const farDistM = farStation ? turf.distance([farStation.lon, farStation.lat], [from.lon, from.lat], { units: 'meters' }) : Infinity;
+        if (farStation && farDistM <= KOCHI_DRIVE_MAX_M) {
+          feederCandidates.push({ direction: 'feeder-first', route, metroStation: metroEnd, farStation, farDistM });
+        }
+      }
+    });
+    feederCandidates.sort((a, b) => a.farDistM - b.farDistM);
+    feederCandidates.slice(0, KOCHI_MAX_FEEDER_SPECS).forEach(({ direction, route, metroStation, farStation }) => {
+      if (direction === 'metro-first') {
+        const segments = [{ type: 'access', from, to: metroFrom, toName: metroFrom.name }];
+        // A rider whose nearest station already IS this route's metro-side
+        // stop needs no metro ride at all — straight onto the feeder bus.
+        if (metroStation.index !== metroFrom.index) segments.push({ type: 'ride', legs: [planKochiMetroRideLeg(metroFrom.index, metroStation.index, now)] });
+        segments.push({ type: 'ride', legs: [planKochiFeederBusRideLeg(route, now)] });
+        segments.push({ type: 'access', from: farStation, to, toName });
+        specs.push({ segments });
+      } else {
+        const segments = [{ type: 'access', from, to: farStation, toName: farStation.name }];
+        segments.push({ type: 'ride', legs: [planKochiFeederBusRideLeg(route, now)] });
+        if (metroStation.index !== metroTo.index) segments.push({ type: 'ride', legs: [planKochiMetroRideLeg(metroStation.index, metroTo.index, now)] });
+        segments.push({ type: 'access', from: metroTo, to, toName });
+        specs.push({ segments });
+      }
+    });
+  }
+
   if (!specs.length) return null;
 
   // ---- Step 2: resolve access legs, deduped/shared via one per-call cache ----
@@ -7393,11 +7520,20 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
       if (!accessLeg) return null;
       legs.push(accessLeg);
     }
+    // Sum whatever ride legs (SUBWAY/FERRY/BUS) actually have a real fare —
+    // metro and the feeder buses/water-metro pairs the fare chart covers do,
+    // but coverage isn't total (see each leg-builder's own fareINR comment).
+    // fareIsPartial flags a total that's a floor, not the real full fare, so
+    // rendering can show "from ₹X" instead of implying a precise number.
+    const rideLegs = legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY' || l.mode === 'BUS');
+    const pricedLegs = rideLegs.filter((l) => l.fareINR != null);
     return {
       legs,
       duration: legs.reduce((sum, l) => sum + (l.duration || 0), 0),
       distanceM: legs.reduce((sum, l) => sum + (l.distance || 0), 0),
       source: 'kochi',
+      totalFareINR: pricedLegs.length ? pricedLegs.reduce((sum, l) => sum + l.fareINR, 0) : undefined,
+      fareIsPartial: pricedLegs.length > 0 && pricedLegs.length < rideLegs.length,
     };
   }));
 
@@ -7406,7 +7542,7 @@ async function buildKochiItineraries(from, to, toName = 'your destination') {
   if (!survivors.length) return null;
   const bySignature = new Map(); // ride-leg signature (mode+from+to per hop) -> shortest survivor seen for it
   survivors.forEach((it) => {
-    const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY')
+    const sig = it.legs.filter((l) => l.mode === 'SUBWAY' || l.mode === 'FERRY' || l.mode === 'BUS')
       .map((l) => `${l.mode}:${l.from.name}>${l.to.name}`).join('|');
     const existing = bySignature.get(sig);
     if (!existing || it.distanceM < existing.distanceM) bySignature.set(sig, it);
@@ -7502,11 +7638,17 @@ async function buildKochiMultiStopItinerary(waypoints) {
   );
   if (segments.some((s) => !s || !s.length)) return null;
   const chosen = segments.map((s) => s[0]); // each segment's own array is already ranked shortest-first
+  // Same partial-total handling as buildKochiItineraries' own Step 2 — a
+  // multi-stop trip is priced only when at least one segment is, and
+  // flagged partial unless every segment resolved a full fare itself.
+  const anyFareKnown = chosen.some((it) => it.totalFareINR != null);
   return [{
     legs: chosen.flatMap((it) => it.legs),
     duration: chosen.reduce((sum, it) => sum + it.duration, 0),
     distanceM: chosen.reduce((sum, it) => sum + (it.distanceM || 0), 0),
     source: 'kochi',
+    totalFareINR: anyFareKnown ? chosen.reduce((sum, it) => sum + (it.totalFareINR || 0), 0) : undefined,
+    fareIsPartial: anyFareKnown && chosen.some((it) => it.totalFareINR == null || it.fareIsPartial),
   }];
 }
 
@@ -7599,11 +7741,12 @@ function renderTransitManeuverList(legs) {
     // real departures are left today.
     const waitText = leg.waitsS ? formatWaitsText(leg.waitsS) : null;
     const waitLabel = leg.waitsS && leg.waitsS.length > 1 ? 'Next departures' : 'Next departure';
+    const fareText = leg.fareINR != null ? ` &middot; ${formatFareINR(leg.fareINR)}` : '';
     li.innerHTML = `<div class="m-icon">${transitLegIcon(leg.mode)}</div>
       <div class="m-body">
         <div class="instr">${escapeHtml(instruction)}</div>
         ${waitText ? `<div class="meta next-departure">${waitLabel} ${escapeHtml(waitText)}</div>` : ''}
-        <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}</div>
+        <div class="meta">${formatDistance(leg.distance || 0)} &middot; ${formatDuration(leg.duration || 0)}${fareText}</div>
         ${leg.mode === 'SUBWAY' && leg.stations ? '<ol class="station-progress hidden"></ol>' : ''}
       </div>`;
     el.maneuverList.appendChild(li);
@@ -7639,7 +7782,8 @@ async function renderTransitRoute(itinerary) {
 
   renderTransitManeuverList(itinerary.legs);
   const totalDistM = itinerary.legs.reduce((sum, l) => sum + (l.distance || 0), 0);
-  el.sheetSummary.textContent = `${formatDistance(totalDistM)} · about ${formatDuration(itinerary.duration)}`;
+  const fareSuffix = itinerary.totalFareINR != null ? ` · ${formatFareINR(itinerary.totalFareINR, itinerary.fareIsPartial)}` : '';
+  el.sheetSummary.textContent = `${formatDistance(totalDistM)} · about ${formatDuration(itinerary.duration)}${fareSuffix}`;
   el.bottomSheet.classList.remove('hidden');
 }
 
@@ -7665,8 +7809,9 @@ function renderTransitItineraryOptions() {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'route-option-card' + (i === state.selectedTransitItineraryIndex ? ' active' : '');
+    const fareSuffix = itinerary.totalFareINR != null ? ` &middot; ${formatFareINR(itinerary.totalFareINR, itinerary.fareIsPartial)}` : '';
     card.innerHTML = `<div class="route-option-dist">${formatDistance(itinerary.distanceM || 0)}</div>
-      <div class="route-option-time">${formatDuration(itinerary.duration)}</div>
+      <div class="route-option-time">${formatDuration(itinerary.duration)}${fareSuffix}</div>
       <div class="route-option-tag">${escapeHtml(labels[i])}</div>`;
     card.addEventListener('click', () => selectTransitItineraryOption(i));
     el.transitItineraryOptionsRow.appendChild(card);
