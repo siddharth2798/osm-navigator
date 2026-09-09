@@ -18,6 +18,7 @@ import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPoints
 import { stopDragPromoteTarget } from './lib/stop-drag-utils.js';
 import { kochiItineraryBaseParts, buildTransitItineraryLabels } from './lib/transit-labels.js';
 import { classifyAircraftSize, aircraftColorFor, drCapSecFor, buildDRFeatureCollection } from './lib/flight-render-utils.js';
+import { searchFlightEntities as searchFlightEntitiesPure } from './lib/flight-search.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -202,6 +203,9 @@ const el = {
   flightAirportPanelRunwayDiagram: document.getElementById('flight-airport-panel-runway-diagram'),
   flightAirportPanelRunwayList: document.getElementById('flight-airport-panel-runway-list'),
   flightAirportPanelMeta: document.getElementById('flight-airport-panel-meta'),
+  flightSearchBar: document.getElementById('flight-search-bar'),
+  flightSearchInput: document.getElementById('flight-search-input'),
+  flightSearchSuggestions: document.getElementById('flight-search-suggestions'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -3927,6 +3931,96 @@ function closeAirportInfoPanel() {
 el.flightAirportPanelCloseBtn.addEventListener('click', goBackInApp);
 
 // ---------------------------------------------------------------------------
+// Flight Tracking Mode: search bar. Purely client-side against data
+// already in memory — the bundled airport list (flightRefData.airports)
+// and the most recent /api/flights poll (state.lastFlightPollAircraft,
+// see runFlightCheckin) — no network request of its own. This bounds live-
+// aircraft search to "whatever the last poll actually returned within its
+// query radius," not a global search; a genuinely global search would need
+// either a stateful aggregator (explicitly out of scope for this feature)
+// or spending OpenSky's anonymous daily quota on every keystroke, neither
+// of which fits a personal nav app. See docs/FLIGHT_TRACKING.md.
+// ---------------------------------------------------------------------------
+
+/** Thin wrapper around lib/flight-search.js's pure implementation — see
+ * tests/flight-search.test.js for the matching/ranking behavior itself.
+ * Bails out before flightRefData has loaded (no airports to search yet)
+ * rather than passing null through, matching the pure function's own
+ * defensive `|| []` handling either way. */
+function searchFlightEntities(query) {
+  if (!flightRefData) return [];
+  return searchFlightEntitiesPure(query, flightRefData.airports, state.lastFlightPollAircraft, CONFIG.FLIGHT_SEARCH_MAX_RESULTS);
+}
+
+function renderFlightSearchResults(results) {
+  const listEl = el.flightSearchSuggestions;
+  listEl.innerHTML = '';
+  if (!results.length) {
+    hideSuggestionList(listEl);
+    return;
+  }
+  results.forEach((r) => {
+    const li = document.createElement('li');
+    li.className = 'result-item';
+    if (r.kind === 'airport') {
+      li.innerHTML = `<span class="flight-search-result-kind">Airport</span>`
+        + `<span class="result-text"><span class="result-primary">${escapeHtml(r.name)}</span>`
+        + `<span class="result-secondary">${escapeHtml([r.iata, r.icao].filter(Boolean).join(' · '))}</span></span>`;
+      li.addEventListener('click', () => {
+        hideSuggestionList(listEl);
+        el.flightSearchInput.value = '';
+        openAirportInfoPanel(r.icao);
+        map.flyTo({ center: [r.lon, r.lat], zoom: Math.max(map.getZoom(), 11) });
+      });
+    } else {
+      li.innerHTML = `<span class="flight-search-result-kind">Aircraft</span>`
+        + `<span class="result-text"><span class="result-primary">${escapeHtml(describeCallsign(r.flight))}</span>`
+        + `<span class="result-secondary">${escapeHtml(r.r || r.hex)}</span></span>`;
+      li.addEventListener('click', () => {
+        hideSuggestionList(listEl);
+        el.flightSearchInput.value = '';
+        openAircraftDetailPanel(r.hex);
+        map.flyTo({ center: [r.lon, r.lat], zoom: Math.max(map.getZoom(), 9) });
+      });
+    }
+    listEl.appendChild(li);
+  });
+  showSuggestionList(listEl);
+}
+
+/** Debounced input handling + basic ArrowUp/ArrowDown/Enter/Escape
+ * keyboard nav (moving the existing .suggestions li.active class this app
+ * already styles, see style.css) — not reusing setupAutocomplete, which is
+ * tightly coupled to Nominatim geocoding and has nothing in common with
+ * this pure in-memory search beyond both filling a dropdown. */
+function setupFlightSearch() {
+  let debounceTimer = null;
+  el.flightSearchInput.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    const query = el.flightSearchInput.value;
+    debounceTimer = setTimeout(() => renderFlightSearchResults(searchFlightEntities(query)), CONFIG.FLIGHT_SEARCH_DEBOUNCE_MS);
+  });
+  el.flightSearchInput.addEventListener('keydown', (e) => {
+    const items = Array.from(el.flightSearchSuggestions.children);
+    if (!items.length) return;
+    const activeIdx = items.findIndex((li) => li.classList.contains('active'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const nextIdx = e.key === 'ArrowDown'
+        ? (activeIdx + 1) % items.length
+        : (activeIdx - 1 + items.length) % items.length;
+      items.forEach((li, i) => li.classList.toggle('active', i === nextIdx));
+    } else if (e.key === 'Enter' && activeIdx >= 0) {
+      e.preventDefault();
+      items[activeIdx].click();
+    } else if (e.key === 'Escape') {
+      hideSuggestionList(el.flightSearchSuggestions);
+    }
+  });
+}
+setupFlightSearch();
+
+// ---------------------------------------------------------------------------
 // FR24-style icon color/size classification — ported from the aurora
 // project's Map.tsx (classifyAircraft/aircraftColor/boostDark), now
 // living in lib/flight-render-utils.js (imported above) so they're
@@ -4134,10 +4228,12 @@ function enterFlightMode() {
   state.flightModeActive = true;
   resolverDebugLog(`Entering Flight Tracking Mode${state.navigating ? ' (trip continues in the background)' : ''}.`);
 
-  // Planning UI always hidden while in dedicated mode, navigating or not.
+  // Planning UI always hidden while in dedicated mode, navigating or not —
+  // the flight search bar takes #search-card's exact slot (see index.html).
   el.searchCard.classList.add('hidden');
   hideRouteChipsInline();
   el.bottomSheet.classList.remove('expanded', 'half'); // same "put it away" collapse startNavigation itself uses — not a hard hide, avoids having to remember/restore a prior hidden state on exit
+  el.flightSearchBar.classList.remove('hidden');
 
   if (state.navigating) {
     // Suspend, not end: releases camera follow so the user can freely pan/
@@ -4210,6 +4306,9 @@ function exitFlightMode() {
   stopFlightModeRendering();
   closeAircraftDetailPanel(); // no-op if nothing was open; must run BEFORE the forgetBackLayerIfTop below so its own back-layer (if any) is popped first, in the right stack order
   closeAirportInfoPanel(); // same reasoning — at most one of the two panels is ever open at once, but both are safe no-ops otherwise
+  el.flightSearchBar.classList.add('hidden');
+  el.flightSearchInput.value = '';
+  hideSuggestionList(el.flightSearchSuggestions);
   forgetBackLayerIfTop(exitFlightModeViaBack);
   resolverDebugLog(`Exiting Flight Tracking Mode${state.navigating ? ' — resuming turn-by-turn.' : '.'}`);
 

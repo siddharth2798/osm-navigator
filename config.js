@@ -686,4 +686,12 @@ export const CONFIG = {
   // an airport rather than just the one plane that happens to cross you.
   FLIGHT_NEAR_AIRPORT_RADIUS_M: 8000,
   FLIGHT_REGIONAL_QUERY_RADIUS_NM: 20,
+
+  // Flight Tracking Mode's search bar (searchFlightEntities in app.js) is
+  // pure client-side filtering over already-in-memory data (the bundled
+  // airport list + the most recent /api/flights poll) — no network round
+  // trip to wait out, so this can be snappier than a geocoding search's
+  // own network-bound debounce.
+  FLIGHT_SEARCH_DEBOUNCE_MS: 150,
+  FLIGHT_SEARCH_MAX_RESULTS: 8,
 };

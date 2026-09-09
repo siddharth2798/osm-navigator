@@ -1588,6 +1588,22 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .flight-runway-row:last-child { border-bottom: none; }
 .flight-runway-row-meta { color: var(--text-dim); font-size: 12px; }
 
+/* ---- Flight Tracking Mode: search bar ---- */
+#flight-search-bar {
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px 10px 10px;
+}
+#flight-search-bar.hidden { display: none; }
+.flight-search-result-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+
 /* ---- docs: single scrollable page, one flat grouped list per section ----
    Uses its own --docs-body/--docs-link tokens rather than the app-wide
    --text-dim/--accent: those are reused in ~30 other places (buttons, active
