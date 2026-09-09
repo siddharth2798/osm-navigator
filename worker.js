@@ -9,6 +9,9 @@ import { resolveMapsUrl } from './lib/resolve-maps-url.js';
 import { openChargePoi } from './lib/opencharge-poi.js';
 import { valhallaProxy } from './lib/valhalla-proxy.js';
 import { nearbyFlights } from './lib/flights-proxy.js';
+import { flightRoute } from './lib/flight-route-proxy.js';
+import { aircraftInfo } from './lib/aircraft-info-proxy.js';
+import { airportWeather } from './lib/airport-weather-proxy.js';
 import { tomtomTrafficFlow } from './lib/tomtom-traffic-proxy.js';
 import { tomtomPlacesSearch } from './lib/tomtom-places-proxy.js';
 
@@ -28,6 +31,12 @@ export default {
     // has to actually exist on whatever's live, regardless of which
     // branch's UI code calls it.
     if (url.pathname === '/api/flights') return nearbyFlights(url, env);
+    // Flight Tracking Mode's aircraft/airport detail lookups — same
+    // "route lives here regardless of which branch's UI code calls it"
+    // reasoning as /api/flights above.
+    if (url.pathname === '/api/flight-route') return flightRoute(url, env);
+    if (url.pathname === '/api/aircraft-info') return aircraftInfo(url, env);
+    if (url.pathname === '/api/airport-weather') return airportWeather(url, env);
     // Confirmed live (curl against the deployed *.workers.dev domain) that
     // these two 404'd — functions/api/traffic.js and functions/api/places.js
     // are Cloudflare PAGES Functions, but this app is deployed as a plain

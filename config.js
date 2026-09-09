@@ -598,17 +598,20 @@ export const CONFIG = {
   // --- Flight tracking (personal branch only) -----------------------------
   // Shows nearby aircraft on the map while navigating — an "overhead" alert
   // when one crosses close to your live position, or every aircraft in the
-  // area once you're near an airport. Backed by api.adsb.lol, an
-  // unofficial community-run ADS-B aggregator: no API key today, but its
-  // own docs say that may change (obtainable free by running your own
-  // receiver), and there's no uptime/coverage guarantee — real coverage
-  // depends entirely on ground-receiver density near wherever you're
-  // driving. See docs/FLIGHT_TRACKING.md. Calls this app's own /api/flights
-  // route (see functions/api/flights.js + lib/flights-proxy.js) rather than
-  // adsb.lol directly — not to hide a secret (there isn't one), but because
-  // adsb.lol sends no CORS header at all, so a direct browser fetch()
-  // couldn't read the response even though the request itself would
-  // succeed.
+  // area once you're near an airport — plus (see FLIGHT_DR_TICK_MS below) a
+  // full FR24-style "Flight Tracking Mode". Live positions are backed by
+  // OpenSky Network (an academic/non-profit ADS-B network) by default, with
+  // airplanes.live as a fallback tier once its pending access approval
+  // lands — no API key needed for either today. There's no uptime/coverage
+  // guarantee for either — real coverage depends on ground-receiver density
+  // near wherever you're driving, and OpenSky's own coverage skews Europe/
+  // North America. See docs/FLIGHT_TRACKING.md. Calls this app's own
+  // /api/flights route (see functions/api/flights.js + lib/flights-proxy.js)
+  // rather than either source directly — not to hide a secret (there isn't
+  // one), but because neither sends a CORS header, so a direct browser
+  // fetch() couldn't read the response even though the request itself
+  // would succeed. Same reasoning behind /api/flight-route,
+  // /api/aircraft-info, and /api/airport-weather below.
   FLIGHT_TRACKING_ENABLED: true,
 
   // "Crossing above me" means horizontal ground-track distance — NOT true
@@ -628,32 +631,31 @@ export const CONFIG = {
   // genuinely well clear, not just a few metres back over the line.
   FLIGHT_OVERHEAD_CLEAR_RADIUS_M: 700,
 
-  // Polled on its own timer (not every GPS tick) — api.adsb.lol is a free
-  // shared community resource with no formal rate limit published ("dynamic
-  // based on load"), so this stays deliberately gentle rather than as fast
-  // as the GPS fixes actually arrive. Also doubles as the look-ahead window
-  // for aircraftApproachDistM's path projection — see FLIGHT_OVERHEAD_RADIUS_M.
+  // Polled on its own timer (not every GPS tick) — OpenSky's anonymous tier
+  // is a free shared resource (400 credits/day), so this stays deliberately
+  // gentle rather than as fast as the GPS fixes actually arrive. Also
+  // doubles as the look-ahead window for aircraftApproachDistM's path
+  // projection — see FLIGHT_OVERHEAD_RADIUS_M.
   FLIGHT_POLL_INTERVAL_MS: 15000,
 
-  // A 429 from adsb.lol ("dynamic rate limiting based on environment
-  // load" — no fixed published cap, see docs/FLIGHT_TRACKING.md) means
-  // back off, not keep polling at the normal cadence and hammer an
-  // already-throttling endpoint. FLIGHT_BACKOFF_BASE_MS is the first
-  // pause; applyFlightBackoff in app.js doubles it on each further 429 up
-  // to FLIGHT_BACKOFF_MAX_MS, and resets to zero the next time a
-  // check-in actually succeeds. Overridden per-response by the server's
-  // own Retry-After header when it sends one.
+  // A 429 from the upstream data source means back off, not keep polling
+  // at the normal cadence and hammer an already-throttling endpoint.
+  // FLIGHT_BACKOFF_BASE_MS is the first pause; applyFlightBackoff in app.js
+  // doubles it on each further 429 up to FLIGHT_BACKOFF_MAX_MS, and resets
+  // to zero the next time a check-in actually succeeds. Overridden
+  // per-response by the server's own Retry-After header when it sends one.
   FLIGHT_BACKOFF_BASE_MS: 30000,
   FLIGHT_BACKOFF_MAX_MS: 300000,
 
-  // Query radius (nautical miles — adsb.lol's own unit) for an ordinary
-  // check-in away from an airport. Small on purpose: only aircraft that
-  // could plausibly cross within FLIGHT_OVERHEAD_RADIUS_M soon are actually
-  // useful to know about here.
+  // Query radius (nautical miles) for an ordinary check-in away from an
+  // airport. Small on purpose: only aircraft that could plausibly cross
+  // within FLIGHT_OVERHEAD_RADIUS_M soon are actually useful to know about
+  // here. Flight Tracking Mode always uses FLIGHT_REGIONAL_QUERY_RADIUS_NM
+  // instead, regardless of this value — see maybeCheckFlights.
   FLIGHT_QUERY_RADIUS_NM: 3,
 
-  // A position report older than this (adsb.lol's own 'seen_pos' field —
-  // seconds since THIS aircraft's position last actually updated, which can
+  // A position report older than this ('seen_pos' — seconds since THIS
+  // aircraft's position last actually updated, which can
   // lag well behind the response's own timestamp, especially for
   // MLAT-derived fixes) is excluded entirely rather than trusted as "where
   // it is right now" — a stale fix defeats the whole point of an overhead

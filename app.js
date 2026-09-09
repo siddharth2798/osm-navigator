@@ -265,6 +265,7 @@ const state = {
   flightBackoffUntil: null,     // Date.now() timestamp; maybeCheckFlights skips polling entirely until past this — see applyFlightBackoff
   flightBackoffMs: 0,           // current backoff length, doubling per consecutive 429; reset to 0 on any successful check-in
   flightActiveSource: null,     // 'opensky' | 'airplanes.live', from the proxy's own x-flight-source header — see runFlightCheckin
+  lastFlightPollAircraft: [],   // every aircraft from the most recent check-in (not just overhead ones) — see runFlightCheckin/searchFlightEntities
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -3306,6 +3307,11 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
       // "crossing right now", so it's excluded rather than shown as current.
       && !(typeof a.seen_pos === 'number' && a.seen_pos > CONFIG.FLIGHT_MAX_POSITION_AGE_S)
     ));
+    // Retained beyond this one check-in (unlike the overhead-only
+    // state.flightOverheadAircraft below) so Flight Tracking Mode's search
+    // bar has something to filter against between polls without needing
+    // its own fetch — see searchFlightEntities.
+    state.lastFlightPollAircraft = aircraft;
 
     // Deliberately its own try/catch, not covered by the outer one above:
     // by this point the round trip to the data source has already succeeded
