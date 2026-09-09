@@ -102,10 +102,23 @@ button {
 #status-banner.hidden  { display: none; }
 
 /* ---------------------------------------------------------------- resolver debug panel */
+/* left/right: 70px (not the 10px every other fixed panel in this file
+   uses) — deliberately clears #map-controls-left/#map-controls, the two
+   46px-wide .fab button columns anchored at left/right: 14px (see their
+   own rules below): 14px offset + 46px button + a 10px gap = 70px. Only
+   the button COLUMN's width has to be cleared this way, never its height
+   (which varies with which conditional buttons — flight-tracking toggle,
+   Mapillary, weather badge, effort button — happen to be visible right
+   now), so a fixed inset is enough; no per-button geometry tracking
+   needed here the way openRouteChipsPopover needs for ITS own vertical
+   position. Without this, the panel used to sit on top of both columns
+   (z-index: 70 deliberately outranks their z-index: 20 — debug
+   visibility over control access — see the comment in index.html) and
+   made them untappable for as long as it was open. */
 #resolver-debug-panel {
   position: fixed;
-  left: 10px;
-  right: 10px;
+  left: 70px;
+  right: 70px;
   bottom: 10px;
   max-height: 45vh;
   display: flex;
@@ -118,6 +131,12 @@ button {
   overflow: hidden;
 }
 #resolver-debug-panel.hidden { display: none; }
+/* Collapsed: header stays, log body hidden — see the toggle button/
+   resolverDebugCollapsed flag in app.js. Distinct from .hidden (which
+   removes Debug mode's whole on-screen presence); collapsing just
+   reclaims screen space while staying on and still logging underneath. */
+#resolver-debug-panel.collapsed #resolver-debug-log { display: none; }
+#resolver-debug-panel.collapsed { max-height: none; }
 
 .resolver-debug-header {
   display: flex;
@@ -129,6 +148,7 @@ button {
   font-weight: 600;
   flex-shrink: 0;
 }
+#resolver-debug-panel.collapsed .resolver-debug-header { border-bottom: none; }
 .resolver-debug-actions { display: flex; gap: 6px; }
 .resolver-debug-actions button {
   background: var(--panel-2);
