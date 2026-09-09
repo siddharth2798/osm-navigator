@@ -186,6 +186,15 @@ const el = {
   voiceModeBtn: document.getElementById('voice-mode-btn'),
   mapLayerBtn: document.getElementById('map-layer-btn'),
   flightTrackingBtn: document.getElementById('flight-tracking-btn'),
+  flightAircraftPanel: document.getElementById('flight-aircraft-panel'),
+  flightAircraftPanelTitle: document.getElementById('flight-aircraft-panel-title'),
+  flightAircraftPanelCloseBtn: document.getElementById('flight-aircraft-panel-close-btn'),
+  flightAircraftPanelEmergency: document.getElementById('flight-aircraft-panel-emergency'),
+  flightAircraftPanelRoute: document.getElementById('flight-aircraft-panel-route'),
+  flightAircraftPanelRouteFrom: document.getElementById('flight-aircraft-panel-route-from'),
+  flightAircraftPanelRouteTo: document.getElementById('flight-aircraft-panel-route-to'),
+  flightAircraftPanelRouteUnknown: document.getElementById('flight-aircraft-panel-route-unknown'),
+  flightAircraftPanelTelemetry: document.getElementById('flight-aircraft-panel-telemetry'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -1227,13 +1236,41 @@ mapLoad.then(() => {
   // airborne and ground icon layers get the same handler (registered
   // per-layer rather than passed as an array — broadest MapLibre version
   // compatibility, matching this app's other multi-layer click handlers).
-  const onFlightAircraftClick = (e) => { if (e.features.length) showAircraftDetail(e.features[0].properties); };
+  // Outside Flight Tracking Mode a tap keeps the original badge-overwrite
+  // behavior (showAircraftDetail); inside it, opens the real detail panel.
+  const onFlightAircraftClick = (e) => {
+    if (!e.features.length) return;
+    if (state.flightModeActive) openAircraftDetailPanel(e.features[0].properties.hex);
+    else showAircraftDetail(e.features[0].properties);
+  };
   const onFlightAircraftEnter = () => { map.getCanvas().style.cursor = 'pointer'; };
   const onFlightAircraftLeave = () => { map.getCanvas().style.cursor = ''; };
   ['flight-aircraft-icons', 'flight-aircraft-icons-ground'].forEach((layerId) => {
     map.on('click', layerId, onFlightAircraftClick);
     map.on('mouseenter', layerId, onFlightAircraftEnter);
     map.on('mouseleave', layerId, onFlightAircraftLeave);
+  });
+
+  // Great-circle route arc, drawn only while the aircraft detail panel is
+  // open for a specific selected aircraft (see updateSelectedAircraftRouteArc,
+  // driven from startFlightModeRendering's rAF tick). Flown leg (origin ->
+  // current position) dim/solid, remaining leg (current position ->
+  // destination) bright/dashed — ported styling from the aurora project's
+  // own route-arc-flown/route-arc-remaining layers.
+  map.addSource('flight-route-arc', { type: 'geojson', data: emptyFeatureCollection() });
+  map.addLayer({
+    id: 'flight-route-arc-flown',
+    type: 'line',
+    source: 'flight-route-arc',
+    filter: ['==', ['get', 'segment'], 'flown'],
+    paint: { 'line-color': '#f59e0b', 'line-width': 2, 'line-opacity': 0.4 },
+  });
+  map.addLayer({
+    id: 'flight-route-arc-remaining',
+    type: 'line',
+    source: 'flight-route-arc',
+    filter: ['==', ['get', 'segment'], 'remaining'],
+    paint: { 'line-color': '#f59e0b', 'line-width': 2.5, 'line-dasharray': [2, 2], 'line-opacity': 0.85 },
   });
 });
 map.on('error', (e) => {
@@ -3509,6 +3546,184 @@ function showAircraftDetail(props) {
 }
 
 // ---------------------------------------------------------------------------
+// Flight Tracking Mode: aircraft detail panel + great-circle route arc.
+// Only reachable while state.flightModeActive (see the click handler in
+// mapLoad.then above) — a dedicated floating card (#flight-aircraft-panel),
+// not the shared badge showAircraftDetail above overwrites, since the
+// route arc needs to stay visible on the map underneath it.
+// ---------------------------------------------------------------------------
+
+let flightSelectedHex = null; // hex of the aircraft #flight-aircraft-panel is currently showing, or null when closed
+let flightSelectedRoute = null; // { origin: {lat,lon,...}|null, destination: {lat,lon,...}|null } once fetchAndRenderFlightRoute resolves — read by updateSelectedAircraftRouteArc on each rAF tick
+
+const FLIGHT_EMERGENCY_SQUAWKS = new Set(['7500', '7600', '7700']);
+
+/** Fills in the telemetry/emergency parts of the panel from whatever
+ * flightDRCache currently has for this hex (the same live-updating cache
+ * the map icons themselves read from) — called once on open and doesn't
+ * need to be re-called on every rAF tick itself; the panel's numbers
+ * naturally go stale between polls the same small amount the map icon's
+ * OWN position does between polls, which is an acceptable, expected
+ * amount of staleness for a few-second-old reading. */
+function renderAircraftDetailPanel(hex) {
+  const entry = flightDRCache.get(hex);
+  const a = entry ? entry.a : null;
+  const type = a ? describeAircraftType(a.t) : null;
+  el.flightAircraftPanelTitle.textContent = a ? `${describeCallsign(a.flight)}${type ? ` · ${type}` : ''}` : 'Aircraft';
+
+  const emergency = a && FLIGHT_EMERGENCY_SQUAWKS.has(a.squawk || '');
+  el.flightAircraftPanelEmergency.classList.toggle('hidden', !emergency);
+  if (emergency) el.flightAircraftPanelEmergency.textContent = `Emergency squawk ${a.squawk}`;
+
+  const rows = [
+    { label: 'Altitude', value: a && typeof a.alt_baro === 'number' ? `${Math.round(a.alt_baro).toLocaleString()} ft` : null },
+    { label: 'Speed', value: a && typeof a.gs === 'number' ? `${Math.round(a.gs)} kt` : null },
+    { label: 'Heading', value: a && typeof a.track === 'number' ? `${Math.round(a.track)}°` : null },
+    { label: 'Squawk', value: a && a.squawk ? a.squawk : null },
+    { label: 'Registration', value: a && a.r ? a.r : null },
+  ];
+  el.flightAircraftPanelTelemetry.innerHTML = rows.map((r) => `
+    <div class="flight-panel-telemetry-row${r.value ? '' : ' hidden'}">
+      <span class="flight-panel-telemetry-label">${escapeHtml(r.label)}</span>
+      <span class="flight-panel-telemetry-value">${r.value ? escapeHtml(r.value) : ''}</span>
+    </div>`).join('');
+}
+
+/** Formats one leg of a /api/flight-route response's origin/destination
+ * airport object for the panel's route row — /api/flight-route already
+ * returns the airport's own name (from adsbdb, see lib/flight-route-
+ * proxy.js), so this needs no cross-reference against the bundled
+ * vendor/airports.json at all, just a fallback chain for whichever fields
+ * happen to be present. */
+function flightAircraftLabel(airport) {
+  if (!airport) return '—';
+  const code = airport.iata || airport.icao;
+  if (airport.name) return code ? `${airport.name} (${code})` : airport.name;
+  return code || '—';
+}
+
+/** Fetches route (origin/destination) and, only when the poll itself
+ * didn't already supply registration/type (the OpenSky-only case — see
+ * lib/flights-proxy.js), aircraft info — populating the panel's route
+ * rows and telemetry, and priming flightSelectedRoute for the route-arc
+ * rAF tick. Each fetch degrades independently: a failure just leaves that
+ * section showing "unknown"/omitted, never blocks the rest of the panel.
+ * Deliberately NOT routed through applyFlightBackoff/noteFlightCheckinFailure
+ * — those gate the continuous /api/flights poll specifically; a single
+ * failed detail lookup says nothing about whether that's healthy. */
+async function fetchAndRenderFlightRoute(hex) {
+  const entry = flightDRCache.get(hex);
+  const a = entry ? entry.a : null;
+  if (!a) return;
+  const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
+
+  if (!a.r || !a.t) {
+    try {
+      const res = await fetch(`${base}/api/aircraft-info?hex=${hex}`);
+      if (res.ok && flightSelectedHex === hex) {
+        const info = await res.json();
+        // Merges straight onto the cached aircraft object — the next poll
+        // naturally overwrites it if the upstream ever disagrees, and every
+        // other reader (map icon color/size, this panel) benefits from the
+        // fill-in for free.
+        if (info.registration) a.r = info.registration;
+        if (info.icaoType) a.t = info.icaoType;
+        renderAircraftDetailPanel(hex);
+      }
+    } catch (err) {
+      resolverDebugLog(`Flight tracking: aircraft-info lookup failed — ${err.message}`, 'warn');
+    }
+  }
+
+  const callsign = (a.flight || '').trim();
+  if (!callsign) {
+    el.flightAircraftPanelRoute.classList.add('hidden');
+    el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
+    return;
+  }
+  try {
+    const res = await fetch(`${base}/api/flight-route?callsign=${encodeURIComponent(callsign)}`);
+    if (flightSelectedHex !== hex) return; // panel moved on to a different aircraft while this was in flight
+    if (!res.ok) {
+      el.flightAircraftPanelRoute.classList.add('hidden');
+      el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
+      return;
+    }
+    const route = await res.json();
+    flightSelectedRoute = { origin: route.origin, destination: route.destination };
+    if (route.origin || route.destination) {
+      el.flightAircraftPanelRouteUnknown.classList.add('hidden');
+      el.flightAircraftPanelRoute.classList.remove('hidden');
+      el.flightAircraftPanelRouteFrom.textContent = flightAircraftLabel(route.origin);
+      el.flightAircraftPanelRouteTo.textContent = flightAircraftLabel(route.destination);
+    } else {
+      el.flightAircraftPanelRoute.classList.add('hidden');
+      el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
+    }
+  } catch (err) {
+    resolverDebugLog(`Flight tracking: route lookup failed — ${err.message}`, 'warn');
+    el.flightAircraftPanelRoute.classList.add('hidden');
+    el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
+  }
+}
+
+/** Rebuilds the flight-route-arc source from flightSelectedRoute (once
+ * resolved) and the selected aircraft's current dead-reckoned position —
+ * called every rAF tick from startFlightModeRendering, so the "flown" leg
+ * visibly grows and the "remaining" leg visibly shrinks as the aircraft
+ * moves, same live feel as the icon itself. No-op (and clears the source)
+ * whenever nothing is selected or the route is still unresolved/unknown. */
+function updateSelectedAircraftRouteArc() {
+  const source = map.getSource('flight-route-arc');
+  if (!source) return;
+  if (!flightSelectedHex || !flightSelectedRoute) {
+    source.setData(emptyFeatureCollection());
+    return;
+  }
+  const entry = flightDRCache.get(flightSelectedHex);
+  if (!entry) {
+    source.setData(emptyFeatureCollection());
+    return;
+  }
+  const current = [entry.a.lon, entry.a.lat];
+  const features = [];
+  const { origin, destination } = flightSelectedRoute;
+  if (origin && typeof origin.lat === 'number' && typeof origin.lon === 'number') {
+    features.push({ ...turf.greatCircle([origin.lon, origin.lat], current), properties: { segment: 'flown' } });
+  }
+  if (destination && typeof destination.lat === 'number' && typeof destination.lon === 'number') {
+    features.push({ ...turf.greatCircle(current, [destination.lon, destination.lat]), properties: { segment: 'remaining' } });
+  }
+  source.setData({ type: 'FeatureCollection', features });
+}
+
+/** Opens the aircraft detail panel for `hex` — only reachable while
+ * state.flightModeActive (see the click handler in mapLoad.then). Renders
+ * immediately from whatever's already cached, then kicks off the route/
+ * aircraft-info fetches in the background rather than blocking the panel
+ * on them. */
+function openAircraftDetailPanel(hex) {
+  flightSelectedHex = hex;
+  flightSelectedRoute = null;
+  el.flightAircraftPanelRoute.classList.add('hidden');
+  el.flightAircraftPanelRouteUnknown.classList.add('hidden');
+  renderAircraftDetailPanel(hex);
+  el.flightAircraftPanel.classList.remove('hidden');
+  pushBackLayer(closeAircraftDetailPanel);
+  fetchAndRenderFlightRoute(hex);
+}
+
+function closeAircraftDetailPanel() {
+  flightSelectedHex = null;
+  flightSelectedRoute = null;
+  el.flightAircraftPanel.classList.add('hidden');
+  const source = map.getSource('flight-route-arc');
+  if (source) source.setData(emptyFeatureCollection());
+  forgetBackLayerIfTop(closeAircraftDetailPanel);
+}
+el.flightAircraftPanelCloseBtn.addEventListener('click', goBackInApp);
+
+// ---------------------------------------------------------------------------
 // FR24-style icon color/size classification — ported from the aurora
 // project's Map.tsx (classifyAircraft/aircraftColor/boostDark), now
 // living in lib/flight-render-utils.js (imported above) so they're
@@ -3582,6 +3797,7 @@ function startFlightModeRendering() {
       if (map.getLayer('flight-aircraft-emergency')) {
         map.setPaintProperty('flight-aircraft-emergency', 'circle-radius', 18 + 7 * Math.abs(Math.sin(ts / 600)));
       }
+      updateSelectedAircraftRouteArc(); // no-op unless the aircraft detail panel is open — see its own doc comment
     }
     flightRAFHandle = requestAnimationFrame(tick);
   };
@@ -3740,6 +3956,7 @@ function exitFlightMode() {
   if (!state.flightModeActive) return;
   state.flightModeActive = false;
   stopFlightModeRendering();
+  closeAircraftDetailPanel(); // no-op if nothing was open; must run BEFORE the forgetBackLayerIfTop below so its own back-layer (if any) is popped first, in the right stack order
   forgetBackLayerIfTop(exitFlightModeViaBack);
   resolverDebugLog(`Exiting Flight Tracking Mode${state.navigating ? ' — resuming turn-by-turn.' : '.'}`);
 

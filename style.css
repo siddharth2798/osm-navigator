@@ -1505,6 +1505,60 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .ev-panel-attribution { font-size: 12px; color: var(--text-dim); line-height: 1.4; margin: 8px 2px 0; }
 .ev-panel-attribution a { color: var(--text-dim); }
 
+/* ---- Flight Tracking Mode: aircraft detail card ----
+   A floating card, not a full-screen panel (unlike #ev-details-panel
+   above) — the map and its live great-circle route arc need to stay
+   visible underneath while this is open. z-index sits below the
+   full-screen panels (50) and the resolver debug panel (70) but above
+   the map and its own floating buttons. */
+#flight-aircraft-panel {
+  position: fixed;
+  left: 14px;
+  right: 14px;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 25;
+  max-height: 45vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+}
+#flight-aircraft-panel.hidden { display: none; }
+.flight-emergency-banner {
+  background: #ef4444;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-align: center;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+.flight-emergency-banner.hidden { display: none; }
+.flight-panel-route {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.flight-panel-route.hidden { display: none; }
+.flight-panel-airport { flex: 1; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flight-panel-route-arrow { flex-shrink: 0; color: var(--text-dim); }
+.flight-panel-route-unknown { font-size: 13px; color: var(--text-dim); margin-bottom: 14px; }
+.flight-panel-route-unknown.hidden { display: none; }
+.flight-panel-telemetry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+.flight-panel-telemetry-row { display: flex; flex-direction: column; gap: 2px; }
+.flight-panel-telemetry-row.hidden { display: none; }
+.flight-panel-telemetry-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+.flight-panel-telemetry-value { font-size: 15px; font-weight: 600; color: var(--text); }
+
 /* ---- docs: single scrollable page, one flat grouped list per section ----
    Uses its own --docs-body/--docs-link tokens rather than the app-wide
    --text-dim/--accent: those are reused in ~30 other places (buttons, active
