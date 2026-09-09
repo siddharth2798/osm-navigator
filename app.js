@@ -6306,12 +6306,32 @@ const COSTING_BY_MODE = { drive: 'auto', walk: 'pedestrian' };
  * Both avoid knobs are soft penalties, not hard exclusions (same nature as
  * the always-on use_ferry: 0): use_highways near 0 discourages but doesn't
  * guarantee avoiding highways, and toll_booth_penalty at its max (43200s /
- * 12h) strongly discourages tolls without an absolute guarantee either. */
+ * 12h) strongly discourages tolls without an absolute guarantee either.
+ *
+ * service_penalty/service_factor/alley_factor below are the same soft-
+ * penalty idea, always on for auto (a car shouldn't casually get routed
+ * down a service road/alley as a through-route) rather than a toggle —
+ * unlike avoidTolls/avoidHighways this isn't a preference worth asking
+ * about, just what "routing for a car" should already mean. service_penalty
+ * only nudges Valhalla's own already-elevated auto default (75s) slightly
+ * higher; service_factor/alley_factor matter more — they default to a
+ * neutral 1.0 (no bias at all) unless overridden, so a long service-road
+ * shortcut costs the same per-km as a normal road once past the flat
+ * penalty. Both factors scale with the edge's own cost, so a short
+ * unavoidable driveway/alley leg to an actual destination only ever picks
+ * up a small absolute penalty, while using one as a longer through-route
+ * gets penalized proportionally more — never a hard exclusion. Valhalla's
+ * own use_tracks/use_living_streets defaults are already a strong bias
+ * (tracks: ~4x factor + 300s penalty; living streets: ~2.6x factor + ~400s
+ * penalty) and are deliberately left alone here. */
 function costingOptionsFor(costing, { avoidTolls, avoidHighways } = {}) {
   if (costing !== 'auto') return undefined;
   return {
     auto: {
       use_ferry: 0,
+      service_penalty: 90,
+      service_factor: 1.4,
+      alley_factor: 1.4,
       ...(avoidHighways ? { use_highways: 0 } : {}),
       ...(avoidTolls ? { toll_booth_penalty: 43200 } : {}),
     },
