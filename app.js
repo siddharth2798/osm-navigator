@@ -263,7 +263,7 @@ const state = {
   flightCheckinWarned: false,   // whether the current outage (if any) has already been surfaced to the user
   flightBackoffUntil: null,     // Date.now() timestamp; maybeCheckFlights skips polling entirely until past this — see applyFlightBackoff
   flightBackoffMs: 0,           // current backoff length, doubling per consecutive 429; reset to 0 on any successful check-in
-  flightActiveSource: null,     // 'adsb.lol' | 'adsb.fi', from the proxy's own x-flight-source header — see runFlightCheckin
+  flightActiveSource: null,     // 'opensky' | 'airplanes.live', from the proxy's own x-flight-source header — see runFlightCheckin
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -3115,10 +3115,11 @@ function maybeCheckTraffic(traveledM) {
 // (see maybeCheckFlightsIdle) rides the same idle GPS watch that powers
 // the "you are here" marker and always plots every nearby aircraft, same
 // as the near-airport view, since there's no "en route" sliver of sky to
-// prioritize when you're not actually going anywhere. Backed by
-// api.adsb.lol via this app's own /api/flights proxy — see
-// lib/flights-proxy.js for why a proxy is needed with no secret involved
-// (it's purely a CORS relay, adsb.lol needs no API key today).
+// prioritize when you're not actually going anywhere. Backed by OpenSky
+// Network (default) with airplanes.live as a fallback, via this app's own
+// /api/flights proxy — see lib/flights-proxy.js for why a proxy is needed
+// with no secret involved (it's purely a CORS relay, neither source needs
+// an API key from this app today).
 // ============================================================================
 
 // Loaded once, lazily, the first time the feature is actually turned on —
@@ -3145,8 +3146,9 @@ function loadFlightRefData() {
   return flightRefDataPromise;
 }
 
-/** Readable "Ryanair 36JX" style label from adsb.lol's raw callsign
- * ('flight' field, space-padded to 8 chars) — splits the 3-letter ICAO
+/** Readable "Ryanair 36JX" style label from the proxy's raw callsign
+ * ('flight' field, space-padded to 8 chars in both OpenSky's and
+ * airplanes.live's own schemas) — splits the 3-letter ICAO
  * airline prefix from the flight-number tail and looks the prefix up in
  * the bundled airline-codes table, falling back to the bare callsign
  * whenever the prefix isn't a known airline (private/GA aircraft mostly
@@ -3213,11 +3215,11 @@ function maybeCheckFlightsIdle(lngLat) {
   runFlightCheckin(lngLat, { idle: true });
 }
 
-/** adsb.lol documents "dynamic rate limiting based on environment load"
- * with no fixed published cap (see docs/FLIGHT_TRACKING.md) — a 429 means
- * back off, not keep polling at the normal cadence into an endpoint
- * that's already throttling. Honors the response's own Retry-After header
- * when present; otherwise doubles from FLIGHT_BACKOFF_BASE_MS up to
+/** OpenSky's anonymous tier caps out at 400 credits/day (see
+ * docs/FLIGHT_TRACKING.md) — a 429 means back off, not keep polling at the
+ * normal cadence into an endpoint that's already throttling. Honors the
+ * response's own Retry-After header when present; otherwise doubles from
+ * FLIGHT_BACKOFF_BASE_MS up to
  * FLIGHT_BACKOFF_MAX_MS. state.flightBackoffMs is reset to 0 the next time
  * a check-in actually succeeds, so an isolated 429 doesn't leave polling
  * needlessly slow long after the throttling has cleared. */
@@ -3239,8 +3241,8 @@ function applyFlightBackoff(res) {
  * aircraft's own reported track/ground-speed forward by one poll interval
  * and measures distance to that whole line segment instead of just the
  * current point. Falls back to a plain point distance when track/speed
- * aren't reported (adsb.lol omits them for some contacts) — nothing to
- * project with in that case. */
+ * aren't reported (both OpenSky and airplanes.live omit them for some
+ * contacts) — nothing to project with in that case. */
 function aircraftApproachDistM(lngLat, a) {
   const current = [a.lon, a.lat];
   if (typeof a.track !== 'number' || typeof a.gs !== 'number' || a.gs <= 0) {
@@ -3271,24 +3273,27 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
       return;
     }
     const body = await res.json();
-    // The round trip to adsb.lol itself succeeded the moment the response
-    // parses — mark that now, before touching the badge/map layer below.
-    // Otherwise an unrelated rendering hiccup in refreshFlightBadge/
+    // The round trip to the data source itself succeeded the moment the
+    // response parses — mark that now, before touching the badge/map layer
+    // below. Otherwise an unrelated rendering hiccup in refreshFlightBadge/
     // updateFlightLayer would land in the catch block further down and get
     // miscounted as a DATA-SOURCE failure, which is exactly the wrong
     // signal to warn the user about.
     noteFlightCheckinSuccess();
     state.flightBackoffMs = 0; // a successful check-in clears any earlier 429 backoff
     state.flightBackoffUntil = null;
-    // The proxy itself falls back from adsb.lol to adsb.fi on a failure —
-    // see lib/flights-proxy.js — so this app never sees most of those
-    // failures directly. Logged only on a transition (not every poll while
-    // the fallback stays in use), same "don't spam every tick" reasoning
-    // as noteFlightCheckinFailure's warn-once threshold above.
+    // The proxy itself falls back from OpenSky to airplanes.live on a
+    // failure — see lib/flights-proxy.js — so this app never sees most of
+    // those failures directly. Logged only on a transition (not every poll
+    // while the fallback stays in use), same "don't spam every tick"
+    // reasoning as noteFlightCheckinFailure's warn-once threshold above.
+    // 'opensky' is the expected/default source (see flights-proxy.js) — a
+    // switch AWAY from it is the concerning direction (worth a 'warn'),
+    // switching back TO it is a recovery ('success').
     const activeSource = res.headers.get('x-flight-source');
     if (activeSource && activeSource !== state.flightActiveSource) {
       if (state.flightActiveSource != null) {
-        resolverDebugLog(`Flight tracking: data source switched to ${activeSource}.`, activeSource === 'adsb.lol' ? 'success' : 'warn');
+        resolverDebugLog(`Flight tracking: data source switched to ${activeSource}.`, activeSource === 'opensky' ? 'success' : 'warn');
       }
       state.flightActiveSource = activeSource;
     }
@@ -3302,8 +3307,8 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
     ));
 
     // Deliberately its own try/catch, not covered by the outer one above:
-    // by this point the round trip to adsb.lol has already succeeded (see
-    // noteFlightCheckinSuccess() above) — a bug in the local overhead/
+    // by this point the round trip to the data source has already succeeded
+    // (see noteFlightCheckinSuccess() above) — a bug in the local overhead/
     // hysteresis math or the map/badge rendering below is a real problem
     // worth logging, but it says nothing about whether the DATA SOURCE is
     // reachable, so it must never feed noteFlightCheckinFailure/trigger the
