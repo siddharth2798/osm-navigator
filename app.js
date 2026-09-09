@@ -206,6 +206,7 @@ const el = {
   flightSearchBar: document.getElementById('flight-search-bar'),
   flightSearchInput: document.getElementById('flight-search-input'),
   flightSearchSuggestions: document.getElementById('flight-search-suggestions'),
+  flightSizeFilter: document.getElementById('flight-size-filter'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -4021,6 +4022,46 @@ function setupFlightSearch() {
 setupFlightSearch();
 
 // ---------------------------------------------------------------------------
+// Flight Tracking Mode: aircraft size filter. Pure MapLibre map.setFilter
+// calls — no interaction with the poll/dead-reckoning pipeline at all,
+// same size_class values buildDRFeatureCollection already stamps onto
+// every feature (see lib/flight-render-utils.js's classifyAircraftSize).
+// ---------------------------------------------------------------------------
+
+const FLIGHT_SIZE_FILTER_GROUPS = {
+  wide: ['xl', 'lg'], // 747/A380-class and 777/787/A330-class widebodies
+  narrow: ['md'], // 737/A320-family
+  regional: ['sm'], // regional jets, turboprops, bizjets
+  ga: ['xs'], // helicopters, piston GA
+};
+
+/** `filterKey` is one of Object.keys(FLIGHT_SIZE_FILTER_GROUPS) or 'all'.
+ * Applied to both the airborne and ground icon/label layer pairs, ANDed
+ * with each layer's own existing on_ground filter (see mapLoad.then) so
+ * the ground/airborne split still holds regardless of which size is
+ * selected. */
+function applyFlightSizeFilter(filterKey) {
+  const sizeClasses = FLIGHT_SIZE_FILTER_GROUPS[filterKey] || null;
+  const baseFilters = {
+    'flight-aircraft-icons': ['!', ['get', 'on_ground']],
+    'flight-aircraft-label': ['!', ['get', 'on_ground']],
+    'flight-aircraft-icons-ground': ['get', 'on_ground'],
+    'flight-aircraft-label-ground': ['get', 'on_ground'],
+  };
+  Object.entries(baseFilters).forEach(([layerId, baseFilter]) => {
+    if (!map.getLayer(layerId)) return;
+    map.setFilter(layerId, sizeClasses ? ['all', baseFilter, ['in', ['get', 'size_class'], ['literal', sizeClasses]]] : baseFilter);
+  });
+}
+
+el.flightSizeFilter.querySelectorAll('.chip[data-filter]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    el.flightSizeFilter.querySelectorAll('.chip[data-filter]').forEach((b) => b.classList.toggle('active', b === btn));
+    applyFlightSizeFilter(btn.dataset.filter);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FR24-style icon color/size classification — ported from the aurora
 // project's Map.tsx (classifyAircraft/aircraftColor/boostDark), now
 // living in lib/flight-render-utils.js (imported above) so they're
@@ -4234,6 +4275,7 @@ function enterFlightMode() {
   hideRouteChipsInline();
   el.bottomSheet.classList.remove('expanded', 'half'); // same "put it away" collapse startNavigation itself uses — not a hard hide, avoids having to remember/restore a prior hidden state on exit
   el.flightSearchBar.classList.remove('hidden');
+  el.flightSizeFilter.classList.remove('hidden');
 
   if (state.navigating) {
     // Suspend, not end: releases camera follow so the user can freely pan/
@@ -4309,6 +4351,12 @@ function exitFlightMode() {
   el.flightSearchBar.classList.add('hidden');
   el.flightSearchInput.value = '';
   hideSuggestionList(el.flightSearchSuggestions);
+  el.flightSizeFilter.classList.add('hidden');
+  // Reset to "All" on exit — a size filter left on from a PREVIOUS session
+  // silently hiding aircraft the next time the mode opens would be a
+  // confusing, easy-to-forget-about state to leave behind.
+  el.flightSizeFilter.querySelectorAll('.chip[data-filter]').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
+  applyFlightSizeFilter('all');
   forgetBackLayerIfTop(exitFlightModeViaBack);
   resolverDebugLog(`Exiting Flight Tracking Mode${state.navigating ? ' — resuming turn-by-turn.' : '.'}`);
 

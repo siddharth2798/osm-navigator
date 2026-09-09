@@ -38,6 +38,22 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 <td align="center">Kochi Metro itinerary with real next-departure time</td>
 <td align="center">Live GPS tracking during the trip, turn-by-turn banner and all</td>
 </tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/flight-tracking-mode.jpg" alt="Flight Tracking Mode showing live aircraft, an airport icon, and an emergency-squawk ring"></td>
+<td width="50%"><img src="docs/screenshots/flight-aircraft-detail.jpg" alt="Aircraft detail panel with live route, telemetry, and registration"></td>
+</tr>
+<tr>
+<td align="center">Flight Tracking Mode — live aircraft, airport icons, emergency-squawk ring</td>
+<td align="center">Aircraft detail: live route, telemetry, registration lookup</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/flight-airport-detail.jpg" alt="Airport panel with live METAR weather and a runway diagram"></td>
+<td width="50%"></td>
+</tr>
+<tr>
+<td align="center">Airport panel — live METAR weather, flight-category badge, runway diagram</td>
+<td></td>
+</tr>
 </table>
 
 ## Features
@@ -55,6 +71,7 @@ The app itself has a **Help & documentation** screen (the "?" button, bottom-lef
 - **Live traffic** — when configured, every route option (even a single one with no alternates) is compared against current TomTom traffic before you even start, so "Fastest" reflects real conditions rather than Valhalla's traffic-blind time estimate. If the fastest option is congested somewhere Valhalla's own alternates don't route around, the app also tries forcing a path past it and adds a genuinely new "Avoids traffic" option when that's actually faster. During driving, an occasional "Heavy traffic ahead" indicator and a traffic-adjusted ETA; if a real alternate is genuinely faster, the app reroutes to it automatically (announced out loud) rather than just recalculating the same route.
 - **Weather at a glance**, **search along the route**, **favorites & recent trips**, **offline map tiles**, **shareable route links** (no backend involved), **street-level imagery** via Mapillary when configured.
 - Works with the screen off via the [optional Android shell](docs/ANDROID.md).
+- **Flight Tracking Mode** (this branch only) — tap the plane button for a dedicated, full-screen aircraft browser on the same map: FR24-style colored/rotated icons with dead-reckoning smoothing between polls, tap-for-detail (route drawn live as a great-circle arc), tap-an-airport for its current METAR weather and a runway diagram, search across every bundled airport plus whatever's currently live, and a size-class filter — all backed by free/keyless data sources, no account or API key required. Opening it mid-trip suspends turn-by-turn (GPS, voice guidance, rerouting keep running) rather than ending it; closing it resumes exactly where the trip left off. See [docs/FLIGHT_TRACKING.md](docs/FLIGHT_TRACKING.md) for the full picture, including honest data-source caveats.
 
 ## Running it
 

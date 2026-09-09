@@ -261,6 +261,18 @@
       </div>
     </div>
 
+    <!-- ============ Flight Tracking Mode: aircraft size filter ============
+         Same chip-row styling as #category-chips above, purely a map
+         filter (applyFlightSizeFilter in app.js) — no search/fetch
+         involved. "All" starts active. -->
+    <div id="flight-size-filter" class="category-chips hidden">
+      <button class="chip active" type="button" data-filter="all">All</button>
+      <button class="chip" type="button" data-filter="wide">Wide</button>
+      <button class="chip" type="button" data-filter="narrow">Narrow</button>
+      <button class="chip" type="button" data-filter="regional">Regional</button>
+      <button class="chip" type="button" data-filter="ga">GA · Heli</button>
+    </div>
+
     <!-- ============ Picked-place card: name + Directions / clear ============ -->
     <div id="place-card" class="hidden">
       <span class="dot dot-dest" aria-hidden="true"></span>
