@@ -1286,6 +1286,17 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-size: 14.5px;
 }
 
+/* "Stops on this trip" — first section in the along-route-search popover,
+   see renderStopsOnTripSection in app.js. A thin divider under it (its own
+   bottom border, not a separate element) separates it from the category
+   chips below. */
+.route-chips-stops { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+.route-chips-stops.hidden { display: none; }
+.route-chips-stops-heading { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; padding: 4px 6px 2px; }
+.route-chips-stops-row { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-radius: 10px; }
+.route-chips-stops-row:active { background: var(--panel-2); }
+.route-chips-stops-label { flex: 1; min-width: 0; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 #poi-results-header {
   display: flex;
   flex-shrink: 0;

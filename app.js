@@ -87,6 +87,7 @@ const el = {
   transitItineraryOptionsRow: document.getElementById('transit-itinerary-options'),
   elevationProfile: document.getElementById('elevation-profile'),
   routeChips: document.getElementById('route-chips'),
+  routeChipsStops: document.getElementById('route-chips-stops'),
   routeChipsInline: document.getElementById('route-chips-inline'),
   poiResultsHeader: document.getElementById('poi-results-header'),
   poiResultsLabel: document.getElementById('poi-results-label'),
@@ -486,6 +487,25 @@ function dynamicVoiceLeadM(leadTimeS, minM, maxM) {
   return Math.min(maxM, Math.max(minM, speedMps * leadTimeS));
 }
 
+/** Extra lead distance to add on top of dynamicVoiceLeadM's own result, so
+ * the announced "in X meters" is still roughly accurate once the SENTENCE
+ * finishes speaking, not just when it starts — a multi-second instruction
+ * at real driving speed covers real distance while it's being read out.
+ * Estimates spoken duration from `text`'s word count at an assumed
+ * CONFIG.VOICE_SPEAKING_RATE_WPM (deliberately a bit below average
+ * conversational pace, since nav prompts read more deliberately — erring
+ * low here means slightly more lead distance than strictly needed, the
+ * safer direction if the estimate is imperfect), then converts that to a
+ * distance at current speed, same speed source as dynamicVoiceLeadM. The
+ * "In X meters" prefix's own word count is small and roughly constant
+ * across different distance values — not accounted for separately, just
+ * an accepted approximation. */
+function speechDurationLeadM(text) {
+  const speedMps = state.currentSpeedMps ?? CONFIG.VOICE_DEFAULT_SPEED_MPS;
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return speedMps * (words / CONFIG.VOICE_SPEAKING_RATE_WPM) * 60;
+}
+
 // How many upcoming real departures planKochiMetroRideLeg/
 // planKochiWaterMetroRideLegs collect for the "Next departures in X, Y, Z
 // min" line — display-only, unrelated to boarding detection (see waitS/
@@ -626,6 +646,32 @@ function showStatus(message, type = 'info', opts = {}) {
     a.style.textDecoration = 'underline';
     a.style.color = 'inherit';
     el.statusBanner.appendChild(a);
+  }
+  // `opts.action` (`{text, onClick}`) is the same idea as opts.link but for
+  // an in-app action instead of an external URL — e.g. "Remove" right on
+  // the "Added X as a stop." banner. Dismisses the banner FIRST, then
+  // invokes onClick — not the other way around: a callback that itself
+  // opens a new sticky showStatus (as removeStopMidDrive's own first step
+  // does) would otherwise have that new message immediately wiped by this
+  // banner's own dismissal if it ran after the callback instead of before.
+  if (opts.action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opts.action.text;
+    btn.style.display = 'block';
+    btn.style.marginTop = '4px';
+    btn.style.textDecoration = 'underline';
+    btn.style.color = 'inherit';
+    btn.style.background = 'none';
+    btn.style.border = 'none';
+    btn.style.font = 'inherit';
+    btn.style.cursor = 'pointer';
+    btn.style.padding = '0';
+    btn.addEventListener('click', () => {
+      clearStatus();
+      opts.action.onClick();
+    });
+    el.statusBanner.appendChild(btn);
   }
   if (!opts.sticky) {
     statusTimer = setTimeout(clearStatus, opts.timeoutMs || (type === 'error' ? 8000 : 4000));
@@ -2932,7 +2978,12 @@ async function runTrafficCheckin(traveledM, remainingM) {
       const from = Math.max(0, absoluteM - half);
       const to = Math.min(state.route.totalDistM, absoluteM + half);
       const dash = turf.lineSliceAlong(state.route.lineFeature, from, to, { units: 'meters' });
-      return { type: 'Feature', properties: { ratio: s.ratio }, geometry: dash.geometry };
+      // startM/endM (distance-along-route bounds of this dash) let
+      // updateTraveledRouteSegment filter out dashes fully behind the
+      // current position, so the traveled-segment dimming already applied
+      // to the base route line isn't hidden underneath a still-bright
+      // traffic-colored dash — see the route-traffic-line setFilter call.
+      return { type: 'Feature', properties: { ratio: s.ratio, startM: from, endM: to }, geometry: dash.geometry };
     });
     map.getSource('route-traffic').setData({ type: 'FeatureCollection', features: lineFeatures });
 
@@ -4844,10 +4895,87 @@ async function addStopFromPoi(picked) {
     state.selectedRouteIndex = 0;
     await renderRouteOptions();
     await renderRoute(trip, { stops, fitView: !isMidDrive }); // mid-drive: camera stays following the puck
-    showStatus(`Added ${splitPlaceLabel(picked.label).primary} as a stop.`, 'success');
+    const addedName = splitPlaceLabel(picked.label).primary;
+    speak(`Added ${addedName} as a stop.`);
+    // picked is stored by reference in state.route.stops (renderRoute's own
+    // `built.stops = stops` above), so it's safe to close over directly here
+    // for the Remove action — removeStopMidDrive matches it by identity.
+    showStatus(`Added ${addedName} as a stop.`, 'success', { action: { text: 'Remove', onClick: () => removeStopMidDrive(picked) } });
+    renderStopsOnTripSection(); // keep the popover's own list in sync if it's still open
   } catch (err) {
     showStatus('Could not add that stop: ' + err.message, 'error');
   }
+}
+
+/** Removes `stopToRemove` from the current route and re-plans — the
+ * counterpart to addStopFromPoi above, sharing its exact mid-drive-aware
+ * stop-list construction (isMidDrive/fromPoint/stops) but filtering the
+ * target out instead of appending it. Serves both the "Remove" action on
+ * addStopFromPoi's own success banner and each row's remove button in
+ * renderStopsOnTripSection's persistent list — one shared re-routing path
+ * rather than two copies of it. */
+async function removeStopMidDrive(stopToRemove) {
+  const name = splitPlaceLabel(stopToRemove.label).primary;
+  showStatus(`Removing ${name}…`, 'info', { sticky: true });
+  try {
+    const isMidDrive = state.navigating && state.lastFix;
+    const fromPoint = isMidDrive ? { lat: state.lastFix.lat, lon: state.lastFix.lng } : state.from;
+    const baseStops = isMidDrive ? state.route.stops.slice(state.currentLegIndex) : getStops();
+    const stops = baseStops.filter((s) => s !== stopToRemove);
+    if (!isMidDrive) state.currentLegIndex = 0;
+    const { trip } = await requestRoute(fromPoint, state.to, stops, 0, COSTING_BY_MODE[state.travelMode], { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways });
+    state.routeOptions = [trip];
+    state.selectedRouteIndex = 0;
+    await renderRouteOptions();
+    await renderRoute(trip, { stops, fitView: !isMidDrive });
+    speak(`Removed ${name} from your route.`);
+    showStatus(`Removed ${name} from your route.`, 'success');
+    renderStopsOnTripSection();
+  } catch (err) {
+    showStatus('Could not remove that stop: ' + err.message, 'error');
+  }
+}
+
+/** Renders the "Stops on this trip" section at the top of the along-route-
+ * search popover (#route-chips-stops, see openRouteChipsPopover) — the
+ * persistent counterpart to the "Remove" action on addStopFromPoi's own
+ * confirmation banner: that banner only offers removing the stop just
+ * added, and only while it's still on screen, whereas this lists every
+ * stop on the CURRENT route (state.route.stops — the only stops array that
+ * actually exists mid-drive, since the stop-row UI itself lives inside
+ * #search-card, hidden for the whole drive) with its own remove button.
+ * Hidden entirely when there's nothing to manage, matching this app's
+ * existing habit of hiding empty-state controls rather than showing an
+ * empty list. */
+function renderStopsOnTripSection() {
+  const stops = (state.route && state.route.stops) || [];
+  el.routeChipsStops.innerHTML = '';
+  el.routeChipsStops.classList.toggle('hidden', stops.length === 0);
+  if (!stops.length) return;
+  const heading = document.createElement('div');
+  heading.className = 'route-chips-stops-heading';
+  heading.textContent = 'Stops on this trip';
+  el.routeChipsStops.appendChild(heading);
+  stops.forEach((stop) => {
+    const row = document.createElement('div');
+    row.className = 'route-chips-stops-row';
+    const label = document.createElement('span');
+    label.className = 'route-chips-stops-label';
+    label.textContent = splitPlaceLabel(stop.label).primary;
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'remove-stop-btn';
+    removeBtn.setAttribute('aria-label', `Remove ${splitPlaceLabel(stop.label).primary} from this trip`);
+    removeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" '
+      + 'stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>';
+    removeBtn.addEventListener('click', () => {
+      closeRouteChipsPopover();
+      removeStopMidDrive(stop);
+    });
+    row.appendChild(label);
+    row.appendChild(removeBtn);
+    el.routeChipsStops.appendChild(row);
+  });
 }
 
 /** Reveals the "search along route" popover positioned just above
@@ -4858,6 +4986,7 @@ async function addStopFromPoi(picked) {
  * other dismissable overlay this app has: hardware back or tapping outside
  * both close it via goBackInApp. */
 function openRouteChipsPopover() {
+  renderStopsOnTripSection(); // fresh every open — a stop may have been added/removed since the popover last closed
   const btnRect = el.routeSearchBtn.getBoundingClientRect();
   const bottomOffset = window.innerHeight - btnRect.top + 10;
   el.routeChips.style.bottom = `${bottomOffset}px`;
@@ -7195,7 +7324,10 @@ function paintRouteOptionsTrafficOverlay(options, results) {
       const from = Math.max(0, s.d - gap / 2);
       const to = Math.min(totalDistM, s.d + gap / 2);
       const dash = turf.lineSliceAlong(lineFeature, from, to, { units: 'meters' });
-      return { type: 'Feature', properties: { ratio: s.ratio }, geometry: dash.geometry };
+      // startM/endM let updateTraveledRouteSegment filter out dashes once
+      // driven past — see the matching comment in runTrafficCheckin, which
+      // repaints this same source once navigation actually starts.
+      return { type: 'Feature', properties: { ratio: s.ratio, startM: from, endM: to }, geometry: dash.geometry };
     });
   });
   map.getSource('route-traffic').setData({ type: 'FeatureCollection', features });
@@ -9151,17 +9283,30 @@ function followCamera(lngLat, headingDeg) {
  * route staying a uniform blue from start to finish. Cleared via
  * clearTraveledRouteSegment whenever a route is (re)planned or navigation
  * ends, so a new trip never starts with a stale dulled segment left over
- * from the previous one. */
+ * from the previous one.
+ *
+ * Also hides any route-traffic-line dash that's entirely behind traveledM
+ * — that layer is added AFTER route-traveled-line in mapLoad (so its
+ * red/amber/green dashes draw on top of the gray traveled overlay), and
+ * without this filter a TomTom-colored dash from an earlier check-in stays
+ * bright even once you've driven past it, since a new check-in only
+ * repaints the lookahead window ahead of you, not what's now behind.
+ * Filtering by the endM/startM stamped onto each dash (see
+ * paintRouteOptionsTrafficOverlay/runTrafficCheckin) just reveals the
+ * gray traveled line already drawn underneath — no new source needed. */
 function updateTraveledRouteSegment(traveledM) {
   if (!state.route || traveledM <= 0) {
     map.getSource('route-traveled').setData(emptyFeatureCollection());
+    map.setFilter('route-traffic-line', null);
     return;
   }
   const traveled = turf.lineSliceAlong(state.route.lineFeature, 0, Math.min(traveledM, state.route.totalDistM), { units: 'meters' });
   map.getSource('route-traveled').setData(traveled);
+  map.setFilter('route-traffic-line', ['>', ['get', 'endM'], traveledM]);
 }
 function clearTraveledRouteSegment() {
   map.getSource('route-traveled').setData(emptyFeatureCollection());
+  map.setFilter('route-traffic-line', null);
 }
 
 /** Figures out which maneuver is "next" from how far the driver has
@@ -9294,8 +9439,15 @@ function updateActiveManeuver(traveledM, lngLat) {
     // (spokenFar/spokenNear), independently of the other. Both thresholds
     // are speed-scaled (dynamicVoiceLeadM), not flat distances — see the
     // CONFIG comment above VOICE_PROMPT_LEAD_TIME_S.
-    const farLeadM = dynamicVoiceLeadM(CONFIG.VOICE_PROMPT_LEAD_TIME_S, CONFIG.VOICE_PROMPT_MIN_M, CONFIG.VOICE_PROMPT_MAX_M);
-    const nearLeadM = dynamicVoiceLeadM(CONFIG.VOICE_NEAR_LEAD_TIME_S, CONFIG.VOICE_NEAR_MIN_M, CONFIG.VOICE_NEAR_MAX_M);
+    // The text that'll actually be spoken for each cue, needed up front
+    // (not just inside the trigger blocks below) so speechDurationLeadM
+    // can add its own extra lead distance on top of dynamicVoiceLeadM's —
+    // otherwise a multi-second sentence is stale by the time it finishes,
+    // since real distance passes while it's being read out.
+    const next = maneuvers[nextIdx];
+    const farText = (next.verbalMultiCue && next.verbalPreTransition) ? next.verbalPreTransition : next.instruction;
+    const farLeadM = dynamicVoiceLeadM(CONFIG.VOICE_PROMPT_LEAD_TIME_S, CONFIG.VOICE_PROMPT_MIN_M, CONFIG.VOICE_PROMPT_MAX_M) + speechDurationLeadM(farText);
+    const nearLeadM = dynamicVoiceLeadM(CONFIG.VOICE_NEAR_LEAD_TIME_S, CONFIG.VOICE_NEAR_MIN_M, CONFIG.VOICE_NEAR_MAX_M) + speechDurationLeadM(next.instruction);
     // farLeadM >= nearLeadM at every speed (far's lead-time and clamp range
     // are both larger), so this is deliberately NOT gated on
     // `distToNextM > nearLeadM` — a coarse GPS fix (high speed, closely
@@ -9307,7 +9459,6 @@ function updateActiveManeuver(traveledM, lngLat) {
     // turn"). Firing far purely on `distToNextM <= farLeadM` guarantees at
     // least one advance-warning phrase every time.
     if (distToNextM <= farLeadM && !state.spokenFar.has(nextIdx)) {
-      const next = maneuvers[nextIdx];
       if (next.verbalMultiCue && next.verbalPreTransition) {
         // Valhalla already solved "two turns too close together to speak
         // both in full" server-side — verbal_pre_transition_instruction is

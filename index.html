@@ -458,6 +458,12 @@
        Chips are laid out as a vertical list (see .route-chips-popover in
        style.css), sized and capped so it stays clear of covering the map. -->
   <div id="route-chips" class="category-chips route-chips-popover hidden">
+    <!-- Stops already on this trip, with a remove button each — populated
+         by renderStopsOnTripSection() in app.js, hidden entirely when
+         there are none. This is the only reachable place to remove a stop
+         while state.navigating is true, since #search-card (and every
+         stop row's own remove button) is hidden for the whole drive. -->
+    <div id="route-chips-stops" class="route-chips-stops hidden"></div>
     <button class="chip" type="button" data-category="fuel" data-label="Petrol pumps">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21 V6 a2 2 0 0 1 2-2 h6 a2 2 0 0 1 2 2 v15"/><path d="M4 21 h10 M8 10 h2 M14 8 h2 a2 2 0 0 1 2 2 v6 a1.5 1.5 0 0 0 3 0 V9 l-2-2"/></svg>
       <span>Petrol</span>
