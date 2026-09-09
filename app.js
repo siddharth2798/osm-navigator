@@ -17,6 +17,7 @@ import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
 import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure, feederRouteMetroEnd } from './lib/kochi-geo.js';
 import { stopDragPromoteTarget } from './lib/stop-drag-utils.js';
 import { kochiItineraryBaseParts, buildTransitItineraryLabels } from './lib/transit-labels.js';
+import { classifyAircraftSize, aircraftColorFor, drCapSecFor, buildDRFeatureCollection } from './lib/flight-render-utils.js';
 // Dynamically imported (see the Plus Code branch of resolveGoogleMapsLink
 // below) rather than statically here — it's a ~28KB module only ever
 // exercised by the rare case of a Google Maps place with no street address,
@@ -266,6 +267,7 @@ const state = {
   flightBackoffMs: 0,           // current backoff length, doubling per consecutive 429; reset to 0 on any successful check-in
   flightActiveSource: null,     // 'opensky' | 'airplanes.live', from the proxy's own x-flight-source header — see runFlightCheckin
   lastFlightPollAircraft: [],   // every aircraft from the most recent check-in (not just overhead ones) — see runFlightCheckin/searchFlightEntities
+  flightModeActive: false,      // dedicated "Flight Tracking Mode" overlay (see enterFlightMode/exitFlightMode) — distinct from flightTrackingEnabled, which gates the nav-mode overhead badge; see updateFlightLayer for how the two share one poll pipeline
   navigationStartedAt: null, // Date.now() when the current trip started — real elapsed time for the trip-summary panel
   liveAscentM: 0,       // accumulated live climb so far this trip (walk mode) — see onPositionUpdate/effortLevel
   liveDescentM: 0,      // accumulated live descent so far this trip (walk mode) — trip-summary panel only, not used by effortLevel
@@ -1099,28 +1101,93 @@ mapLoad.then(() => {
     },
   });
 
-  // Personal flight-tracking overlay (see runFlightCheckin/updateFlightLayer
-  // below) — a plain circle + text label rather than a rotated plane icon.
-  // A real rotated-heading icon would need map.loadImage/addImage for a
-  // sprite; a circle is enough for "is a plane near me" situational
-  // awareness and keeps this personal-branch feature's map code simple.
-  // Harmless to always add, same reasoning as transit-route above.
+  // Personal flight-tracking overlay (see runFlightCheckin/updateFlightLayer/
+  // buildDRFeatureCollection below) — an FR24-style rotated/colored/sized
+  // dart icon (registered as an SDF image so MapLibre can tint it at
+  // runtime via icon-color, ported from the aurora project's own
+  // makeIcon/drawPlane) rather than a flat circle. Harmless to always add,
+  // same reasoning as transit-route above.
+  map.addImage('flight-plane', makeSdfPlaneIcon(), { sdf: true });
   map.addSource('flight-aircraft', { type: 'geojson', data: emptyFeatureCollection() });
+
+  // Emergency squawk (7500/7600/7700) ring — pulsed via startFlightModeRendering's
+  // rAF tick (circle-radius set there); harmless/invisible whenever no
+  // feature has emergency:true, which is always true on an OpenSky-only
+  // poll (OpenSky's state vectors carry no squawk field at all).
   map.addLayer({
-    id: 'flight-aircraft-dot',
+    id: 'flight-aircraft-emergency',
     type: 'circle',
     source: 'flight-aircraft',
+    filter: ['==', ['get', 'emergency'], true],
     paint: {
-      'circle-radius': 5,
-      'circle-color': '#3d8bfd',
-      'circle-stroke-width': 1.5,
-      'circle-stroke-color': '#fff',
+      'circle-radius': 20,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-width': 2.5,
+      'circle-stroke-color': '#ef4444',
     },
   });
+
+  // Airborne icons — visible from zoom 4, rotated to heading, sized/colored
+  // per-feature (see buildDRFeatureCollection's size_class/color properties).
+  map.addLayer({
+    id: 'flight-aircraft-icons',
+    type: 'symbol',
+    source: 'flight-aircraft',
+    minzoom: 4,
+    filter: ['!', ['get', 'on_ground']],
+    layout: {
+      'icon-image': 'flight-plane',
+      'icon-size': [
+        'interpolate', ['exponential', 1.4], ['zoom'],
+        4, ['match', ['get', 'size_class'], 'xl', 0.18, 'lg', 0.15, 'md', 0.12, 'sm', 0.10, 'xs', 0.08, 0.12],
+        7, ['match', ['get', 'size_class'], 'xl', 0.36, 'lg', 0.30, 'md', 0.24, 'sm', 0.20, 'xs', 0.15, 0.24],
+        10, ['match', ['get', 'size_class'], 'xl', 0.80, 'lg', 0.68, 'md', 0.55, 'sm', 0.44, 'xs', 0.34, 0.55],
+        14, ['match', ['get', 'size_class'], 'xl', 1.80, 'lg', 1.50, 'md', 1.20, 'sm', 0.96, 'xs', 0.74, 1.20],
+        18, ['match', ['get', 'size_class'], 'xl', 3.40, 'lg', 2.90, 'md', 2.40, 'sm', 1.90, 'xs', 1.50, 2.40],
+      ],
+      'icon-rotate': ['get', 'heading'],
+      'icon-rotation-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+    paint: { 'icon-color': ['get', 'color'] },
+  });
+
+  // Ground traffic — smaller, only shown once zoomed in (zoom >= 7); an
+  // aircraft that stops appearing in the poll response simply stops being
+  // in the next setData() call, so there's no separate "unseen for 90s"
+  // expiry timer needed here the way aurora's own long-lived websocket
+  // stream requires.
+  map.addLayer({
+    id: 'flight-aircraft-icons-ground',
+    type: 'symbol',
+    source: 'flight-aircraft',
+    minzoom: 7,
+    filter: ['get', 'on_ground'],
+    layout: {
+      'icon-image': 'flight-plane',
+      'icon-size': [
+        'interpolate', ['exponential', 1.4], ['zoom'],
+        7, ['match', ['get', 'size_class'], 'xl', 0.06, 'lg', 0.05, 'md', 0.05, 'sm', 0.04, 'xs', 0.03, 0.05],
+        9, ['match', ['get', 'size_class'], 'xl', 0.10, 'lg', 0.09, 'md', 0.08, 'sm', 0.07, 'xs', 0.06, 0.08],
+        12, ['match', ['get', 'size_class'], 'xl', 0.45, 'lg', 0.38, 'md', 0.32, 'sm', 0.25, 'xs', 0.20, 0.32],
+        14, ['match', ['get', 'size_class'], 'xl', 0.80, 'lg', 0.68, 'md', 0.55, 'sm', 0.44, 'xs', 0.34, 0.55],
+        18, ['match', ['get', 'size_class'], 'xl', 1.60, 'lg', 1.35, 'md', 1.10, 'sm', 0.88, 'xs', 0.68, 1.10],
+      ],
+      'icon-rotate': ['get', 'heading'],
+      'icon-rotation-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+    paint: { 'icon-color': '#64748b' },
+  });
+
   map.addLayer({
     id: 'flight-aircraft-label',
     type: 'symbol',
     source: 'flight-aircraft',
+    minzoom: 7,
+    filter: ['!', ['get', 'on_ground']],
     layout: {
       'text-field': ['get', 'label'],
       'text-size': 11,
@@ -1135,13 +1202,39 @@ mapLoad.then(() => {
       'text-halo-width': 1.2,
     },
   });
-  // Tap an aircraft for its full detail — see showAircraftDetail. Same
-  // click/hover-cursor pattern as route-alternates-line above.
-  map.on('click', 'flight-aircraft-dot', (e) => {
-    if (e.features.length) showAircraftDetail(e.features[0].properties);
+  map.addLayer({
+    id: 'flight-aircraft-label-ground',
+    type: 'symbol',
+    source: 'flight-aircraft',
+    minzoom: 10,
+    filter: ['get', 'on_ground'],
+    layout: {
+      'text-field': ['get', 'label'],
+      'text-size': 10,
+      'text-offset': [0, 1.2],
+      'text-anchor': 'top',
+      'text-allow-overlap': true,
+      'text-optional': true,
+    },
+    paint: {
+      'text-color': '#9aa5b1',
+      'text-halo-color': '#0d1420',
+      'text-halo-width': 1.2,
+    },
   });
-  map.on('mouseenter', 'flight-aircraft-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'flight-aircraft-dot', () => { map.getCanvas().style.cursor = ''; });
+  // Tap an aircraft for its full detail — see showAircraftDetail. Same
+  // click/hover-cursor pattern as route-alternates-line above. Both the
+  // airborne and ground icon layers get the same handler (registered
+  // per-layer rather than passed as an array — broadest MapLibre version
+  // compatibility, matching this app's other multi-layer click handlers).
+  const onFlightAircraftClick = (e) => { if (e.features.length) showAircraftDetail(e.features[0].properties); };
+  const onFlightAircraftEnter = () => { map.getCanvas().style.cursor = 'pointer'; };
+  const onFlightAircraftLeave = () => { map.getCanvas().style.cursor = ''; };
+  ['flight-aircraft-icons', 'flight-aircraft-icons-ground'].forEach((layerId) => {
+    map.on('click', layerId, onFlightAircraftClick);
+    map.on('mouseenter', layerId, onFlightAircraftEnter);
+    map.on('mouseleave', layerId, onFlightAircraftLeave);
+  });
 });
 map.on('error', (e) => {
   // Most commonly a tile/style load failure — surface it once, plainly.
@@ -3411,30 +3504,125 @@ function showAircraftDetail(props) {
   flightDetailRevertTimer = setTimeout(refreshFlightBadge, CONFIG.FLIGHT_DETAIL_DISPLAY_MS);
 }
 
-/** Repaints the flight-aircraft GeoJSON source (see the map.addSource/
- * addLayer calls in mapLoad.then above) from whichever list is currently
- * relevant — every aircraft the query returned in near-airport/regional
- * mode, or just the ones triggering the overhead alert otherwise, so the
- * map doesn't clutter with cruising traffic far from your route when
- * you're nowhere near an airport. Carries enough raw fields in each
- * feature's properties for showAircraftDetail to use on tap. */
+// ---------------------------------------------------------------------------
+// FR24-style icon color/size classification — ported from the aurora
+// project's Map.tsx (classifyAircraft/aircraftColor/boostDark), now
+// living in lib/flight-render-utils.js (imported above) so they're
+// unit-testable without a DOM/MapLibre instance — see tests/
+// flight-render-utils.test.js. Both accept missing/unknown input
+// gracefully: OpenSky's /api/flights tier (the default, unauthenticated
+// one — see lib/flights-proxy.js) supplies no aircraft-type field at all,
+// so a session that never got an /api/aircraft-info hit for a given
+// aircraft has nothing to classify by beyond "unknown" — these must never
+// throw or leave a marker unstyled.
+// ---------------------------------------------------------------------------
+
+/** Draws a single top-down plane dart on a 64x64 canvas, white-on-
+ * transparent, registered as an SDF image so MapLibre can tint it per-
+ * feature via icon-color — ported verbatim from aurora's makeIcon/
+ * drawPlane (pure canvas drawing, no framework dependency to strip out). */
+function makeSdfPlaneIcon() {
+  const size = 64;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.save();
+  ctx.translate(size / 2, size / 2);
+  const poly = (pts) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.fill();
+  };
+  poly([[0, -26], [4, -10], [4, 10], [0, 14], [-4, 10], [-4, -10]]); // fuselage
+  poly([[3, -4], [22, 10], [20, 16], [3, 6]]); // main wing (right)
+  poly([[-3, -4], [-22, 10], [-20, 16], [-3, 6]]); // main wing (left)
+  poly([[2, 10], [10, 18], [9, 22], [2, 15]]); // tail stabilizer (right)
+  poly([[-2, 10], [-10, 18], [-9, 22], [-2, 15]]); // tail stabilizer (left)
+  ctx.restore();
+  const d = ctx.getImageData(0, 0, size, size);
+  return { width: size, height: size, data: new Uint8Array(d.data) };
+}
+
+// ---------------------------------------------------------------------------
+// Dead-reckoning: extrapolates each aircraft's position between polls using
+// its last known heading + ground speed, so icons move continuously instead
+// of jumping once every FLIGHT_POLL_INTERVAL_MS. Math lives in
+// lib/flight-render-utils.js's buildDRFeatureCollection/drCapSecFor
+// (imported above) — this cache is just app.js's own bookkeeping of WHICH
+// aircraft to feed that function, ported from aurora's {icao24 -> {ac, t}}
+// React ref map to a plain module-level Map.
+// ---------------------------------------------------------------------------
+
+const flightDRCache = new Map(); // hex -> { a: <raw aircraft object from the most recent poll>, atMs: <performance.now() at that poll> }
+let flightRAFHandle = null;
+let flightDRLastTickMs = 0;
+
+/** Starts the rAF loop that owns painting the flight-aircraft source while
+ * Flight Tracking Mode is active (state.flightModeActive) — see
+ * updateFlightLayer for how it hands off from the poll-driven direct-paint
+ * path used everywhere else (nav-mode overhead alert, idle/near-airport
+ * browsing). ~60ms throttle (~16fps) — smooth without rebuilding GeoJSON
+ * every animation frame. Also pulses the emergency-squawk ring's radius. */
+function startFlightModeRendering() {
+  if (flightRAFHandle != null) return;
+  const tick = (ts) => {
+    if (ts - flightDRLastTickMs >= 60) {
+      flightDRLastTickMs = ts;
+      const source = map.getSource('flight-aircraft');
+      if (source) source.setData(buildDRFeatureCollection(flightDRCache, performance.now(), describeCallsign));
+      if (map.getLayer('flight-aircraft-emergency')) {
+        map.setPaintProperty('flight-aircraft-emergency', 'circle-radius', 18 + 7 * Math.abs(Math.sin(ts / 600)));
+      }
+    }
+    flightRAFHandle = requestAnimationFrame(tick);
+  };
+  flightRAFHandle = requestAnimationFrame(tick);
+}
+
+/** Stops the rAF loop and drops all cached snapshots — a later re-entry
+ * into Flight Tracking Mode starts clean rather than dead-reckoning from
+ * possibly-stale positions left over from a previous session. */
+function stopFlightModeRendering() {
+  if (flightRAFHandle != null) cancelAnimationFrame(flightRAFHandle);
+  flightRAFHandle = null;
+  flightDRCache.clear();
+}
+
+/** Feeds the flight-aircraft GeoJSON source from whichever list is
+ * currently relevant — every aircraft the query returned in near-airport/
+ * regional/Flight-Tracking-Mode browsing, or just the ones triggering the
+ * overhead alert otherwise, so the map doesn't clutter with cruising
+ * traffic far from your route when you're nowhere near an airport.
+ *
+ * Always refreshes flightDRCache's "ground truth" snapshot from this
+ * poll — but only calls setData directly when Flight Tracking Mode's own
+ * rAF loop (see startFlightModeRendering) isn't the one owning the paint;
+ * while that loop IS running, it's the sole setData caller, extrapolating
+ * between polls via buildDRFeatureCollection, so this function must not
+ * also paint directly or the two would fight over the same source on every
+ * poll tick. */
 function updateFlightLayer(aircraftList) {
-  const features = aircraftList
-    .filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number')
-    .map((a) => ({
-      type: 'Feature',
-      properties: {
-        label: describeCallsign(a.flight),
-        flight: a.flight || null,
-        t: a.t || null,
-        r: a.r || null,
-        alt_baro: typeof a.alt_baro === 'number' ? a.alt_baro : null,
-        gs: typeof a.gs === 'number' ? a.gs : null,
-        distM: typeof a._distM === 'number' ? a._distM : null,
-      },
-      geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
-    }));
-  map.getSource('flight-aircraft').setData({ type: 'FeatureCollection', features });
+  const nowMs = performance.now();
+  const seenHex = new Set();
+  aircraftList.forEach((a) => {
+    if (typeof a.lat !== 'number' || typeof a.lon !== 'number') return;
+    const key = a.hex || `${a.flight}-${a.lat}-${a.lon}`;
+    seenHex.add(key);
+    flightDRCache.set(key, { a, atMs: nowMs });
+  });
+  // Drop entries this poll no longer reports — same effect as the old
+  // wholesale setData replace, just realized on the next rAF tick instead
+  // of immediately when Flight Tracking Mode is active.
+  for (const key of flightDRCache.keys()) if (!seenHex.has(key)) flightDRCache.delete(key);
+
+  if (!state.flightModeActive) {
+    map.getSource('flight-aircraft').setData(buildDRFeatureCollection(flightDRCache, nowMs, describeCallsign));
+  }
 }
 
 /** Resets every piece of check-in bookkeeping and hides the badge/clears
