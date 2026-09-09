@@ -181,6 +181,16 @@ export const CONFIG = {
   // far callout → 140m, near callout → 50m.
   VOICE_DEFAULT_SPEED_MPS: 10,
 
+  // Assumed speaking rate for speechDurationLeadM (app.js) — how far ahead
+  // of the base VOICE_PROMPT/VOICE_NEAR lead distance to trigger a callout
+  // so the announced "in X meters" is still roughly right once the
+  // sentence FINISHES, not just when it starts. Below average
+  // conversational pace (~150-160 words/min) since navigation prompts are
+  // read a bit more deliberately — erring low here means slightly more
+  // lead distance than strictly needed, the safer direction if this
+  // estimate doesn't exactly match the real TTS engine's pace.
+  VOICE_SPEAKING_RATE_WPM: 130,
+
   // Minimum silence enforced AFTER one spoken line finishes before the next
   // QUEUED line is allowed to start (see speak()/dispatchSpeak() in app.js)
   // — independent voice cues (a walk-mode incline heads-up and a turn
@@ -197,6 +207,17 @@ export const CONFIG = {
   // anything queued right behind it still waits this long past the
   // flush's own completion before starting.
   VOICE_MIN_GAP_MS: 2000,
+
+  // How long native-audio-focus.js holds onto ducked Bluetooth/media audio
+  // after a spoken instruction finishes, before actually releasing it (see
+  // releaseDucking's own comment) — deliberately longer than VOICE_MIN_GAP_MS
+  // above, the enforced floor between one queued prompt finishing and the
+  // next one starting. Two back-to-back prompts (a far cue then a near
+  // cue, or two combined maneuvers) would otherwise duck, undock for that
+  // gap, then duck again moments later — a flicker some Bluetooth
+  // receivers render as an audible stutter. Native (Android) only; the web
+  // path has no audio-focus concept at all.
+  VOICE_DUCK_RELEASE_GRACE_MS: 2500,
 
   // How recent the LAST voice-mode toggle (either direction) has to be for
   // the next one to skip its own unmute confirmation (see

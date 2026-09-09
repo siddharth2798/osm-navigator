@@ -7,7 +7,7 @@
 // it's a platform gap, not a timing bug. @capacitor-community/text-to-speech
 // wraps Android's real `android.speech.tts.TextToSpeech` engine instead.
 import { TextToSpeech } from './vendor/capacitor-text-to-speech.js';
-import { requestDucking, releaseDucking } from './native-audio-focus.js';
+import { requestDucking, releaseDucking, flushDucking } from './native-audio-focus.js';
 
 // QueueStrategy.Flush (0) — stop whatever's currently speaking and speak
 // this instead, mirroring the web path's `speechSynthesis.cancel()`.
@@ -103,5 +103,9 @@ export async function stopNative() {
   } finally {
     pendingReleases.forEach((release) => release());
     pendingReleases.clear();
+    // Navigation is genuinely ending — don't let releaseDucking's own
+    // debounce grace window (see native-audio-focus.js) delay letting go
+    // of ducked audio for no reason.
+    flushDucking();
   }
 }
