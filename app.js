@@ -38,6 +38,7 @@ const el = {
   statusBanner: document.getElementById('status-banner'),
   resolverDebugPanel: document.getElementById('resolver-debug-panel'),
   resolverDebugLogEl: document.getElementById('resolver-debug-log'),
+  resolverDebugCollapseToggleBtn: document.getElementById('resolver-debug-collapse-toggle'),
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
   resolverDebugEndBtn: document.getElementById('resolver-debug-end'),
@@ -3788,6 +3789,21 @@ const CONSOLE_DEBUG_KIND = { warn: 'warn', error: 'error' };
   };
 });
 
+if (el.resolverDebugCollapseToggleBtn) {
+  // Shrinks the panel to just its header row, reclaiming the rest of the
+  // screen (including the two button columns it would otherwise sit on
+  // top of — see the panel's own left/right:70px comment in style.css)
+  // without turning Debug mode off. Unlike resolverDebugCloseBtn below,
+  // resolverDebugLog's own "reveal on new activity" (classList.remove
+  // ('hidden')) only ever touches .hidden, never .collapsed — a new log
+  // line while collapsed stays collapsed, so this control actually holds
+  // once set rather than getting immediately undone by the next log line.
+  el.resolverDebugCollapseToggleBtn.addEventListener('click', () => {
+    const collapsed = el.resolverDebugPanel.classList.toggle('collapsed');
+    el.resolverDebugCollapseToggleBtn.textContent = collapsed ? '▸' : '▾';
+    el.resolverDebugCollapseToggleBtn.setAttribute('aria-label', collapsed ? 'Expand debug log' : 'Collapse debug log');
+  });
+}
 if (el.resolverDebugCloseBtn) {
   // Direct hide, not goBackInApp() — this panel isn't on the shared
   // backStack (see the comment in resolverDebugLog for why), so it needs
@@ -9464,6 +9480,14 @@ function updateActiveManeuver(traveledM, lngLat) {
     // turn"). Firing far purely on `distToNextM <= farLeadM` guarantees at
     // least one advance-warning phrase every time.
     if (distToNextM <= farLeadM && !state.spokenFar.has(nextIdx)) {
+      // Logged once per maneuver (guarded by the same spokenFar check that
+      // gates the trigger itself, not every GPS tick) so the real lead
+      // distances used for THIS cue are inspectable on-screen during a
+      // live drive — same "make an otherwise-invisible number visible
+      // during real use" reasoning as native-audio-focus.js's own
+      // [audio-focus] log lines.
+      const speedMps = state.currentSpeedMps ?? CONFIG.VOICE_DEFAULT_SPEED_MPS;
+      resolverDebugLog(`Voice: maneuver ${nextIdx} far cue triggered at ${Math.round(distToNextM)}m (base lead ${Math.round(farLeadM - speechDurationLeadM(farText))}m + ${Math.round(speechDurationLeadM(farText))}m speech-duration compensation = ${Math.round(farLeadM)}m, speed ${speedMps.toFixed(1)}m/s).`);
       if (next.verbalMultiCue && next.verbalPreTransition) {
         // Valhalla already solved "two turns too close together to speak
         // both in full" server-side — verbal_pre_transition_instruction is

@@ -355,6 +355,13 @@
     <div class="resolver-debug-header">
       <span>Debug log</span>
       <div class="resolver-debug-actions">
+        <!-- Shrinks the panel to just this header row (see .collapsed in
+             style.css / toggleResolverDebugCollapsed in app.js) — reclaims
+             the rest of the screen (including the two button columns this
+             panel would otherwise sit on top of) without turning Debug
+             mode off. Unlike resolver-debug-close below, a new log line
+             while collapsed does NOT force it back open. -->
+        <button id="resolver-debug-collapse-toggle" type="button" aria-label="Collapse debug log">▾</button>
         <button id="resolver-debug-copy" type="button">Copy</button>
         <!-- Turns Debug mode off entirely (see setResolverDebugEnabled in
              app.js) — distinct from resolver-debug-close below, which only
