@@ -3357,8 +3357,12 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
     // Idle mode has no "en route" concept to keep the default radius tight
     // for — there's no trip whose sliver of sky matters more than the rest
     // — so it always uses the wider regional radius, same as being near an
-    // airport does while driving.
-    const radiusNm = idle || nearAirport ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
+    // airport does while driving. Flight Tracking Mode always wants the
+    // wide radius too, even mid-trip (state.navigating true) — the whole
+    // point of the mode is browsing broadly, not a narrow overhead-alert
+    // window, regardless of whether a suspended trip happens to be
+    // running underneath it.
+    const radiusNm = idle || nearAirport || state.flightModeActive ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
     const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
     const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
     if (!res.ok) {
@@ -3428,7 +3432,7 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
       });
       state.flightOverheadAircraft = overhead;
       refreshFlightBadge();
-      updateFlightLayer(idle || nearAirport ? aircraft : overhead);
+      updateFlightLayer(idle || nearAirport || state.flightModeActive ? aircraft : overhead);
     } catch (err) {
       resolverDebugLog(`Flight tracking: rendering the result failed — ${err.message}`, 'error');
     }
@@ -3621,7 +3625,15 @@ function updateFlightLayer(aircraftList) {
   for (const key of flightDRCache.keys()) if (!seenHex.has(key)) flightDRCache.delete(key);
 
   if (!state.flightModeActive) {
-    map.getSource('flight-aircraft').setData(buildDRFeatureCollection(flightDRCache, nowMs, describeCallsign));
+    // Guarded the same way startFlightModeRendering's own rAF tick already
+    // is: the flight-aircraft source is only added once mapLoad resolves
+    // (see mapLoad.then above), and this function is reachable before that
+    // — e.g. a fast tap on the flight-tracking toggle on a slow connection,
+    // or (confirmed while testing) resetFlightTracking() calling this with
+    // an empty list from exitFlightMode(). A no-op here just means nothing
+    // to paint yet — never a reason to throw and abort whatever called in.
+    const source = map.getSource('flight-aircraft');
+    if (source) source.setData(buildDRFeatureCollection(flightDRCache, nowMs, describeCallsign));
   }
 }
 
@@ -3644,22 +3656,126 @@ function resetFlightTracking() {
   updateFlightLayer([]);
 }
 
+/** Enters the dedicated "Flight Tracking Mode" overlay — an FR24-style
+ * full-screen aircraft browser layered on the SAME map instance, not a
+ * separate screen. Deliberately does NOT call endNavigation(): if a trip
+ * is active, it keeps running fully in the background (GPS watch, route
+ * progress, voice turn announcements, rerouting — all untouched by this
+ * function) while only the turn-by-turn VISUAL chrome hides alongside the
+ * normal planning UI. state.flightModeActive is independent of
+ * state.navigating — the two can both be true at once. */
+function enterFlightMode() {
+  if (state.flightModeActive) return;
+  state.flightModeActive = true;
+  resolverDebugLog(`Entering Flight Tracking Mode${state.navigating ? ' (trip continues in the background)' : ''}.`);
+
+  // Planning UI always hidden while in dedicated mode, navigating or not.
+  el.searchCard.classList.add('hidden');
+  hideRouteChipsInline();
+  el.bottomSheet.classList.remove('expanded', 'half'); // same "put it away" collapse startNavigation itself uses — not a hard hide, avoids having to remember/restore a prior hidden state on exit
+
+  if (state.navigating) {
+    // Suspend, not end: releases camera follow so the user can freely pan/
+    // zoom to browse aircraft — the next real GPS fix after exitFlightMode
+    // re-sets state.followMode itself, which is all followCamera needs to
+    // recenter on the next tick, no manual camera call needed here.
+    el.navBanner.classList.add('hidden');
+    el.navSpeedRow.classList.add('hidden');
+    hideRouteSearchFeature();
+    hideEffortFeature();
+    el.endNavBtn.classList.add('hidden');
+    state.followMode = false;
+    updateLocateBtnState();
+  } else {
+    el.startNavBtn.classList.add('hidden');
+    el.cancelRouteBtn.classList.add('hidden');
+    el.routeOptionsRow.classList.add('hidden');
+  }
+
+  // Dedicated mode always wants the poll loop running, even if the
+  // lightweight nav-mode badge toggle was never turned on — mirrors the
+  // existing toggle's own "turning this on needs its own position feed"
+  // handling below, just triggered from mode-entry instead of the toggle.
+  state.flightTrackingEnabled = true;
+  syncFlightTrackingBtn();
+  if (!state.navigating && state.idleLocationWatchId == null) startIdleLocationShare({ silent: true });
+
+  pushBackLayer(exitFlightModeViaBack);
+  startFlightModeRendering();
+}
+
+/** Hardware/gesture back while Flight Tracking Mode is open — one press
+ * fully exits the mode (never a partial/vetoed close, unlike
+ * navigatingBackGuard) and, if a trip is still running underneath, lands
+ * back on that trip's own back-guard layer, exactly as if the mode had
+ * never been entered. */
+function exitFlightModeViaBack() {
+  exitFlightMode();
+  return false;
+}
+
+/** Keeps #flight-tracking-btn's visual state (active class + aria-label)
+ * in sync with state.flightTrackingEnabled — called from every path that
+ * can change either state.flightModeActive or state.flightTrackingEnabled
+ * (enterFlightMode, exitFlightMode, and the click handler below), so a
+ * back-triggered exit updates the button exactly the same way a tap on it
+ * would, instead of only the click handler doing it and a back-press
+ * leaving a stale "active" button behind. */
+function syncFlightTrackingBtn() {
+  el.flightTrackingBtn.classList.toggle('active', state.flightTrackingEnabled);
+  el.flightTrackingBtn.setAttribute('aria-label', `Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`);
+}
+
+/** Reverses enterFlightMode(). If a trip is still active (it was only ever
+ * suspended, never ended), restores turn-by-turn exactly where it left
+ * off — nothing was stopped, so this is pure un-hiding plus re-engaging
+ * camera follow, and the underlying overhead-alert badge feature is left
+ * running exactly as it was (same "suspend, don't end" principle as the
+ * trip itself — glancing at the sky shouldn't silently turn off alerts
+ * for the drive still in progress). Otherwise (no trip to keep alerting
+ * for) exiting fully turns tracking off too, matching this button's
+ * original simple on/off toggle behavior from before dedicated mode
+ * existed — it still doubles as that toggle. */
+function exitFlightMode() {
+  if (!state.flightModeActive) return;
+  state.flightModeActive = false;
+  stopFlightModeRendering();
+  forgetBackLayerIfTop(exitFlightModeViaBack);
+  resolverDebugLog(`Exiting Flight Tracking Mode${state.navigating ? ' — resuming turn-by-turn.' : '.'}`);
+
+  if (state.navigating) {
+    el.navBanner.classList.remove('hidden');
+    el.navSpeedRow.classList.remove('hidden');
+    showRouteSearchFeature();
+    showEffortFeature();
+    el.endNavBtn.classList.remove('hidden');
+    state.followMode = true;
+    updateLocateBtnState();
+  } else {
+    el.searchCard.classList.remove('hidden');
+    showRouteChipsInline();
+    el.startNavBtn.classList.toggle('hidden', !state.route);
+    el.cancelRouteBtn.classList.toggle('hidden', !state.route);
+    if (state.route) renderRouteOptions();
+    if (state.flightTrackingEnabled) {
+      state.flightTrackingEnabled = false;
+      resetFlightTracking();
+    }
+  }
+  syncFlightTrackingBtn();
+}
+
 if (CONFIG.FLIGHT_TRACKING_ENABLED) {
   el.flightTrackingBtn.classList.remove('hidden');
   el.flightTrackingBtn.addEventListener('click', () => {
-    state.flightTrackingEnabled = !state.flightTrackingEnabled;
-    el.flightTrackingBtn.classList.toggle('active', state.flightTrackingEnabled);
-    el.flightTrackingBtn.setAttribute('aria-label', `Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`);
+    // exitFlightMode()/enterFlightMode() already call syncFlightTrackingBtn()
+    // themselves — tapping this button is a side-effect close/open, not a
+    // back press, same distinction pushBackLayer's own doc comment
+    // describes, and both paths need the button kept in sync regardless
+    // of how they were triggered.
+    if (state.flightModeActive) exitFlightMode();
+    else enterFlightMode();
     showStatus(`Flight tracking: ${state.flightTrackingEnabled ? 'on' : 'off'}`, 'info');
-    if (!state.flightTrackingEnabled) resetFlightTracking();
-    // Turning this on while just browsing (not navigating) needs its own
-    // position feed to poll from — maybeCheckFlightsIdle rides on whatever
-    // drives the "you are here" marker, which isn't necessarily running
-    // yet (the locate button is a separate, independent toggle). silent:
-    // true because this is a side effect of the tap, not the user asking
-    // to be located — same "automatic on-open share" semantics as this
-    // app's own startup call, just triggered by this toggle instead.
-    else if (!state.navigating && state.idleLocationWatchId == null) startIdleLocationShare({ silent: true });
   });
 }
 
