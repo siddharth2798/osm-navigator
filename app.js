@@ -195,6 +195,13 @@ const el = {
   flightAircraftPanelRouteTo: document.getElementById('flight-aircraft-panel-route-to'),
   flightAircraftPanelRouteUnknown: document.getElementById('flight-aircraft-panel-route-unknown'),
   flightAircraftPanelTelemetry: document.getElementById('flight-aircraft-panel-telemetry'),
+  flightAirportPanel: document.getElementById('flight-airport-panel'),
+  flightAirportPanelTitle: document.getElementById('flight-airport-panel-title'),
+  flightAirportPanelCloseBtn: document.getElementById('flight-airport-panel-close-btn'),
+  flightAirportPanelWeather: document.getElementById('flight-airport-panel-weather'),
+  flightAirportPanelRunwayDiagram: document.getElementById('flight-airport-panel-runway-diagram'),
+  flightAirportPanelRunwayList: document.getElementById('flight-airport-panel-runway-list'),
+  flightAirportPanelMeta: document.getElementById('flight-airport-panel-meta'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -1272,6 +1279,47 @@ mapLoad.then(() => {
     filter: ['==', ['get', 'segment'], 'remaining'],
     paint: { 'line-color': '#f59e0b', 'line-width': 2.5, 'line-dasharray': [2, 2], 'line-opacity': 0.85 },
   });
+
+  // Airport crossed-runway icons — Flight Tracking Mode only, sourced from
+  // the already-bundled vendor/airports.json (via flightRefData, no new
+  // fetch) rather than a separate vendor bundle. Populated lazily (see
+  // populateFlightAirportsSourceIfNeeded, called from enterFlightMode) once
+  // flightRefData has actually loaded, same "don't spend the cost on a
+  // session that never touches this feature" reasoning flightRefData
+  // itself already uses.
+  map.addImage('flight-airport', makeSdfAirportIcon(), { sdf: true });
+  map.addSource('flight-airports', { type: 'geojson', data: emptyFeatureCollection() });
+  map.addLayer({
+    id: 'flight-airport-icons',
+    type: 'symbol',
+    source: 'flight-airports',
+    minzoom: 3,
+    layout: {
+      'icon-image': 'flight-airport',
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 3, ['match', ['get', 'large'], true, 0.20, 0.13], 7, ['match', ['get', 'large'], true, 0.36, 0.24], 12, ['match', ['get', 'large'], true, 0.52, 0.38]],
+      'icon-allow-overlap': false,
+    },
+    paint: { 'icon-color': ['match', ['get', 'large'], true, '#38bdf8', '#7dd3fc'] },
+  }, 'flight-aircraft-emergency'); // inserted below the aircraft layers so planes always draw on top of airport markers
+  map.addLayer({
+    id: 'flight-airport-labels',
+    type: 'symbol',
+    source: 'flight-airports',
+    minzoom: 6,
+    layout: {
+      'text-field': ['get', 'iata'],
+      'text-size': ['match', ['get', 'large'], true, 11, 9],
+      'text-offset': [0, 1.2],
+      'text-anchor': 'top',
+      'text-allow-overlap': false,
+    },
+    paint: { 'text-color': '#9ad6f7', 'text-halo-color': '#0d1420', 'text-halo-width': 1.2 },
+  }, 'flight-aircraft-emergency');
+  map.on('click', 'flight-airport-icons', (e) => {
+    if (e.features.length) openAirportInfoPanel(e.features[0].properties.icao);
+  });
+  map.on('mouseenter', 'flight-airport-icons', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'flight-airport-icons', () => { map.getCanvas().style.cursor = ''; });
 });
 map.on('error', (e) => {
   // Most commonly a tile/style load failure — surface it once, plainly.
@@ -3278,6 +3326,26 @@ function loadFlightRefData() {
   return flightRefDataPromise;
 }
 
+// Separate lazy-load from flightRefData above: vendor/runways.json
+// (~880KB) is only needed by the airport-detail panel, which most
+// check-ins never open — loaded on first openAirportInfoPanel call, not
+// alongside the always-needed flight bundle.
+let airportDetailData = null;
+let airportDetailDataPromise = null;
+function loadAirportDetailData() {
+  if (!airportDetailDataPromise) {
+    airportDetailDataPromise = fetch('vendor/runways.json').then((r) => r.json()).then((runways) => {
+      airportDetailData = { runways };
+      return airportDetailData;
+    }).catch((err) => {
+      resolverDebugLog(`Flight tracking: failed to load runway data — ${err.message}`, 'error');
+      airportDetailDataPromise = null;
+      throw err;
+    });
+  }
+  return airportDetailDataPromise;
+}
+
 /** Readable "Ryanair 36JX" style label from the proxy's raw callsign
  * ('flight' field, space-padded to 8 chars in both OpenSky's and
  * airplanes.live's own schemas) — splits the 3-letter ICAO
@@ -3724,6 +3792,141 @@ function closeAircraftDetailPanel() {
 el.flightAircraftPanelCloseBtn.addEventListener('click', goBackInApp);
 
 // ---------------------------------------------------------------------------
+// Flight Tracking Mode: airport detail panel. Opened by tapping an airport
+// icon on the map (see the flight-airport-icons click handler in
+// mapLoad.then above) or, in a later stage, a search result. Full-screen
+// (see the shared #ev-details-panel-style selector in style.css) — unlike
+// the aircraft panel, there's no live map animation underneath worth
+// keeping visible while this is open.
+// ---------------------------------------------------------------------------
+
+/** Projects each runway onto a simple compass-style diagram centered at
+ * the origin, oriented by heading and scaled by length relative to the
+ * longest runway at this airport — NOT a geographically accurate layout
+ * (vendor/runways.json intentionally carries no endpoint lat/lon, only
+ * headings/length, to keep that bundle small — see
+ * scripts/build-airport-data.mjs), but enough to see relative runway
+ * orientations and lengths at a glance. Closed runways still draw (dashed/
+ * red via the .closed CSS class) rather than being silently dropped. */
+function runwaysToSvgLines(runways) {
+  const withHeading = runways.filter((r) => typeof r.leHdg === 'number' || typeof r.heHdg === 'number');
+  if (!withHeading.length) return '';
+  const maxLen = Math.max(...withHeading.map((r) => r.len || 0), 1);
+  return withHeading.map((r) => {
+    const headingDeg = typeof r.leHdg === 'number' ? r.leHdg : (r.heHdg + 180) % 360;
+    const rad = (headingDeg * Math.PI) / 180;
+    const halfLen = Math.max(20, ((r.len || 0) / maxLen) * 80);
+    const dx = Math.sin(rad) * halfLen;
+    const dy = -Math.cos(rad) * halfLen;
+    const closedClass = r.closed ? ' closed' : '';
+    return `<line x1="${(-dx).toFixed(1)}" y1="${(-dy).toFixed(1)}" x2="${dx.toFixed(1)}" y2="${dy.toFixed(1)}" class="${closedClass.trim()}" />`;
+  }).join('');
+}
+
+function flightCategoryBadgeHtml(fltCat) {
+  if (!fltCat) return '';
+  return `<span class="flight-category-badge ${escapeHtml(fltCat)}">${escapeHtml(fltCat)}</span>`;
+}
+
+/** Fetches and renders both the weather section (/api/airport-weather,
+ * Stage A) and the runway section (lazy-loaded vendor/runways.json, see
+ * loadAirportDetailData) for `icao` — each independent, each degrading to
+ * an "unavailable" message on its own failure without blocking the other
+ * or the meta section (which needs no fetch at all — it's already in the
+ * bundled flightRefData.airports entry). */
+async function renderAirportInfoPanel(icao) {
+  const airport = flightRefData && flightRefData.airports.find((a) => a.icao === icao);
+  el.flightAirportPanelTitle.textContent = airport ? `${airport.name}${airport.iata ? ` (${airport.iata})` : ''}` : icao;
+
+  el.flightAirportPanelMeta.innerHTML = airport ? [
+    airport.city && airport.country ? `${airport.city}, ${airport.country}` : (airport.city || airport.country || null),
+    typeof airport.elevationFt === 'number' ? `Elevation ${airport.elevationFt.toLocaleString()} ft` : null,
+    `ICAO ${airport.icao}${airport.iata ? ` · IATA ${airport.iata}` : ''}`,
+  ].filter(Boolean).map((l) => `<div>${escapeHtml(l)}</div>`).join('') : '<div>—</div>';
+
+  el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Loading…</div>';
+  fetch(`${isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : ''}/api/airport-weather?icao=${icao}`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((weather) => {
+      if (el.flightAirportPanelTitle.dataset.icao !== icao) return; // panel moved on to a different airport
+      if (!weather || !weather.metar) {
+        el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Weather unavailable</div>';
+        return;
+      }
+      const m = weather.metar;
+      const windText = typeof m.wdir === 'number' && typeof m.wspd === 'number'
+        ? `Wind ${m.wdir}° at ${m.wspd}kt${m.wgst ? ` gusting ${m.wgst}kt` : ''}`
+        : null;
+      const cloudsText = m.clouds && m.clouds.length
+        ? m.clouds.map((c) => `${c.cover}${typeof c.base === 'number' ? ` ${c.base.toLocaleString()}ft` : ''}`).join(', ')
+        : null;
+      el.flightAirportPanelWeather.innerHTML = `
+        <div class="flight-airport-weather-headline">
+          ${typeof m.temp === 'number' ? `<span class="flight-panel-telemetry-value">${Math.round(m.temp)}°C</span>` : ''}
+          ${flightCategoryBadgeHtml(m.fltCat)}
+        </div>
+        ${windText ? `<div class="flight-airport-weather-line">${escapeHtml(windText)}</div>` : ''}
+        ${typeof m.visib !== 'undefined' && m.visib !== null ? `<div class="flight-airport-weather-line">Visibility ${escapeHtml(String(m.visib))}sm</div>` : ''}
+        ${cloudsText ? `<div class="flight-airport-weather-line">${escapeHtml(cloudsText)}</div>` : '<div class="flight-airport-weather-line">Sky clear</div>'}
+        ${m.rawOb ? `<div class="flight-airport-weather-raw">${escapeHtml(m.rawOb)}</div>` : ''}
+      `;
+    })
+    .catch((err) => {
+      resolverDebugLog(`Flight tracking: airport weather lookup failed — ${err.message}`, 'warn');
+      if (el.flightAirportPanelTitle.dataset.icao === icao) {
+        el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Weather unavailable</div>';
+      }
+    });
+
+  el.flightAirportPanelRunwayDiagram.innerHTML = '';
+  el.flightAirportPanelRunwayList.innerHTML = '<div class="flight-runway-row">Loading…</div>';
+  try {
+    await loadAirportDetailData();
+    if (el.flightAirportPanelTitle.dataset.icao !== icao) return;
+    const runways = airportDetailData.runways.filter((r) => r.a === icao);
+    if (!runways.length) {
+      el.flightAirportPanelRunwayList.innerHTML = '<div class="flight-runway-row">No runway data available</div>';
+      return;
+    }
+    el.flightAirportPanelRunwayDiagram.innerHTML = runwaysToSvgLines(runways);
+    el.flightAirportPanelRunwayList.innerHTML = runways.map((r) => {
+      const ident = [r.le, r.he].filter(Boolean).join('/') || 'Runway';
+      const meta = [
+        typeof r.len === 'number' ? `${r.len.toLocaleString()} ft` : null,
+        typeof r.w === 'number' ? `${r.w} ft wide` : null,
+        r.surf || null,
+        r.lit ? 'lighted' : null,
+        r.closed ? 'closed' : null,
+      ].filter(Boolean).join(' · ');
+      return `<div class="flight-runway-row">${escapeHtml(ident)}<div class="flight-runway-row-meta">${escapeHtml(meta)}</div></div>`;
+    }).join('');
+  } catch (err) {
+    resolverDebugLog(`Flight tracking: runway data unavailable — ${err.message}`, 'warn');
+    if (el.flightAirportPanelTitle.dataset.icao === icao) {
+      el.flightAirportPanelRunwayList.innerHTML = '<div class="flight-runway-row">Runway data unavailable</div>';
+    }
+  }
+}
+
+/** Opens the airport panel for `icao` — reachable by tapping an airport
+ * icon on the map, or (a later stage) a search result. `dataset.icao` on
+ * the title element is how the async fetches above know whether the panel
+ * has since moved on to a different airport and should discard their
+ * result rather than overwrite it. */
+function openAirportInfoPanel(icao) {
+  el.flightAirportPanelTitle.dataset.icao = icao;
+  el.flightAirportPanel.classList.remove('hidden');
+  pushBackLayer(closeAirportInfoPanel);
+  renderAirportInfoPanel(icao);
+}
+
+function closeAirportInfoPanel() {
+  el.flightAirportPanel.classList.add('hidden');
+  forgetBackLayerIfTop(closeAirportInfoPanel);
+}
+el.flightAirportPanelCloseBtn.addEventListener('click', goBackInApp);
+
+// ---------------------------------------------------------------------------
 // FR24-style icon color/size classification — ported from the aurora
 // project's Map.tsx (classifyAircraft/aircraftColor/boostDark), now
 // living in lib/flight-render-utils.js (imported above) so they're
@@ -3765,6 +3968,52 @@ function makeSdfPlaneIcon() {
   ctx.restore();
   const d = ctx.getImageData(0, 0, size, size);
   return { width: size, height: size, data: new Uint8Array(d.data) };
+}
+
+/** Two crossed runways, no outer ring — clearly non-circular at every zoom
+ * level so it never reads as just another aircraft dot. Ported verbatim
+ * from aurora's makeAirportIcon (fillRect + rotate only, same broad-
+ * compatibility canvas subset as makeSdfPlaneIcon above). */
+function makeSdfAirportIcon() {
+  const size = 64;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.save();
+  ctx.translate(size / 2, size / 2);
+  ctx.save();
+  ctx.rotate(0.26);
+  ctx.fillRect(-4, -24, 8, 48); // primary runway, ~15deg off vertical
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(0.26 + Math.PI / 2);
+  ctx.fillRect(-3.5, -17, 7, 34); // cross runway, perpendicular, shorter
+  ctx.restore();
+  ctx.restore();
+  const d = ctx.getImageData(0, 0, size, size);
+  return { width: size, height: size, data: new Uint8Array(d.data) };
+}
+
+/** Populates the flight-airports GeoJSON source from the already-bundled
+ * flightRefData.airports (loaded by loadFlightRefData) — a one-time
+ * static conversion, not a live poll, so it only ever needs to run once
+ * per session (guarded by flightAirportsSourcePopulated) even though
+ * enterFlightMode calls this on every mode entry. */
+let flightAirportsSourcePopulated = false;
+function populateFlightAirportsSourceIfNeeded() {
+  if (flightAirportsSourcePopulated || !flightRefData) return;
+  flightAirportsSourcePopulated = true;
+  const source = map.getSource('flight-airports');
+  if (!source) return;
+  const features = flightRefData.airports
+    .filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number')
+    .map((a) => ({
+      type: 'Feature',
+      properties: { icao: a.icao, iata: a.iata, name: a.name, large: !!a.large },
+      geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
+    }));
+  source.setData({ type: 'FeatureCollection', features });
 }
 
 // ---------------------------------------------------------------------------
@@ -3918,6 +4167,9 @@ function enterFlightMode() {
 
   pushBackLayer(exitFlightModeViaBack);
   startFlightModeRendering();
+  // One-time (guarded internally) — airport icons don't need to wait for a
+  // poll, just the same reference bundle the poll itself already loads.
+  loadFlightRefData().then(populateFlightAirportsSourceIfNeeded).catch(() => {});
 }
 
 /** Hardware/gesture back while Flight Tracking Mode is open — one press
@@ -3957,6 +4209,7 @@ function exitFlightMode() {
   state.flightModeActive = false;
   stopFlightModeRendering();
   closeAircraftDetailPanel(); // no-op if nothing was open; must run BEFORE the forgetBackLayerIfTop below so its own back-layer (if any) is popped first, in the right stack order
+  closeAirportInfoPanel(); // same reasoning — at most one of the two panels is ever open at once, but both are safe no-ops otherwise
   forgetBackLayerIfTop(exitFlightModeViaBack);
   resolverDebugLog(`Exiting Flight Tracking Mode${state.navigating ? ' — resuming turn-by-turn.' : '.'}`);
 

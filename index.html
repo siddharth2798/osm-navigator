@@ -722,6 +722,34 @@
     <div id="flight-aircraft-panel-telemetry" class="flight-panel-telemetry-grid"></div>
   </div>
 
+  <!-- ============ Flight Tracking Mode: airport detail ============
+       Opened by tapping an airport icon (or a search result — see a later
+       stage) while Flight Tracking Mode is active — see
+       openAirportInfoPanel in app.js. Full-screen like #ev-details-panel
+       above, unlike the aircraft panel: there's more to read here and no
+       live map animation underneath worth keeping visible. -->
+  <div id="flight-airport-panel" class="hidden">
+    <div class="panel-header">
+      <div id="flight-airport-panel-title" class="panel-title">—</div>
+      <button id="flight-airport-panel-close-btn" class="icon-btn" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Weather</h3>
+      <div id="flight-airport-panel-weather" class="flight-airport-weather"></div>
+    </section>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Runways</h3>
+      <svg id="flight-airport-panel-runway-diagram" class="flight-runway-diagram" viewBox="-100 -100 200 200"></svg>
+      <div id="flight-airport-panel-runway-list" class="ev-panel-lines"></div>
+    </section>
+    <section class="ev-panel-section">
+      <h3 class="ev-panel-section-title">Details</h3>
+      <div id="flight-airport-panel-meta" class="ev-panel-lines"></div>
+    </section>
+  </div>
+
   <!-- ============ Trip summary — shown automatically once navigation ends
        (arrival or a manual "End" tap), never opened from a button of its
        own — see renderTripSummary in app.js. Reports what actually
