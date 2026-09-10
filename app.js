@@ -10735,17 +10735,31 @@ function onPositionUpdate(pos) {
   state.lastFix = { lng, lat, t: pos.timestamp || Date.now() };
   refreshWeatherBadge(); // fire-and-forget; the cache's coarse time bucket is what stops this from refetching on every tick
 
-  updatePuck(lngLat, headingDeg);
-  if (state.followMode) followCamera(lngLat, headingDeg);
-  if (!state.route) return;
-
   // --- Snap the live fix onto the route line. `location` is the distance
   // travelled along the line to the snapped point; `dist` is the
-  // perpendicular offset — both in metres. This is the basis for both the
-  // maneuver-advance logic and deviation detection below. ---
-  const snapped = turf.nearestPointOnLine(state.route.lineFeature, turf.point(lngLat), { units: 'meters' });
-  const traveledM = snapped.properties.location;
-  const offsetM = snapped.properties.dist;
+  // perpendicular offset — both in metres. This is the basis for the
+  // maneuver-advance logic and deviation detection below, AND (see
+  // displayLngLat) for where the puck/camera are actually drawn — but
+  // only the display position is affected by the snap; every distance
+  // calculation below still uses the raw fix (lngLat), unchanged. ---
+  let displayLngLat = lngLat;
+  let traveledM = null;
+  let offsetM = null;
+  if (state.route) {
+    const snapped = turf.nearestPointOnLine(state.route.lineFeature, turf.point(lngLat), { units: 'meters' });
+    traveledM = snapped.properties.location;
+    offsetM = snapped.properties.dist;
+    // Ordinary GPS jitter gets visually absorbed onto the road; a genuine
+    // deviation (offset big enough that checkDeviation below wouldn't call
+    // it "cleared" either) shows the real, unsnapped fix instead — see
+    // CONFIG.PUCK_SNAP_MAX_OFFSET_M's own comment.
+    if (offsetM <= CONFIG.PUCK_SNAP_MAX_OFFSET_M) displayLngLat = snapped.geometry.coordinates;
+  }
+
+  updatePuck(displayLngLat, headingDeg);
+  if (state.followMode) followCamera(displayLngLat, headingDeg);
+  if (!state.route) return;
+
   state.traveledM = traveledM;
   updateTraveledRouteSegment(traveledM);
   updateLiveAscent(traveledM);
