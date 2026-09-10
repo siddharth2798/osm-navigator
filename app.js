@@ -1301,10 +1301,17 @@ mapLoad.then(() => {
     minzoom: 3,
     layout: {
       'icon-image': 'flight-airport',
-      'icon-size': ['interpolate', ['linear'], ['zoom'], 3, ['match', ['get', 'large'], true, 0.20, 0.13], 7, ['match', ['get', 'large'], true, 0.36, 0.24], 12, ['match', ['get', 'large'], true, 0.52, 0.38]],
+      // 'large' is a boolean feature property, not a string/number — MapLibre's
+      // `match` expression requires string/number branch labels (confirmed
+      // live on the Android shell: "Branch labels must be numbers or
+      // strings" aborted addLayer entirely, which in turn skipped every
+      // later statement in this same mapLoad.then() callback, including the
+      // flight-airport-icons click handler below). `case` takes a boolean
+      // condition directly instead.
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 3, ['case', ['get', 'large'], 0.20, 0.13], 7, ['case', ['get', 'large'], 0.36, 0.24], 12, ['case', ['get', 'large'], 0.52, 0.38]],
       'icon-allow-overlap': false,
     },
-    paint: { 'icon-color': ['match', ['get', 'large'], true, '#38bdf8', '#7dd3fc'] },
+    paint: { 'icon-color': ['case', ['get', 'large'], '#38bdf8', '#7dd3fc'] },
   }, 'flight-aircraft-emergency'); // inserted below the aircraft layers so planes always draw on top of airport markers
   map.addLayer({
     id: 'flight-airport-labels',
@@ -1313,7 +1320,7 @@ mapLoad.then(() => {
     minzoom: 6,
     layout: {
       'text-field': ['get', 'iata'],
-      'text-size': ['match', ['get', 'large'], true, 11, 9],
+      'text-size': ['case', ['get', 'large'], 11, 9], // same boolean-vs-match fix as icon-size above
       'text-offset': [0, 1.2],
       'text-anchor': 'top',
       'text-allow-overlap': false,
@@ -3323,7 +3330,9 @@ function loadFlightRefData() {
       flightRefData = { airports, aircraftTypes, airlineCodes };
       return flightRefData;
     }).catch((err) => {
-      resolverDebugLog(`Flight tracking: failed to load reference data — ${err.message}`, 'error');
+      // Not an external service either — same bundled-asset distinction as
+      // vendor/runways.json's own log below.
+      resolverDebugLog(`Flight tracking [vendor/*.json]: bundled reference data failed to load — ${err.message}`, 'error');
       flightRefDataPromise = null; // let the next check-in try again rather than being stuck failed for the rest of the session
       throw err;
     });
@@ -3434,7 +3443,8 @@ function applyFlightBackoff(res) {
     ? retryAfterS * 1000
     : Math.min(state.flightBackoffMs ? state.flightBackoffMs * 2 : CONFIG.FLIGHT_BACKOFF_BASE_MS, CONFIG.FLIGHT_BACKOFF_MAX_MS);
   state.flightBackoffUntil = Date.now() + state.flightBackoffMs;
-  resolverDebugLog(`Flight tracking: rate-limited by the data source, backing off ${Math.round(state.flightBackoffMs / 1000)}s.`, 'warn');
+  const rateLimitedSource = res.headers.get('x-flight-source');
+  resolverDebugLog(`Flight tracking [/api/flights]: rate-limited by ${rateLimitedSource || 'the data source'}, backing off ${Math.round(state.flightBackoffMs / 1000)}s.`, 'warn');
 }
 
 /** Distance (metres) from `lngLat` to where aircraft `a` will be at ANY
@@ -3476,7 +3486,14 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
     const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
     const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
     if (!res.ok) {
-      resolverDebugLog(`Flight tracking: /api/flights returned HTTP ${res.status}.`, 'error');
+      // x-flight-source is set even on the final-failure passthrough (see
+      // lib/flights-proxy.js) — it names whichever tier's failure is being
+      // surfaced. A 429 here specifically means OpenSky rate-limited AND
+      // the airplanes.live fallback also didn't come through (pending
+      // approval, or itself down) — both tried, both unavailable, not a
+      // silent single-source failure.
+      const failedSource = res.headers.get('x-flight-source');
+      resolverDebugLog(`Flight tracking [/api/flights]: HTTP ${res.status} from ${failedSource || 'unknown source'}${res.status === 429 && failedSource === 'opensky' ? ' — OpenSky rate limit; airplanes.live fallback also unavailable' : ''}.`, 'error');
       if (res.status === 429) applyFlightBackoff(res);
       noteFlightCheckinFailure();
       return;
@@ -3501,8 +3518,13 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
     // switching back TO it is a recovery ('success').
     const activeSource = res.headers.get('x-flight-source');
     if (activeSource && activeSource !== state.flightActiveSource) {
-      if (state.flightActiveSource != null) {
-        resolverDebugLog(`Flight tracking: data source switched to ${activeSource}.`, activeSource === 'opensky' ? 'success' : 'warn');
+      if (state.flightActiveSource == null) {
+        // First successful check-in of the session — always worth naming
+        // which live-position service actually answered, not just later
+        // transitions, per the "log what services are being used" ask.
+        resolverDebugLog(`Flight tracking [/api/flights]: live positions from ${activeSource}.`);
+      } else {
+        resolverDebugLog(`Flight tracking [/api/flights]: data source switched to ${activeSource}.`, activeSource === 'opensky' ? 'success' : 'warn');
       }
       state.flightActiveSource = activeSource;
     }
@@ -3695,6 +3717,7 @@ async function fetchAndRenderFlightRoute(hex) {
       const res = await fetch(`${base}/api/aircraft-info?hex=${hex}`);
       if (res.ok && flightSelectedHex === hex) {
         const info = await res.json();
+        resolverDebugLog(`Flight tracking [/api/aircraft-info]: adsbdb.com resolved ${hex} to ${info.registration || '?'} / ${info.icaoType || '?'}.`, 'success');
         // Merges straight onto the cached aircraft object — the next poll
         // naturally overwrites it if the upstream ever disagrees, and every
         // other reader (map icon color/size, this panel) benefits from the
@@ -3702,9 +3725,14 @@ async function fetchAndRenderFlightRoute(hex) {
         if (info.registration) a.r = info.registration;
         if (info.icaoType) a.t = info.icaoType;
         renderAircraftDetailPanel(hex);
+      } else if (!res.ok) {
+        // 404 (no known aircraft) is expected/common, not a real failure —
+        // still worth a log line (which service, what happened) but not at
+        // 'error' severity the way a genuine network/5xx problem would be.
+        resolverDebugLog(`Flight tracking [/api/aircraft-info]: adsbdb.com returned HTTP ${res.status} for ${hex}${res.status === 404 ? ' (no known registration/type)' : ''}.`, res.status === 404 ? 'warn' : 'error');
       }
     } catch (err) {
-      resolverDebugLog(`Flight tracking: aircraft-info lookup failed — ${err.message}`, 'warn');
+      resolverDebugLog(`Flight tracking [/api/aircraft-info]: adsbdb.com lookup failed — ${err.message}`, 'error');
     }
   }
 
@@ -3718,6 +3746,7 @@ async function fetchAndRenderFlightRoute(hex) {
     const res = await fetch(`${base}/api/flight-route?callsign=${encodeURIComponent(callsign)}`);
     if (flightSelectedHex !== hex) return; // panel moved on to a different aircraft while this was in flight
     if (!res.ok) {
+      resolverDebugLog(`Flight tracking [/api/flight-route]: adsbdb.com returned HTTP ${res.status} for ${callsign}${res.status === 404 ? ' (no known route)' : ''}.`, res.status === 404 ? 'warn' : 'error');
       el.flightAircraftPanelRoute.classList.add('hidden');
       el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
       return;
@@ -3725,6 +3754,7 @@ async function fetchAndRenderFlightRoute(hex) {
     const route = await res.json();
     flightSelectedRoute = { origin: route.origin, destination: route.destination };
     if (route.origin || route.destination) {
+      resolverDebugLog(`Flight tracking [/api/flight-route]: adsbdb.com resolved ${callsign} to ${route.origin ? route.origin.icao : '?'} → ${route.destination ? route.destination.icao : '?'}.`, 'success');
       el.flightAircraftPanelRouteUnknown.classList.add('hidden');
       el.flightAircraftPanelRoute.classList.remove('hidden');
       el.flightAircraftPanelRouteFrom.textContent = flightAircraftLabel(route.origin);
@@ -3734,7 +3764,7 @@ async function fetchAndRenderFlightRoute(hex) {
       el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
     }
   } catch (err) {
-    resolverDebugLog(`Flight tracking: route lookup failed — ${err.message}`, 'warn');
+    resolverDebugLog(`Flight tracking [/api/flight-route]: adsbdb.com lookup failed — ${err.message}`, 'error');
     el.flightAircraftPanelRoute.classList.add('hidden');
     el.flightAircraftPanelRouteUnknown.classList.remove('hidden');
   }
@@ -3851,13 +3881,18 @@ async function renderAirportInfoPanel(icao) {
 
   el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Loading…</div>';
   fetch(`${isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : ''}/api/airport-weather?icao=${icao}`)
-    .then((res) => (res.ok ? res.json() : null))
+    .then((res) => {
+      if (res.ok) return res.json();
+      resolverDebugLog(`Flight tracking [/api/airport-weather]: aviationweather.gov returned HTTP ${res.status} for ${icao}.`, 'error');
+      return null;
+    })
     .then((weather) => {
       if (el.flightAirportPanelTitle.dataset.icao !== icao) return; // panel moved on to a different airport
       if (!weather || !weather.metar) {
         el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Weather unavailable</div>';
         return;
       }
+      resolverDebugLog(`Flight tracking [/api/airport-weather]: aviationweather.gov METAR${weather.taf ? '+TAF' : ' (no TAF)'} for ${icao} — ${weather.metar.fltCat || 'category unknown'}.`, 'success');
       const m = weather.metar;
       const windText = typeof m.wdir === 'number' && typeof m.wspd === 'number'
         ? `Wind ${m.wdir}° at ${m.wspd}kt${m.wgst ? ` gusting ${m.wgst}kt` : ''}`
@@ -3877,7 +3912,7 @@ async function renderAirportInfoPanel(icao) {
       `;
     })
     .catch((err) => {
-      resolverDebugLog(`Flight tracking: airport weather lookup failed — ${err.message}`, 'warn');
+      resolverDebugLog(`Flight tracking [/api/airport-weather]: aviationweather.gov lookup failed — ${err.message}`, 'error');
       if (el.flightAirportPanelTitle.dataset.icao === icao) {
         el.flightAirportPanelWeather.innerHTML = '<div class="flight-airport-weather-unavailable">Weather unavailable</div>';
       }
@@ -3906,7 +3941,10 @@ async function renderAirportInfoPanel(icao) {
       return `<div class="flight-runway-row">${escapeHtml(ident)}<div class="flight-runway-row-meta">${escapeHtml(meta)}</div></div>`;
     }).join('');
   } catch (err) {
-    resolverDebugLog(`Flight tracking: runway data unavailable — ${err.message}`, 'warn');
+    // Not an external service — vendor/runways.json is bundled with this
+    // deployment, so a failure here means the static asset itself didn't
+    // load, not that a third-party API is down.
+    resolverDebugLog(`Flight tracking [vendor/runways.json]: bundled runway data failed to load — ${err.message}`, 'warn');
     if (el.flightAirportPanelTitle.dataset.icao === icao) {
       el.flightAirportPanelRunwayList.innerHTML = '<div class="flight-runway-row">Runway data unavailable</div>';
     }
