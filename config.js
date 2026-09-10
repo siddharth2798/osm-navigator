@@ -600,12 +600,15 @@ export const CONFIG = {
   // when one crosses close to your live position, or every aircraft in the
   // area once you're near an airport — plus (see FLIGHT_DR_TICK_MS below) a
   // full FR24-style "Flight Tracking Mode". Live positions are backed by
-  // OpenSky Network (an academic/non-profit ADS-B network) by default, with
-  // airplanes.live as a fallback tier once its pending access approval
-  // lands — no API key needed for either today. There's no uptime/coverage
-  // guarantee for either — real coverage depends on ground-receiver density
-  // near wherever you're driving, and OpenSky's own coverage skews Europe/
-  // North America. See docs/FLIGHT_TRACKING.md. Calls this app's own
+  // airplanes.live by default (same service/order as the aurora project),
+  // with OpenSky Network (an academic/non-profit ADS-B network) as a
+  // fallback — no API key needed for either today. airplanes.live's access
+  // approval is still pending on this deployment (confirmed live: 403 on
+  // every request), so OpenSky is what's actually serving every check-in
+  // right now, despite being tier 2 — see docs/FLIGHT_TRACKING.md. There's
+  // no uptime/coverage guarantee for either — real coverage depends on
+  // ground-receiver density near wherever you're driving, and OpenSky's
+  // own coverage skews Europe/North America. Calls this app's own
   // /api/flights route (see functions/api/flights.js + lib/flights-proxy.js)
   // rather than either source directly — not to hide a secret (there isn't
   // one), but because neither sends a CORS header, so a direct browser
