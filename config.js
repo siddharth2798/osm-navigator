@@ -142,7 +142,19 @@ export const CONFIG = {
   // If you're building the Android shell against your own self-hosted
   // Worker/Pages deployment, set this to its absolute origin (e.g.
   // 'https://your-worker.workers.dev') before running `npm run cap:sync`.
-  RESOLVE_MAPS_URL_BASE: 'https://osm-navigator.siddharthshiv2798.workers.dev',
+  //
+  // This branch's own Worker (see wrangler.jsonc's "name": "aeronav") —
+  // deliberately a DIFFERENT subdomain than main's osm-navigator.*
+  // deployment, not the same one. They used to share a name/Worker on the
+  // (wrong) assumption that Cloudflare's Git integration would redeploy it
+  // on every push regardless of branch; confirmed live that only main's
+  // pushes were ever promoted to the production URL, so this branch's own
+  // backend work (the OpenSky/airplanes.live switch, and everything from
+  // the Flight Tracking Mode feature) was never actually reachable by the
+  // app despite shipping and passing CI — see wrangler.jsonc's own comment
+  // for the full story. This account-subdomain part (siddharthshiv2798)
+  // stays the same; only the worker-name part changes with the rename.
+  RESOLVE_MAPS_URL_BASE: 'https://aeronav.siddharthshiv2798.workers.dev',
 
   // --- Navigation / voice guidance behaviour ----------------------------------
   // The far/near callout distances are speed-scaled (see dynamicVoiceLeadM in
