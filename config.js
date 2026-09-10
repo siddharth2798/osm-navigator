@@ -270,6 +270,24 @@ export const CONFIG = {
   // barely back under the trip line) avoids that flapping.
   DEVIATION_CLEAR_THRESHOLD_M: 20,
 
+  // Live puck position display: snap the drawn marker onto the route line
+  // (turf.nearestPointOnLine, same primitive checkDeviation already uses
+  // for offsetM) whenever the perpendicular offset is within this many
+  // metres — ordinary GPS jitter (commonly ±5-15m fix-to-fix, see
+  // MANEUVER_ADVANCE_HYSTERESIS_M's own comment) can otherwise visually
+  // place the puck in the wrong lane or off the carriageway entirely on a
+  // divided highway, even though the driver is genuinely on the road.
+  // Deliberately at/under DEVIATION_CLEAR_THRESHOLD_M rather than
+  // DEVIATION_THRESHOLD_M's more generous 30m: this is a purely cosmetic
+  // snap, not a "still counts as on-route" judgment, and it must never make
+  // a genuine deviation look fine — once the offset is big enough that
+  // checkDeviation itself wouldn't call it "cleared", the puck shows the
+  // real, unsnapped fix instead. Only the DISPLAYED position (the puck
+  // marker and, while following, the camera) is affected — every distance
+  // calculation (maneuver-advance, deviation detection, traffic/flight
+  // checks) still uses the raw GPS fix, exactly as before.
+  PUCK_SNAP_MAX_OFFSET_M: 20,
+
   // Same hysteresis idea as DEVIATION_CLEAR_THRESHOLD_M above, applied to
   // which maneuver is "current"/"next" instead of off-route detection.
   // updateActiveManeuver picks the active maneuver by comparing live
