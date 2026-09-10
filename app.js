@@ -1050,17 +1050,18 @@ mapLoad.then(() => {
     layout: { 'line-cap': 'round', 'line-join': 'round' },
     paint: { 'line-color': '#5b6472', 'line-width': 5, 'line-opacity': 0.85 },
   });
-  // Colors the route by how busy TomTom found it — two different shapes
-  // depending on when it's populated: a handful of short dashes over just
-  // the road ahead during live navigation (see runTrafficCheckin), or full
-  // gap-free coverage of every option shown at planning time (see
-  // paintRouteOptionsTrafficOverlay) so a busy stretch is visible on the
-  // selected line and the gray alternates alike, not just called out in
-  // the cards below. Either way, only populated with TomTom features
-  // turned on (CONFIG.TOMTOM_FEATURES_ENABLED, overridable per device via
-  // the Settings toggle — see tomtomFeaturesEnabled) and drive mode; empty
-  // (and so invisible) otherwise. Added after route-traveled-line so it
-  // always draws on top.
+  // Colors the SELECTED route by how busy TomTom found it — two different
+  // shapes depending on when it's populated: a handful of short dashes over
+  // just the road ahead during live navigation (see runTrafficCheckin), or
+  // full gap-free coverage of the focused option at planning time (see
+  // paintRouteOptionsTrafficOverlay). Deliberately never painted onto the
+  // gray alternates — only the option actually in focus gets live-traffic
+  // coloring, so it stays visually distinct from the muted alternates
+  // instead of every option looking identically busy. Either way, only
+  // populated with TomTom features turned on (CONFIG.TOMTOM_FEATURES_ENABLED,
+  // overridable per device via the Settings toggle — see
+  // tomtomFeaturesEnabled) and drive mode; empty (and so invisible)
+  // otherwise. Added after route-traveled-line so it always draws on top.
   map.addSource('route-traffic', { type: 'geojson', data: emptyFeatureCollection() });
   map.addLayer({
     id: 'route-traffic-line',
@@ -8287,34 +8288,48 @@ async function maybeAddTrafficDetourOption(options, results, trafficTimes) {
   insertDetourOption(options, trafficTimes, detour.trip, detour.trafficTimeS);
 }
 
-/** Colors every option currently shown — the selected line and the gray
- * alternates alike — by how busy TomTom found it, reusing the exact same
- * route-traffic source/layer (and red/amber/green paint expression) that
- * runTrafficCheckin uses for live-driving dashes. Unlike that near-term,
- * sparse-dash use, this covers each option's ENTIRE length with no gaps:
- * every sample "owns" the stretch of route from the midpoint before it to
- * the midpoint after (same half-a-sample-gap windowing as
- * findWorstCongestedSpan), since with as few as 3 samples for a whole
- * route, isolated 300m ticks would barely be visible and wouldn't answer
- * "where exactly" the way full coverage does. Costs zero extra TomTom
- * calls — `results` is whatever refreshRouteOptionsTraffic/
- * maybeAddTrafficDetourOption already fetched for the ETA numbers. */
+/** Colors ONLY the selected option — never the gray alternates — by how busy
+ * TomTom found it, reusing the exact same route-traffic source/layer (and
+ * red/amber/green paint expression) that runTrafficCheckin uses for
+ * live-driving dashes. Deliberately restricted to state.selectedRouteIndex:
+ * painting every option (this function's original behavior) put identical
+ * full-length traffic coloring on top of the selected AND gray-alternate
+ * lines alike, at a thicker width than either — so every option looked the
+ * same busy color regardless of which was actually in focus, exactly the
+ * "which one am I looking at" confusion reported against a real 3-option
+ * screenshot. Matches how Google Maps/Waze do this: live traffic color is
+ * an attribute of the focused route, not a property of the road itself, so
+ * only the highlighted line shows it, keeping alternates visually quiet.
+ * Called again by selectRouteOption's renderRouteOptions()->
+ * refreshRouteOptionsTraffic() chain whenever the selection changes, so the
+ * overlay always follows whichever option is currently focused. Covers the
+ * selected option's ENTIRE length with no gaps: every sample "owns" the
+ * stretch of route from the midpoint before it to the midpoint after (same
+ * half-a-sample-gap windowing as findWorstCongestedSpan), since with as few
+ * as 3 samples for a whole route, isolated 300m ticks would barely be
+ * visible and wouldn't answer "where exactly" the way full coverage does.
+ * Costs zero extra TomTom calls — `results` is whatever
+ * refreshRouteOptionsTraffic/maybeAddTrafficDetourOption already fetched for
+ * the ETA numbers; the non-selected entries are simply left unpainted. */
 function paintRouteOptionsTrafficOverlay(options, results) {
-  const features = options.flatMap((trip, i) => {
-    const samples = results[i] && results[i].samples;
-    if (!samples || !samples.length) return [];
-    const totalDistM = trip.summary.length * 1000;
-    const gap = totalDistM / routeTrafficSampleCount(totalDistM);
-    const lineFeature = turf.lineString(decodeTripCoords(trip));
-    return samples.map((s) => {
-      const from = Math.max(0, s.d - gap / 2);
-      const to = Math.min(totalDistM, s.d + gap / 2);
-      const dash = turf.lineSliceAlong(lineFeature, from, to, { units: 'meters' });
-      // startM/endM let updateTraveledRouteSegment filter out dashes once
-      // driven past — see the matching comment in runTrafficCheckin, which
-      // repaints this same source once navigation actually starts.
-      return { type: 'Feature', properties: { ratio: s.ratio, startM: from, endM: to }, geometry: dash.geometry };
-    });
+  const i = state.selectedRouteIndex;
+  const trip = options[i];
+  const samples = results[i] && results[i].samples;
+  if (!trip || !samples || !samples.length) {
+    map.getSource('route-traffic').setData(emptyFeatureCollection());
+    return;
+  }
+  const totalDistM = trip.summary.length * 1000;
+  const gap = totalDistM / routeTrafficSampleCount(totalDistM);
+  const lineFeature = turf.lineString(decodeTripCoords(trip));
+  const features = samples.map((s) => {
+    const from = Math.max(0, s.d - gap / 2);
+    const to = Math.min(totalDistM, s.d + gap / 2);
+    const dash = turf.lineSliceAlong(lineFeature, from, to, { units: 'meters' });
+    // startM/endM let updateTraveledRouteSegment filter out dashes once
+    // driven past — see the matching comment in runTrafficCheckin, which
+    // repaints this same source once navigation actually starts.
+    return { type: 'Feature', properties: { ratio: s.ratio, startM: from, endM: to }, geometry: dash.geometry };
   });
   map.getSource('route-traffic').setData({ type: 'FeatureCollection', features });
 }
