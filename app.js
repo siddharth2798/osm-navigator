@@ -181,6 +181,7 @@ const el = {
   effortBtn: document.getElementById('effort-btn'),
   voiceModeBtn: document.getElementById('voice-mode-btn'),
   mapLayerBtn: document.getElementById('map-layer-btn'),
+  mapStylePopover: document.getElementById('map-style-popover'),
   weatherBadge: document.getElementById('weather-badge'),
   weatherEmoji: document.getElementById('weather-emoji'),
   weatherTemp: document.getElementById('weather-temp'),
@@ -947,7 +948,13 @@ function setMapViewMode(mode) {
   });
   map.setLayoutProperty('satellite-layer', 'visibility', satellite ? 'visible' : 'none');
   el.mapLayerBtn.classList.toggle('active', satellite);
-  el.mapLayerBtn.setAttribute('aria-label', satellite ? 'Switch to map view' : 'Switch to satellite view');
+  // Popover options reflect whichever mode is now active — kept in sync
+  // here rather than only at open time, since setMapViewMode can also run
+  // from selecting an option (closeMapStylePopover below) or, in principle,
+  // any other future caller.
+  el.mapStylePopover.querySelectorAll('.map-style-opt').forEach((opt) => {
+    opt.setAttribute('aria-checked', String(opt.dataset.style === mode));
+  });
 }
 
 mapLoad.then(() => {
@@ -2566,8 +2573,47 @@ el.voiceModeBtn.addEventListener('click', () => {
 });
 renderVoiceModeBtn();
 
+/** Reveals the map-style popover positioned just above #map-layer-btn —
+ * same technique as openRouteChipsPopover (live bounding-rect offset, not a
+ * hardcoded position, so this keeps working regardless of how tall the
+ * left FAB stack is). Replaces the old direct single-tap toggle (UX audit
+ * finding F3): that switched styles immediately on every tap with no way
+ * to discover the other option existed short of tapping and watching the
+ * whole map repaint. Tracked on the back-stack like every other
+ * dismissable overlay in this app. */
+function openMapStylePopover() {
+  const btnRect = el.mapLayerBtn.getBoundingClientRect();
+  el.mapStylePopover.style.bottom = `${window.innerHeight - btnRect.top + 10}px`;
+  el.mapStylePopover.classList.remove('hidden');
+  el.mapLayerBtn.classList.add('active');
+  el.mapLayerBtn.setAttribute('aria-expanded', 'true');
+  pushBackLayer(closeMapStylePopover);
+  document.addEventListener('pointerdown', onOutsideMapStylePointerDown, { capture: true });
+}
+
+function closeMapStylePopover() {
+  el.mapStylePopover.classList.add('hidden');
+  el.mapLayerBtn.classList.remove('active');
+  el.mapLayerBtn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', onOutsideMapStylePointerDown, { capture: true });
+}
+
+function onOutsideMapStylePointerDown(e) {
+  if (el.mapStylePopover.contains(e.target) || el.mapLayerBtn.contains(e.target)) return;
+  goBackInApp();
+}
+
 el.mapLayerBtn.addEventListener('click', () => {
-  setMapViewMode(mapViewMode === 'satellite' ? 'map' : 'satellite');
+  if (el.mapStylePopover.classList.contains('hidden')) openMapStylePopover();
+  else goBackInApp();
+});
+
+el.mapStylePopover.querySelectorAll('.map-style-opt').forEach((opt) => {
+  opt.addEventListener('click', () => {
+    setMapViewMode(opt.dataset.style);
+    forgetBackLayerIfTop(closeMapStylePopover);
+    closeMapStylePopover();
+  });
 });
 
 // ============================================================================
@@ -7087,10 +7133,22 @@ async function updateAlternateRouteLines() {
 function paintRouteOptionCards(trafficTimes) {
   el.routeOptionsRow.innerHTML = '';
   const tags = buildRouteOptionTags(state.routeOptions, trafficTimes);
+  // With 2+ options each card gets a small color swatch that matches its
+  // ACTUAL map line color 1:1 — '#3d8bfd' for the selected option (same hex
+  // route-line's paint uses) and '#6b7a90' for every alternate (same hex
+  // route-alternates-line's paint uses) — so a card can be matched to its
+  // line on the map at a glance instead of relying solely on the thin
+  // ".active" border, which is easy to miss with 3 similarly-shaped options
+  // (see UX audit finding F1). Alternates are numbered in on-map order,
+  // skipping the selected index, rather than by raw array index, so
+  // "Alt. 1"/"Alt. 2" always matches reading order left-to-right.
+  let altSeen = 0;
   state.routeOptions.forEach((trip, i) => {
     const card = document.createElement('button');
     card.type = 'button';
-    card.className = 'route-option-card' + (i === state.selectedRouteIndex ? ' active' : '');
+    const isActive = i === state.selectedRouteIndex;
+    card.className = 'route-option-card' + (isActive ? ' active' : '');
+    card.setAttribute('aria-pressed', String(isActive));
     // Distance, not Valhalla's time estimate, is the headline number here —
     // that estimate is derived from road speed limits/class alone, with no
     // live-traffic signal behind it by default (this app has none
@@ -7099,10 +7157,14 @@ function paintRouteOptionCards(trafficTimes) {
     // trustworthy enough to show once it's actually resolved for this
     // option; Valhalla's own traffic-blind number never is.
     const trafficTimeS = trafficTimes && trafficTimes[i];
-    card.innerHTML = `<div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
+    const swatchLabel = isActive ? 'Selected' : `Alt. ${(altSeen += 1)}`;
+    const swatchColor = isActive ? '#3d8bfd' : '#6b7a90';
+    card.innerHTML = `${state.routeOptions.length > 1 ? `<div class="route-option-swatch"><i style="background:${swatchColor}"></i>${escapeHtml(swatchLabel)}</div>` : ''}
+      <div class="route-option-dist">${formatDistance(trip.summary.length * 1000)}</div>
       ${trafficTimeS != null ? `<div class="route-option-time">~${formatDuration(trafficTimeS)} in traffic</div>` : ''}
       ${tags[i] ? `<div class="route-option-tag">${escapeHtml(tags[i])}</div>` : ''}
       ${state.travelMode === 'walk' ? `<div class="route-option-elevation${trip.ascentM != null ? '' : ' hidden'}">${trip.ascentM != null ? `↑${formatDistance(trip.ascentM)}` : ''}</div>` : ''}`;
+    card.setAttribute('aria-label', `${state.routeOptions.length > 1 ? `${swatchLabel}. ` : ''}${formatDistance(trip.summary.length * 1000)}${tags[i] ? `, ${tags[i]}` : ''}${isActive ? ', currently selected' : ''}`);
     card.addEventListener('click', () => selectRouteOption(i));
     el.routeOptionsRow.appendChild(card);
   });
@@ -7236,6 +7298,9 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   }
 
   renderManeuverList(built.maneuvers);
+  // Only shown once actually navigating (see UX audit finding F4) —
+  // endNavigation() hides it again on the way back to the planning screen.
+  el.maneuverList.classList.toggle('hidden', !state.navigating);
   if (!state.navigating) renderRouteSummary(built.totalDistM, built.totalTimeS);
   el.bottomSheet.classList.remove('hidden');
   // Re-measure now that the sheet is actually visible — on first render of
@@ -8367,13 +8432,15 @@ function updateSheetPeekHeight() {
   const routeOptionsHeight = el.routeOptionsRow.classList.contains('hidden') ? 0 : el.routeOptionsRow.offsetHeight;
   const transitItineraryOptionsHeight = el.transitItineraryOptionsRow.classList.contains('hidden') ? 0 : el.transitItineraryOptionsRow.offsetHeight;
   const elevationHeight = el.elevationProfile.classList.contains('hidden') ? 0 : el.elevationProfile.offsetHeight;
-  // #maneuver-list has no .hidden toggle of its own (unlike #poi-results-list)
-  // — it stays in normal flow even with zero <li> items, and its own
-  // padding-bottom (style.css) still gives it real height even then. Live
-  // testing confirmed this: the sum below without this term consistently
-  // undercounted the sheet's actual scrollHeight by exactly that padding,
-  // clipping the bottom of the peek state by a few pixels.
-  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + transitItineraryOptionsHeight + elevationHeight + el.sheetActions.offsetHeight + el.maneuverList.offsetHeight);
+  // #maneuver-list now toggles .hidden the same way as the others above
+  // (see renderRoute/endNavigation — UX audit finding F4 fixed this: it
+  // used to stay in normal flow with real content and no .hidden toggle of
+  // its own at all, which is what let a sliver of it bleed out beneath the
+  // sheet's rounded corner on the route-options screen). While navigating
+  // it's the ONLY content in the peek state (route-options/elevation are
+  // hidden by then), so it still needs to count fully in that case.
+  const maneuverListHeight = el.maneuverList.classList.contains('hidden') ? 0 : el.maneuverList.offsetHeight;
+  sheetPeekPx = Math.max(136, el.sheetHandle.offsetHeight + routeOptionsHeight + transitItineraryOptionsHeight + elevationHeight + el.sheetActions.offsetHeight + maneuverListHeight);
   // Only actually apply it as the live inline max-height while at rest in
   // the peek state — .half/.expanded's own CSS max-height must stay in
   // charge otherwise, and an active drag is already driving this same
@@ -9888,6 +9955,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   el.endNavBtn.classList.add('hidden');
   el.startNavBtn.classList.remove('hidden');
   el.cancelRouteBtn.classList.remove('hidden');
+  el.maneuverList.classList.add('hidden'); // back to the planning screen — see the matching toggle in renderRoute (UX audit finding F4)
   hideRouteSearchFeature(); // endNavigation is only reachable from a drive-mode session
   hideEffortFeature();
   showRouteChipsInline(); // back to "planned, not driving" — chips move back under the search card
