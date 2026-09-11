@@ -31,6 +31,32 @@ if (typeof maplibregl === 'undefined' || typeof turf === 'undefined') {
   throw new Error('maplibregl/turf not loaded');
 }
 
+// ---- Light/dark theme — applied as the very first statement after the
+// imports/library guard above, ahead of every other init call in this
+// file, to keep the flash-of-wrong-theme window (dark paints first, then
+// flips to light) as short as this module can make it. The standard fix —
+// a tiny inline <script> in index.html's <head>, run before CSS/first
+// paint — isn't available here: this app's CSP has no 'unsafe-inline' in
+// script-src (see _headers), and a module script (this file) is always
+// deferred until after the document is parsed regardless of where the
+// code inside it sits. This is the earliest point actually reachable.
+// Deliberately never reads prefers-color-scheme — this app defaulted to
+// dark long before this toggle existed, so following the OS silently
+// would flip existing users' experience the moment their system theme
+// does, not something they opted into. Absent/'0' stays dark (today's
+// only behavior, unchanged); only an explicit '1' turns light on.
+const LIGHT_MODE_STORAGE_KEY = 'lightMode';
+// Also keeps the browser/OS chrome (Android status bar, Safari tab bar) in
+// sync — <meta name="theme-color"> only takes a static value from
+// index.html otherwise, which would leave that chrome dark-colored even
+// once the app itself has switched to light.
+function applyTheme(isLight) {
+  document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark');
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', isLight ? '#f3f5f8' : '#10151c');
+}
+if (localStorage.getItem(LIGHT_MODE_STORAGE_KEY) === '1') applyTheme(true);
+
 // ============================================================================
 // DOM references
 // ============================================================================
@@ -42,6 +68,7 @@ const el = {
   resolverDebugCopyBtn: document.getElementById('resolver-debug-copy'),
   resolverDebugCloseBtn: document.getElementById('resolver-debug-close'),
   resolverDebugEndBtn: document.getElementById('resolver-debug-end'),
+  lightModeToggle: document.getElementById('light-mode-toggle'),
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
   tomtomToggle: document.getElementById('tomtom-toggle'),
@@ -3245,6 +3272,25 @@ setResolverDebugEnabled(resolverDebugEnabled); // paints the toggle's initial st
 
 if (el.debugModeToggle) {
   el.debugModeToggle.addEventListener('click', () => setResolverDebugEnabled(!resolverDebugEnabled));
+}
+
+// Paints the toggle's own initial state (the theme itself was already
+// applied to documentElement as the very first statement in this file,
+// before this point — see that comment for why it can't happen any
+// earlier) and wires flipping it. Same localStorage-wins-once-set pattern
+// as every other Settings toggle in this file.
+if (el.lightModeToggle) {
+  let lightModeOn = localStorage.getItem(LIGHT_MODE_STORAGE_KEY) === '1';
+  el.lightModeToggle.classList.toggle('active', lightModeOn);
+  el.lightModeToggle.setAttribute('aria-checked', String(lightModeOn));
+  el.lightModeToggle.addEventListener('click', () => {
+    lightModeOn = !lightModeOn;
+    localStorage.setItem(LIGHT_MODE_STORAGE_KEY, lightModeOn ? '1' : '0');
+    applyTheme(lightModeOn);
+    el.lightModeToggle.classList.toggle('active', lightModeOn);
+    el.lightModeToggle.setAttribute('aria-checked', String(lightModeOn));
+    resolverDebugLog(`Theme: light mode turned ${lightModeOn ? 'on' : 'off'} via the Settings toggle.`);
+  });
 }
 
 // Lets the "Self-hosted Valhalla" Settings toggle override
