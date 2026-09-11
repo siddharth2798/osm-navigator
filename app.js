@@ -1309,9 +1309,26 @@ mapLoad.then(() => {
       // flight-airport-icons click handler below). `case` takes a boolean
       // condition directly instead.
       'icon-size': ['interpolate', ['linear'], ['zoom'], 3, ['case', ['get', 'large'], 0.20, 0.13], 7, ['case', ['get', 'large'], 0.36, 0.24], 12, ['case', ['get', 'large'], 0.52, 0.38]],
+      // 'bottom', not the symbol default 'center' — the pin's point (not
+      // the visual middle of its 48x64 image, mostly empty below the
+      // tower glyph) is what should sit on the airport's real coordinate,
+      // same anchor convention as every DOM pin marker elsewhere in the
+      // app (createPinElement/createStopPinElement, anchor: 'bottom').
+      'icon-anchor': 'bottom',
       'icon-allow-overlap': false,
     },
-    paint: { 'icon-color': ['case', ['get', 'large'], '#38bdf8', '#7dd3fc'] },
+    // Amber, not the blue/cyan this layer used before — aircraft are
+    // colored by a green->cyan->blue->purple altitude gradient whenever
+    // the callsign isn't a recognized airline (aircraftColorFor in
+    // lib/flight-render-utils.js), which is most aircraft on an
+    // OpenSky-only poll. The old #38bdf8/#7dd3fc landed right inside that
+    // cyan/blue band, so a mid-altitude unrecognized aircraft and a
+    // stationary airport pin could read as the same kind of thing at a
+    // glance. Amber sits outside that whole gradient and matches this
+    // app's existing warm-accent convention (numbered stop pins,
+    // #route-why-chip) — airports read as a distinct, unrelated category
+    // of marker, not another point on the aircraft color scale.
+    paint: { 'icon-color': ['case', ['get', 'large'], '#f59e0b', '#fbbf24'] },
   }, 'flight-aircraft-emergency'); // inserted below the aircraft layers so planes always draw on top of airport markers
   map.addLayer({
     id: 'flight-airport-labels',
@@ -1321,11 +1338,15 @@ mapLoad.then(() => {
     layout: {
       'text-field': ['get', 'iata'],
       'text-size': ['case', ['get', 'large'], 11, 9], // same boolean-vs-match fix as icon-size above
-      'text-offset': [0, 1.2],
+      // Small offset, not 1.2em — the icon is now anchored 'bottom' (see
+      // flight-airport-icons above), so its whole pin body sits ABOVE the
+      // point already; the label just needs to clear the pin's tip, not
+      // the old icon's lower half.
+      'text-offset': [0, 0.35],
       'text-anchor': 'top',
       'text-allow-overlap': false,
     },
-    paint: { 'text-color': '#9ad6f7', 'text-halo-color': '#0d1420', 'text-halo-width': 1.2 },
+    paint: { 'text-color': '#fbbf24', 'text-halo-color': '#0d1420', 'text-halo-width': 1.2 }, // matches the pin's new amber tint
   }, 'flight-aircraft-emergency');
   map.on('click', 'flight-airport-icons', (e) => {
     if (e.features.length) openAirportInfoPanel(e.features[0].properties.icao);
@@ -4143,29 +4164,63 @@ function makeSdfPlaneIcon() {
   return { width: size, height: size, data: new Uint8Array(d.data) };
 }
 
-/** Two crossed runways, no outer ring — clearly non-circular at every zoom
- * level so it never reads as just another aircraft dot. Ported verbatim
- * from aurora's makeAirportIcon (fillRect + rotate only, same broad-
- * compatibility canvas subset as makeSdfPlaneIcon above). */
+/** A map pin — same teardrop silhouette as createPinElement/
+ * createStopPinElement's SVG path (`M12 0C5.4 0 0 5.4 0 12c0 9 12 20 12
+ * 20s12-11 12-20C24 5.4 18.6 0 12 0z`, doubled here for a crisper 48x64
+ * SDF canvas) — filled SOLID (bold, big single mass, unmistakable even at
+ * small icon-size/zoomed-out) with an ATC control-tower glyph knocked out
+ * of it (globalCompositeOperation 'destination-out') as a punched-through
+ * cutout, rather than drawn as thin same-tint lines on top — a thin
+ * detail would vanish at the sizes this layer actually renders at. This
+ * is an SDF image, tinted a single flat color by the layer's icon-color
+ * paint property (see flight-airport-icons below); the cutout works
+ * under that scheme because "no alpha" reads as fully transparent
+ * regardless of tint, so the tower silhouette shows through as a hole no
+ * matter what color the solid pin around it is tinted. Anchor this image
+ * at 'bottom' in the layer layout — the pin's point, not its visual
+ * center, is what should sit on the airport's actual coordinate. */
 function makeSdfAirportIcon() {
-  const size = 64;
+  const w = 48, h = 64;
   const cv = document.createElement('canvas');
-  cv.width = size; cv.height = size;
+  cv.width = w; cv.height = h;
   const ctx = cv.getContext('2d');
   ctx.fillStyle = 'white';
-  ctx.save();
-  ctx.translate(size / 2, size / 2);
-  ctx.save();
-  ctx.rotate(0.26);
-  ctx.fillRect(-4, -24, 8, 48); // primary runway, ~15deg off vertical
-  ctx.restore();
-  ctx.save();
-  ctx.rotate(0.26 + Math.PI / 2);
-  ctx.fillRect(-3.5, -17, 7, 34); // cross runway, perpendicular, shorter
-  ctx.restore();
-  ctx.restore();
-  const d = ctx.getImageData(0, 0, size, size);
-  return { width: size, height: size, data: new Uint8Array(d.data) };
+  ctx.strokeStyle = 'white';
+  ctx.lineJoin = 'round';
+
+  const pin = new Path2D('M24 0C10.8 0 0 10.8 0 24c0 18 24 40 24 40s24-22 24-40C48 10.8 37.2 0 24 0z');
+  ctx.fill(pin); // solid mass, not an outline — this is what makes it read as "thick"
+
+  // Tower glyph, punched out of the solid pin. The silhouette that
+  // actually reads as "control tower" (rather than a goblet/chess-piece —
+  // the first cut of this shape's mistake) needs a sharp WIDTH
+  // DISCONTINUITY, not a smooth taper: a wide flat cab, then an abrupt
+  // step down to a narrow neck, is what makes the cab overhang visually
+  // register. So: antenna, a wide flat-bottomed cab, an abrupt narrow
+  // neck directly under it, a shaft that re-widens gently toward the
+  // base (mast tapering, unrelated to the cab step), and a flat base
+  // platform. Bold/oversized relative to the pin's head on purpose — a
+  // thin cutout would close up and disappear at this layer's smaller
+  // icon-size steps.
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.beginPath();
+  ctx.moveTo(24, 6); ctx.lineTo(24, 13);
+  ctx.lineWidth = 2.2;
+  ctx.stroke(); // antenna
+
+  ctx.beginPath();
+  ctx.moveTo(14, 13); ctx.lineTo(34, 13); ctx.lineTo(32, 21); ctx.lineTo(16, 21); ctx.closePath();
+  ctx.fill(); // wide flat cab (windowed observation room)
+
+  ctx.beginPath();
+  ctx.moveTo(22, 21); ctx.lineTo(26, 21); ctx.lineTo(29, 33); ctx.lineTo(19, 33); ctx.closePath();
+  ctx.fill(); // abrupt narrow neck under the cab, flaring gently to the base — this jump vs the cab's width above is the overhang cue
+
+  ctx.fillRect(15, 33, 18, 4); // base platform
+  ctx.globalCompositeOperation = 'source-over';
+
+  const d = ctx.getImageData(0, 0, w, h);
+  return { width: w, height: h, data: new Uint8Array(d.data) };
 }
 
 /** Populates the flight-airports GeoJSON source from the already-bundled
