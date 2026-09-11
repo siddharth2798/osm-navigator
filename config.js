@@ -143,8 +143,8 @@ export const CONFIG = {
   // Worker/Pages deployment, set this to its absolute origin (e.g.
   // 'https://your-worker.workers.dev') before running `npm run cap:sync`.
   //
-  // This branch's own Worker (see wrangler.jsonc's "name": "aeronav") —
-  // deliberately a DIFFERENT subdomain than main's osm-navigator.*
+  // This branch's own Worker (see wrangler.jsonc's "name": "osm-aeronav")
+  // — deliberately a DIFFERENT subdomain than main's osm-navigator.*
   // deployment, not the same one. They used to share a name/Worker on the
   // (wrong) assumption that Cloudflare's Git integration would redeploy it
   // on every push regardless of branch; confirmed live that only main's
@@ -154,7 +154,12 @@ export const CONFIG = {
   // app despite shipping and passing CI — see wrangler.jsonc's own comment
   // for the full story. This account-subdomain part (siddharthshiv2798)
   // stays the same; only the worker-name part changes with the rename.
-  RESOLVE_MAPS_URL_BASE: 'https://aeronav.siddharthshiv2798.workers.dev',
+  // Must always match wrangler.jsonc's "name" exactly — this app-code
+  // value and the actual live dashboard-created Worker's own name drifted
+  // apart once already (this file said "aeronav", the real deployed
+  // Worker was "osm-aeronav") and it took a live curl comparing the two
+  // to catch — see the wrangler.jsonc comment for that whole story.
+  RESOLVE_MAPS_URL_BASE: 'https://osm-aeronav.siddharthshiv2798.workers.dev',
 
   // --- Navigation / voice guidance behaviour ----------------------------------
   // The far/near callout distances are speed-scaled (see dynamicVoiceLeadM in

@@ -9,11 +9,18 @@
   // were landing in a preview environment the whole time, never the URL
   // config.js's RESOLVE_MAPS_URL_BASE actually points the app at (caught
   // when the deployed /api/flights still answered with the pre-OpenSky
-  // adsb.lol source, long after that switch shipped here). Giving this
-  // branch its own Worker name makes it a genuinely separate deployment —
-  // Cloudflare's Git integration creates a new Worker for a name it
-  // hasn't seen before, on the next push, no dashboard access needed.
-  "name": "aeronav",
+  // adsb.lol source, long after that switch shipped here).
+  //
+  // This got renamed once already (to "aeronav") to fix exactly that, but
+  // the dashboard-side Workers Builds project that was actually created
+  // ended up named "osm-aeronav" instead — a naming mismatch discovered
+  // live via the EXACT SAME adsb.lol symptom recurring a second time,
+  // against a Worker that (unlike the first shared-Worker case) genuinely
+  // does exist and respond, just under a different hostname than this
+  // file specified. Renamed here to match the real, live deployment
+  // rather than asking for the dashboard project to be recreated again —
+  // config.js's RESOLVE_MAPS_URL_BASE must always match this name exactly.
+  "name": "osm-aeronav",
   "compatibility_date": "2026-08-16",
   "main": "./worker.js",
   "assets": {
