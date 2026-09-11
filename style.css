@@ -17,6 +17,18 @@
   --accent-2: #22c55e;
   --danger: #ef4444;
   --border: #2a3547;
+  /* WCAG 1.4.11 (Non-text Contrast) needs 3:1 for a UI-component boundary
+     that stands on its own — --border alone measures 1.48:1 on --bg and
+     1.31:1 on --panel, both well under that. Rather than raising --border
+     itself (and changing every shadowed card's edge too, where --shadow
+     already carries the separation non-color-dependently — no reason to
+     touch those), this is a second token for the specific places a border
+     IS the only boundary cue: input fields and a couple of standalone,
+     unshadowed cards/dividers. Computed directly (WCAG relative-luminance
+     formula, not estimated) at 4.16:1 on --bg and 3.27:1 on --panel-2 —
+     comfortable margin above 3:1 against both, since different elements
+     using this sit on one or the other. */
+  --border-strong: #66799a;
   --radius: 16px;
   --shadow: 0 8px 28px rgba(0,0,0,0.5);
   --docs-body: #c3cede;
@@ -260,7 +272,7 @@ button {
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong); /* unshadowed, often floats directly on the map — see --border-strong's own comment (WCAG 1.4.11) */
   color: var(--text);
   font-size: 13px;
   font-weight: 500;
@@ -651,7 +663,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-size: 15px;
   padding: 10px 10px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong); /* text input — see --border-strong's own comment (WCAG 1.4.11) */
   background: var(--panel-2);
   color: var(--text);
   margin-bottom: 8px;
@@ -692,7 +704,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-size: 14px;
   padding: 9px 10px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong); /* text input — see --border-strong's own comment (WCAG 1.4.11) */
   background: var(--panel-2);
   color: var(--text);
 }
@@ -740,6 +752,24 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-weight: 600;
 }
 
+/* "Why this route" transparency chip — see its own comment in index.html.
+   Deliberately a plain <button> styled as a card (not a toast/snackbar),
+   since it's meant to be readable and dismissible at a glance, not a
+   fire-and-forget notification. */
+#route-why-chip {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+#route-why-chip.hidden { display: none; }
+#route-why-headline { font-size: 13px; font-weight: 700; color: var(--accent-2); }
+#route-why-detail { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
 /* Live speed readout + speed-limit sign, side by side — a second, smaller
    row under the next-turn banner rather than a separately-positioned
    floating badge, so it inherits #top-overlay's placement/safe-area
@@ -762,6 +792,11 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-weight: 700;
   color: var(--text);
 }
+/* Flags driving over the posted limit — see updateSpeedText's own comment
+   on why this is never color alone: the "▲ " glyph it prefixes the text
+   with is the non-color cue, this red background/ring is reinforcement
+   for sighted users, not the sole signal. */
+#nav-speed.over-limit { background: var(--danger); color: #fff; box-shadow: 0 8px 28px rgba(239,68,68,0.4); }
 
 /* Round red-ring speed-limit sign — deliberately styled like a real Indian
    road sign (white face, red ring), not a rounded-square pill like every
@@ -1123,7 +1158,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   padding: 8px 12px;
   border-radius: 12px;
   background: var(--panel-2);
-  border: 1.5px solid var(--border);
+  border: 1.5px solid var(--border-strong); /* unshadowed card — see --border-strong's own comment (WCAG 1.4.11) */
   color: var(--text);
   text-align: left;
 }
@@ -1271,6 +1306,64 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   margin-top: 0;
 }
 .route-chips-popover.hidden { display: none; }
+
+/* Hazard-report popover (see openHazardReportPopover in app.js) — right-
+   anchored like .route-chips-popover, since #hazard-report-btn lives in the
+   same right-side #map-controls stack. */
+.hazard-report-popover {
+  position: fixed;
+  right: 14px;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+  width: 200px;
+}
+.hazard-report-popover.hidden { display: none; }
+.hazard-report-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+.hazard-report-opt:active { background: var(--panel-2); }
+.hazard-report-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
+
+/* Map pins dropped via the hazard-report popover (see
+   createHazardMarkerElement/refreshHazardMarkers in app.js). "hazard" is
+   always full-strength; roadwork/stopped are muted even when enabled —
+   the visual expression of "opt-in AND quiet", not just opt-in.
+   position:absolute is required here, not cosmetic — this is the element
+   passed straight to `new maplibregl.Marker({element:...})`, and MapLibre
+   positions a marker by transforming its root element directly; a
+   default-static root drifts away from its real lat/lon on zoom (same bug
+   already fixed once for the nav puck — see .poi-marker-wrap above for the
+   other place this pattern is already followed). */
+.hazard-marker {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  border: 2px solid var(--bg);
+}
+.hazard-marker.cat-hazard { background: var(--danger); }
+.hazard-marker.cat-roadwork, .hazard-marker.cat-stopped { background: var(--panel-2); opacity: 0.72; width: 22px; height: 22px; font-size: 11px; }
 
 /* Inside the popover, chips become full-width list rows (icon + label,
    left-aligned) rather than the small centered pill shape used in the
@@ -1449,7 +1542,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   justify-content: space-between;
   align-items: baseline;
   padding: 14px 2px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-strong); /* standalone divider directly on --bg, no shadow anywhere nearby — see --border-strong's own comment (WCAG 1.4.11) */
   font-size: 15px;
 }
 .trip-summary-row:last-child { border-bottom: none; }
@@ -1566,7 +1659,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--panel-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong); /* select control — see --border-strong's own comment (WCAG 1.4.11) */
   color: var(--text);
   font-size: 13px;
   font-family: inherit;
@@ -1611,7 +1704,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   font-size: 15px;
   padding: 10px;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong); /* text input — see --border-strong's own comment (WCAG 1.4.11) */
   background: var(--panel-2);
   color: var(--text);
 }

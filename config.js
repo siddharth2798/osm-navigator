@@ -122,6 +122,15 @@ export const CONFIG = {
   // never as wrong as snapping onto the wrong road entirely).
   SPEED_LIMIT_MAX_POINTS: 500,
 
+  // How far over the posted limit (km/h) before #nav-speed flags it —
+  // see markOverSpeedLimit in app.js. Deliberately a buffer, not a
+  // 0-tolerance comparison: GPS-derived speed and a real speedometer
+  // routinely differ by a few km/h, and nagging over a 1-2 km/h overage
+  // would just get tuned out. Never applied to a "guessed" limit (Valhalla's
+  // own road-class default, not a real posted maxspeed tag) — only a
+  // confirmed limit is trustworthy enough to warn against.
+  SPEED_OVER_LIMIT_BUFFER_KMH: 8,
+
   // --- Map tiles: OpenFreeMap (no API key needed) -----------------------------
   MAP_STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
 
@@ -325,9 +334,15 @@ export const CONFIG = {
   INCLINE_LEAD_MIN_M: 15,
   INCLINE_LEAD_MAX_M: 80,
 
-  // Camera behaviour while auto-following during navigation.
+  // Camera behaviour while auto-following during navigation. NAV_PITCH is
+  // deliberately capped well short of MapLibre's own max (60°, an
+  // over-the-shoulder-style tilt) — a documented Google Maps complaint is
+  // that its own full-tilt 3D view "does a weird 3D over-the-shoulder view
+  // where you can't see clearly when driving in that view". A moderate,
+  // fixed ceiling keeps the "which lane/building is that" depth cue 3D
+  // tilt gives without the visibility cost of the extreme end of it.
   NAV_ZOOM: 17,
-  NAV_PITCH: 45,
+  NAV_PITCH: 32,
   FOLLOW_EASE_MS: 700,
 
   // Passed straight to navigator.geolocation.watchPosition.

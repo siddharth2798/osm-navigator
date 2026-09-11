@@ -305,6 +305,18 @@
       </div>
     </div>
 
+    <!-- "Why this route" transparency chip — makes a silent backend decision
+         visible (see showRouteWhyChip in app.js). Currently only used for a
+         live traffic reroute (maybeRerouteForTraffic already requires a real
+         15%+ flow-quality improvement, CONFIG.TRAFFIC_REROUTE_MIN_IMPROVEMENT,
+         before switching at all — this just surfaces that same number
+         instead of switching silently). Dismissible, and auto-hides itself;
+         never blocks the banner above it. -->
+    <button id="route-why-chip" class="hidden" type="button" role="status">
+      <div id="route-why-headline"></div>
+      <div id="route-why-detail"></div>
+    </button>
+
     <!-- "I'm on the train"/"I'm on the boat" manual boarding confirm — shown
          by updateTransitRideLeg the moment GPS is within
          CONFIG.TRANSIT_BOARDING_RADIUS_M of the current ride leg's origin,
@@ -382,6 +394,14 @@
         <circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20 L15.2 15.2"/>
       </svg>
     </button>
+    <!-- Personal hazard reporting (drive mode only) — see idb.js's
+         hazardReports store comment: device-local, never shared. Same
+         show/hide precedent as #route-search-btn above. -->
+    <button id="hazard-report-btn" class="fab hidden" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Report a hazard">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3 L22 20 H2 Z" stroke-linejoin="round"/><path d="M12 9.5 v5"/><circle cx="12" cy="17" r="0.7" fill="currentColor" stroke="none"/>
+      </svg>
+    </button>
     <button id="zoom-in-btn" class="fab small" type="button" aria-label="Zoom in">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"/></svg>
     </button>
@@ -438,6 +458,26 @@
         <path d="M9.3 9.3 a2.7 2.7 0 1 1 3.9 2.4 c-0.9 0.5 -1.2 0.9 -1.2 1.8"/>
         <circle cx="12" cy="16.7" r="0.7" fill="currentColor" stroke="none"/>
       </svg>
+    </button>
+  </div>
+
+  <!-- Hazard-category popover — toggled by #hazard-report-btn above. Same
+       floating-popover technique as #map-style-popover: positioned above
+       the trigger button via its live bounding rect (see
+       openHazardReportPopover in app.js). Picking a category drops a
+       personal, device-local pin at your current GPS position. -->
+  <div id="hazard-report-popover" class="hazard-report-popover hidden" role="menu" aria-label="Report a hazard">
+    <button type="button" class="hazard-report-opt" data-category="hazard" role="menuitem">
+      <span class="hazard-report-icon hazard-icon-hazard" aria-hidden="true">⚠</span>
+      Hazard / crash
+    </button>
+    <button type="button" class="hazard-report-opt" data-category="roadwork" role="menuitem">
+      <span class="hazard-report-icon hazard-icon-roadwork" aria-hidden="true">🚧</span>
+      Roadwork
+    </button>
+    <button type="button" class="hazard-report-opt" data-category="stopped" role="menuitem">
+      <span class="hazard-report-icon hazard-icon-stopped" aria-hidden="true">🚗</span>
+      Stopped vehicle
     </button>
   </div>
 
@@ -742,6 +782,40 @@
             <div class="docs-toggle-hint">Live traffic conditions and a Places Search fallback during drive navigation, via TomTom. Only does anything if this deployment has a TomTom API key configured server-side — otherwise turning this on has no effect.</div>
           </div>
           <button id="tomtom-toggle" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle TomTom live traffic"></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Personal, device-local hazard pins — see idb.js's hazardReports store
+         comment for why these are never shared with other users. Only
+         "Hazard / crash" is on by default; the lower-severity categories are
+         opt-in and rendered muted even once enabled — see refreshHazardMarkers
+         in app.js. This mirrors Waze's own fix for its most common complaint
+         (alert fatigue from low-value hazard types): per-category toggles. -->
+    <section class="docs-section">
+      <h3 class="docs-section-title">Hazard alerts</h3>
+      <p class="docs-blurb">Pins you drop while driving (via the ⚠ button during navigation) — visible only on this device, never shared. Only high-severity hazards show by default.</p>
+      <div class="docs-group">
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Hazard / crash</div>
+            <div class="docs-toggle-hint">Shown prominently on the map. On by default.</div>
+          </div>
+          <button id="hazard-toggle-hazard" type="button" class="toggle-switch" role="switch" aria-checked="true" aria-label="Toggle hazard/crash pins"></button>
+        </div>
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Roadwork</div>
+            <div class="docs-toggle-hint">Shown muted, off by default — a documented Waze complaint is that lower-value alert types like this are "more of a distraction" than useful.</div>
+          </div>
+          <button id="hazard-toggle-roadwork" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle roadwork pins"></button>
+        </div>
+        <div class="docs-toggle-row">
+          <div class="docs-toggle-text">
+            <div class="docs-toggle-label">Stopped vehicle</div>
+            <div class="docs-toggle-hint">Shown muted, off by default — same reasoning as Roadwork above.</div>
+          </div>
+          <button id="hazard-toggle-stopped" type="button" class="toggle-switch" role="switch" aria-checked="false" aria-label="Toggle stopped-vehicle pins"></button>
         </div>
       </div>
     </section>

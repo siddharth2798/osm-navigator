@@ -6,6 +6,7 @@ import {
   addDownloadedArea, getDownloadedAreas, deleteDownloadedArea,
   saveCurrentTrip, loadCurrentTrip, clearCurrentTrip,
   setQuickPlace, getQuickPlace,
+  addHazardReport, getHazardReports,
 } from './idb.js';
 import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocationEnabled } from './native-location.js';
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
@@ -45,6 +46,9 @@ const el = {
   debugModeToggle: document.getElementById('debug-mode-toggle'),
   selfHostedValhallaToggle: document.getElementById('self-hosted-valhalla-toggle'),
   tomtomToggle: document.getElementById('tomtom-toggle'),
+  hazardToggleHazard: document.getElementById('hazard-toggle-hazard'),
+  hazardToggleRoadwork: document.getElementById('hazard-toggle-roadwork'),
+  hazardToggleStopped: document.getElementById('hazard-toggle-stopped'),
   voiceSelect: document.getElementById('voice-select'),
   searchCard: document.getElementById('search-card'),
   searchSimple: document.getElementById('search-simple'),
@@ -127,6 +131,8 @@ const el = {
   endNavBtn: document.getElementById('end-nav-btn'),
   mapControls: document.getElementById('map-controls'),
   routeSearchBtn: document.getElementById('route-search-btn'),
+  hazardReportBtn: document.getElementById('hazard-report-btn'),
+  hazardReportPopover: document.getElementById('hazard-report-popover'),
   zoomInBtn: document.getElementById('zoom-in-btn'),
   zoomOutBtn: document.getElementById('zoom-out-btn'),
   locateBtn: document.getElementById('locate-btn'),
@@ -134,6 +140,9 @@ const el = {
   navBannerIcon: document.getElementById('nav-banner-icon'),
   navBannerInstruction: document.getElementById('nav-banner-instruction'),
   navBannerDistance: document.getElementById('nav-banner-distance'),
+  routeWhyChip: document.getElementById('route-why-chip'),
+  routeWhyHeadline: document.getElementById('route-why-headline'),
+  routeWhyDetail: document.getElementById('route-why-detail'),
   navSpeedRow: document.getElementById('nav-speed-row'),
   navSpeed: document.getElementById('nav-speed'),
   speedLimitSign: document.getElementById('speed-limit-sign'),
@@ -212,6 +221,7 @@ const state = {
   destMarker: null,
   stopMarkers: [],     // numbered pins for intermediate stops, in visit order
   poiMarkers: [],      // one per candidate in the current category/along-route search, cleared on next search or selection
+  hazardMarkers: [],   // one per rendered hazard pin — see refreshHazardMarkers
   elevationHighlightMarker: null, // shows where a tapped elevation-chart point sits on the actual route, cleared with the chart itself
   currentLegIndex: 0,  // which leg of a multi-stop trip we're currently on — see updateActiveManeuver
   currentManeuverIdx: 0, // ratcheted forward-only index into state.route.maneuvers — see updateActiveManeuver; reset to 0 alongside spokenFar/spokenNear/spokenContinue whenever state.route is replaced (renderRoute, startNavigation)
@@ -234,6 +244,8 @@ const state = {
   arrivalCandidateStreak: 0, // consecutive fixes in a row within ARRIVAL_RADIUS_M — see the arrival check in updateActiveManeuver
   lastFix: null,       // {lng, lat, t} of the previous GPS fix, for bearing fallback
   lastHeading: 0,
+  lastSpeedLimitKmh: null, // most recently CONFIRMED (non-guessed) posted limit — see updateSpeedLimitSign/markOverSpeedLimit
+
   offRouteSince: null, // timestamp when we first went off-route, or null
   isRerouting: false,
   pendingRerouteFrom: null, // last known-good lngLat we owe a reroute to, once connectivity returns
@@ -1164,6 +1176,87 @@ function showPoiMarkers(results, onSelect) {
     );
   });
 }
+
+function createHazardMarkerElement(category) {
+  const div = document.createElement('div');
+  div.className = `hazard-marker cat-${category}`;
+  div.textContent = category === 'hazard' ? '⚠' : category === 'roadwork' ? '🚧' : '🚗';
+  return div;
+}
+
+/** Re-renders every hazard-pin marker from scratch against
+ * getHazardReports() — the whole store is small (personal, device-local
+ * pins, never shared, see idb.js) so refetching+rebuilding on every change
+ * is simpler than diffing, same trade-off showPoiMarkers already makes for
+ * search results. Two filters apply: hazardCategoryEnabled (the Settings
+ * toggles) and a 24h freshness window, a lightweight stand-in for the
+ * server-side expiry a real shared hazard layer (Waze) would have — these
+ * are just stale trip notes past that point, not still-useful now. */
+const HAZARD_REPORT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+async function refreshHazardMarkers() {
+  state.hazardMarkers.forEach((m) => m.remove());
+  state.hazardMarkers = [];
+  let reports;
+  try {
+    reports = await getHazardReports();
+  } catch (err) {
+    resolverDebugLog(`Could not load hazard reports: ${err.message}`, 'error');
+    return;
+  }
+  const cutoff = Date.now() - HAZARD_REPORT_MAX_AGE_MS;
+  reports
+    .filter((r) => hazardCategoryEnabled[r.category] && r.createdAt >= cutoff)
+    .forEach((r) => {
+      const markerEl = createHazardMarkerElement(r.category);
+      state.hazardMarkers.push(
+        new maplibregl.Marker({ element: markerEl, anchor: 'center' }).setLngLat([r.lon, r.lat]).addTo(map),
+      );
+    });
+}
+
+/** Reveals the hazard-category popover positioned above #hazard-report-btn —
+ * same live-bounding-rect technique as openMapStylePopover/
+ * openRouteChipsPopover. */
+function openHazardReportPopover() {
+  const btnRect = el.hazardReportBtn.getBoundingClientRect();
+  el.hazardReportPopover.style.bottom = `${window.innerHeight - btnRect.top + 10}px`;
+  el.hazardReportPopover.classList.remove('hidden');
+  el.hazardReportBtn.classList.add('active');
+  el.hazardReportBtn.setAttribute('aria-expanded', 'true');
+  pushBackLayer(closeHazardReportPopover);
+  document.addEventListener('pointerdown', onOutsideHazardReportPointerDown, { capture: true });
+}
+function closeHazardReportPopover() {
+  el.hazardReportPopover.classList.add('hidden');
+  el.hazardReportBtn.classList.remove('active');
+  el.hazardReportBtn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', onOutsideHazardReportPointerDown, { capture: true });
+}
+function onOutsideHazardReportPointerDown(e) {
+  if (el.hazardReportPopover.contains(e.target) || el.hazardReportBtn.contains(e.target)) return;
+  goBackInApp();
+}
+el.hazardReportBtn.addEventListener('click', () => {
+  if (el.hazardReportPopover.classList.contains('hidden')) openHazardReportPopover();
+  else goBackInApp();
+});
+el.hazardReportPopover.querySelectorAll('.hazard-report-opt').forEach((opt) => {
+  opt.addEventListener('click', async () => {
+    forgetBackLayerIfTop(closeHazardReportPopover);
+    closeHazardReportPopover();
+    if (!state.lastFix) { showStatus('Still getting your location — try again in a moment.', 'error'); return; }
+    try {
+      await addHazardReport({ category: opt.dataset.category, lat: state.lastFix.lat, lon: state.lastFix.lng });
+      // Reported category might itself be toggled off in Settings — still
+      // worth confirming the drop happened even if it won't render until
+      // the user turns that category's visibility on.
+      if (hazardCategoryEnabled[opt.dataset.category]) await refreshHazardMarkers();
+      showStatus('Hazard reported — visible on your map only.', 'success');
+    } catch (err) {
+      showStatus(`Could not save that report: ${err.message}`, 'error');
+    }
+  });
+});
 
 function createStopPinElement(colorHex, number) {
   const div = document.createElement('div');
@@ -2937,6 +3030,26 @@ async function runTrafficCheckin(traveledM, remainingM) {
  * always just hand back the exact same route. Shares state.isRerouting
  * with checkDeviation/triggerReroute so the two can never fire at once —
  * a genuinely off-route driver takes priority over a traffic comparison. */
+let routeWhyChipHideTimer = null;
+/** Shows the "why this route" transparency chip — see its own comment in
+ * index.html. Auto-hides itself after a while (long enough to actually
+ * read, short enough not to become permanent nav-banner clutter); tapping
+ * it dismisses early. Replaces whatever it was previously showing rather
+ * than stacking, so a second reroute inside the auto-hide window just
+ * refreshes the numbers instead of piling up chips. */
+function showRouteWhyChip(headline, detail) {
+  el.routeWhyHeadline.textContent = headline;
+  el.routeWhyDetail.textContent = detail;
+  el.routeWhyChip.classList.remove('hidden');
+  clearTimeout(routeWhyChipHideTimer);
+  routeWhyChipHideTimer = setTimeout(hideRouteWhyChip, 10000);
+}
+function hideRouteWhyChip() {
+  clearTimeout(routeWhyChipHideTimer);
+  el.routeWhyChip.classList.add('hidden');
+}
+el.routeWhyChip.addEventListener('click', hideRouteWhyChip);
+
 async function maybeRerouteForTraffic(traveledM) {
   if (state.isRerouting || !state.navigating || state.travelMode !== 'drive' || !state.route) return;
   const now = Date.now();
@@ -3005,6 +3118,11 @@ async function maybeRerouteForTraffic(traveledM) {
     await renderRoute(best.trip, { fitView: false, stops: remainingStops }); // camera keeps following the puck, same as triggerReroute
     speak('Rerouting to avoid traffic ahead.');
     showStatus('Rerouting to avoid traffic ahead.', 'info');
+    // Makes the CONFIG.TRAFFIC_REROUTE_MIN_IMPROVEMENT threshold that just
+    // gated this switch visible instead of silent — the same flow-ratio
+    // improvement that decided to reroute, not a separately-invented number.
+    const flowImprovementPct = Math.round((best.result.ratio - currentResult.ratio) * 100);
+    showRouteWhyChip('⏱ Rerouted for traffic', `Traffic flow ~${flowImprovementPct}% better on this route ahead`);
   } catch (err) {
     resolverDebugLog(`Traffic reroute attempt failed: ${err.message}`, 'error');
   } finally {
@@ -3258,6 +3376,42 @@ if (el.tomtomToggle) {
     resolverDebugLog(`TomTom: live traffic/places turned ${tomtomFeaturesEnabled ? 'on' : 'off'} via the Settings toggle.`);
   });
 }
+
+// Per-category visibility for personal hazard pins (see idb.js's
+// hazardReports store comment) — same localStorage-override-of-a-default
+// pattern as useSelfHostedValhalla/tomtomFeaturesEnabled above, one per
+// category since each defaults differently (hazard on, the other two off —
+// see the "calm hazard reporting" concept doc for why). refreshHazardMarkers
+// is defined later in this file but hoisted (a function declaration), so
+// referencing it here in a click handler that only ever runs after the
+// whole module has finished loading is safe.
+const HAZARD_CATEGORIES = [
+  { key: 'hazard', toggleEl: 'hazardToggleHazard', defaultOn: true },
+  { key: 'roadwork', toggleEl: 'hazardToggleRoadwork', defaultOn: false },
+  { key: 'stopped', toggleEl: 'hazardToggleStopped', defaultOn: false },
+];
+const hazardCategoryEnabled = {};
+HAZARD_CATEGORIES.forEach(({ key, toggleEl, defaultOn }) => {
+  const storageKey = `hazardCategory_${key}`;
+  const stored = localStorage.getItem(storageKey);
+  hazardCategoryEnabled[key] = stored !== null ? stored === '1' : defaultOn;
+  const btn = el[toggleEl];
+  if (!btn) return;
+  btn.classList.toggle('active', hazardCategoryEnabled[key]);
+  btn.setAttribute('aria-checked', String(hazardCategoryEnabled[key]));
+  btn.addEventListener('click', () => {
+    hazardCategoryEnabled[key] = !hazardCategoryEnabled[key];
+    localStorage.setItem(storageKey, hazardCategoryEnabled[key] ? '1' : '0');
+    btn.classList.toggle('active', hazardCategoryEnabled[key]);
+    btn.setAttribute('aria-checked', String(hazardCategoryEnabled[key]));
+    refreshHazardMarkers();
+  });
+});
+// Initial render — hazard pins are visible any time the map is up, not just
+// during navigation; only the report button (which adds new ones) is
+// drive-nav-only. mapLoad guards against calling maplibregl.Marker before
+// the map instance exists, same as every other post-load setup in this file.
+mapLoad.then(() => { refreshHazardMarkers(); });
 
 // Captured before the console.* patch further below ever runs, so
 // resolverDebugLog's own logging (and the patch itself) can call the real
@@ -4619,12 +4773,18 @@ el.routeSearchBtn.addEventListener('click', () => {
  * button. */
 function showRouteSearchFeature() {
   el.routeSearchBtn.classList.remove('hidden');
+  el.hazardReportBtn.classList.remove('hidden'); // drive-only, same scope as the search FAB — see its own doc comment in index.html
 }
 function hideRouteSearchFeature() {
   el.routeSearchBtn.classList.add('hidden');
   if (!el.routeChips.classList.contains('hidden')) {
     forgetBackLayerIfTop(closeRouteChipsPopover);
     closeRouteChipsPopover();
+  }
+  el.hazardReportBtn.classList.add('hidden');
+  if (!el.hazardReportPopover.classList.contains('hidden')) {
+    forgetBackLayerIfTop(closeHazardReportPopover);
+    closeHazardReportPopover();
   }
 }
 
@@ -9293,10 +9453,20 @@ window.addEventListener('online', () => {
  * position data is used. Visibility of #nav-speed itself is controlled by
  * startNavigation/endNavigation, not here, so it doesn't flicker in and out
  * as individual fixes come and go without a speed value. */
+/** Pairs the live speed reading against whichever posted limit
+ * updateSpeedLimitSign most recently confirmed (state.lastSpeedLimitKmh —
+ * read here rather than passed in, since the two update on independent
+ * cadences: a fix updates speed every GPS tick, but the limit only changes
+ * at road-segment boundaries). Over-limit is flagged with BOTH a color
+ * change AND a "▲" glyph prefix — never color alone, since red/green
+ * alone is invisible to color-blind users (WCAG 1.4.1, see the map
+ * redesign concept doc's "non-color speed-limit signal" section). */
 function updateSpeedText(speed) {
-  el.navSpeed.textContent = typeof speed === 'number' && !Number.isNaN(speed)
-    ? `${Math.max(0, Math.round(speed * 3.6))} km/h`
-    : '— km/h';
+  const speedKmh = typeof speed === 'number' && !Number.isNaN(speed) ? Math.max(0, Math.round(speed * 3.6)) : null;
+  const overLimit = speedKmh != null && state.lastSpeedLimitKmh != null
+    && speedKmh > state.lastSpeedLimitKmh + CONFIG.SPEED_OVER_LIMIT_BUFFER_KMH;
+  el.navSpeed.textContent = speedKmh != null ? `${overLimit ? '▲ ' : ''}${speedKmh} km/h` : '— km/h';
+  el.navSpeed.classList.toggle('over-limit', overLimit);
 }
 
 function onPositionUpdate(pos) {
@@ -9443,12 +9613,16 @@ function updateLiveAscent(traveledM) {
  * identical here, and both should just hide the sign, not show a wrong
  * number). */
 function updateSpeedLimitSign(traveledM) {
-  if (state.travelMode !== 'drive' || !state.route.speedLimitProfile) { el.speedLimitSign.classList.add('hidden'); return; }
+  if (state.travelMode !== 'drive' || !state.route.speedLimitProfile) { state.lastSpeedLimitKmh = null; el.speedLimitSign.classList.add('hidden'); return; }
   const seg = speedLimitAt(state.route.speedLimitProfile, traveledM);
-  if (!seg) { el.speedLimitSign.classList.add('hidden'); return; }
+  if (!seg) { state.lastSpeedLimitKmh = null; el.speedLimitSign.classList.add('hidden'); return; }
   el.speedLimitValue.textContent = String(Math.round(seg.speedLimitKmh));
   el.speedLimitSign.classList.toggle('guessed', seg.isGuessed);
   el.speedLimitSign.classList.remove('hidden');
+  // Only a confirmed limit (a real posted maxspeed tag) is trustworthy
+  // enough to flag an overage against — see markOverSpeedLimit/
+  // updateSpeedText and SPEED_OVER_LIMIT_BUFFER_KMH's own comment.
+  state.lastSpeedLimitKmh = seg.isGuessed ? null : seg.speedLimitKmh;
 }
 
 let lastTripResaveAt = 0;
@@ -9736,6 +9910,7 @@ async function startNavigation({ resuming = false } = {}) {
     el.navSpeedRow.classList.remove('hidden');
     updateSpeedText(null); // fresh dash until the first fix arrives, rather than a stale reading left over from a previous trip
     el.speedLimitSign.classList.add('hidden'); // fresh start too — no stale sign from a previous trip until the first fix resolves one
+    hideRouteWhyChip(); // no stale reroute explanation left over from a previous trip
     refreshWeatherBadge(); // stays hidden until the first fix arrives (state.lastFix is null right after this reset)
     el.bottomSheet.classList.remove('expanded', 'half');
     el.startNavBtn.classList.add('hidden');
@@ -9833,6 +10008,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   state.lastTrafficRerouteAt = null; // not reset by resetTrafficTracking itself, see its own comment
 
   el.navBanner.classList.add('hidden');
+  hideRouteWhyChip();
   el.navSpeedRow.classList.add('hidden');
   refreshWeatherBadge(); // re-evaluate now state.navigating is false — shows a place card's weather if one's still open, else hides
   el.endNavBtn.classList.add('hidden');
@@ -10295,6 +10471,7 @@ function endTransitNavigation({ arrived = false } = {}) {
   else if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 
   el.navBanner.classList.add('hidden');
+  hideRouteWhyChip();
   el.navSpeedRow.classList.add('hidden');
   el.boardConfirmBtn.classList.add('hidden');
   el.endNavBtn.classList.add('hidden');
@@ -10446,3 +10623,4 @@ if (shareTargetText) {
     }
   })();
 }
+
