@@ -267,9 +267,9 @@ button {
   white-space: nowrap;
 }
 .chip:active { background: var(--accent); border-color: var(--accent); color: #fff; }
-/* Persistent toggle state (see #open-now-chip in index.html) — distinct
-   from :active above, which is only the momentary press feedback every
-   other (search-triggering) chip already has. */
+/* Persistent toggle state (see .open-now-toggle and the flight-size-filter
+   chips) — distinct from :active above, which is only the momentary press
+   feedback every other (search-triggering) chip already has. */
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .dot { flex-shrink: 0; width: 10px; height: 10px; }
@@ -375,6 +375,40 @@ button {
   cursor: default;
 }
 .suggestions li.loading:active { background: none; }
+
+/* Inline empty-state row for a category search that comes back with zero
+   matches (see renderSuggestionResults's openNowToggle branch) — kept
+   inside the (still-open) list rather than closing it and toasting a
+   message, specifically so the "Open now" toggle row right above it stays
+   reachable without having to reopen the search. */
+.suggestions li.empty { color: var(--text-dim); cursor: default; }
+.suggestions li.empty:active { background: none; }
+
+/* "Open now" toggle row — see createOpenNowToggleRow in app.js. Sticky
+   within its own list's scroll container (.suggestions/#poi-results-list
+   both scroll internally), so it stays visible pinned above the results
+   while scrolling a long list, the same way Google Maps pins its own
+   filter row above search results — instead of the old horizontally-
+   scrolled chip, which was both hard to reach (9th of 9 chips) and, once
+   results appeared, physically hidden underneath this very dropdown. */
+.suggestions-filter-row {
+  position: sticky;
+  top: -4px;
+  z-index: 2;
+  margin: -4px -4px 6px;
+  padding: 6px 4px 4px;
+  background: var(--panel-2);
+}
+/* #poi-results-list has no top padding of its own (unlike .suggestions,
+   which this rule's negative margins are tuned for) and sits on
+   var(--panel) (#bottom-sheet's own background), not var(--panel-2) — see
+   the matching override on #poi-results-list below. */
+#poi-results-list .suggestions-filter-row { margin: 0 0 8px; padding: 8px 0 0; background: var(--panel); }
+/* Otherwise the generic ".suggestions li:active" rule above also flashes
+   the whole row accent-color on tap, fighting with .open-now-toggle's own
+   :active/.active state — same "not a normal selectable row" exclusion
+   already applied to the loading row. */
+.suggestions li.suggestions-filter-row:active { background: none; }
 
 .suggestions li.quick-option { display: flex; align-items: center; gap: 10px; color: var(--accent); font-weight: 500; }
 .suggestions li.quick-option:active { background: var(--accent); color: #fff; }
