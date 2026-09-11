@@ -1131,6 +1131,13 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .route-option-dist { font-size: 15px; font-weight: 700; }
 .route-option-time { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 .route-option-tag { font-size: 11px; color: var(--accent); font-weight: 600; margin-top: 3px; }
+/* Matches a card to its actual line color on the map (see F1 in the UX
+   audit) — the swatch `i` is set inline per-card in paintRouteOptionCards
+   since its color is data (the option's own selected/alternate state), not
+   a fixed style. Only rendered with 2+ options; a lone option has nothing
+   to visually distinguish itself from. */
+.route-option-swatch { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-dim); margin-bottom: 5px; }
+.route-option-swatch i { width: 14px; height: 4px; border-radius: 2px; flex-shrink: 0; }
 /* Walk-mode elevation-gain badge — a second, less prominent line than
    .route-option-tag (dimmer color) since it's informational context, not a
    headline callout like "Fastest"/"Shortest". Starts hidden until its own
@@ -1271,6 +1278,51 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   margin-top: 0;
 }
 .route-chips-popover.hidden { display: none; }
+
+/* Map style popover (see openMapStylePopover in app.js) — same floating
+   card language as .route-chips-popover but anchored LEFT (mirroring
+   #map-controls-left) and laid out as a short horizontal row since there
+   are only ever 2 options, not a scrolling list. */
+.map-style-popover {
+  position: fixed;
+  left: 14px;
+  z-index: 22;
+  display: flex;
+  gap: 8px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+.map-style-popover.hidden { display: none; }
+.map-style-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 64px;
+  padding: 6px;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+.map-style-opt:active { background: var(--panel-2); }
+.map-style-opt[aria-checked="true"] { color: var(--text); }
+.map-style-thumb {
+  width: 52px;
+  height: 38px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-size: cover;
+  background-position: center;
+}
+.map-style-opt[aria-checked="true"] .map-style-thumb { border-color: var(--accent); }
+/* Small representative swatches, not live map screenshots — cheap, no
+   asset to ship/keep in sync, and reads clearly at 52x38px. */
+.map-style-thumb-standard { background: linear-gradient(160deg, #eee6d3 0%, #d7e3c8 60%, #c8dcef 100%); }
+.map-style-thumb-satellite { background: linear-gradient(160deg, #4a5a3c 0%, #33432c 55%, #24303a 100%); }
 
 /* Inside the popover, chips become full-width list rows (icon + label,
    left-aligned) rather than the small centered pill shape used in the
@@ -1500,7 +1552,13 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 .docs-section-first .docs-section-title { margin-top: 0; }
 .docs-blurb { margin: 0 2px 10px; font-size: 13px; color: var(--docs-body); line-height: 1.45; }
 
-.docs-group { background: var(--panel); border-radius: var(--radius); overflow: hidden; }
+/* Was background-only (no border/shadow) — visually indistinguishable from
+   the panel's own --bg since --panel (#182130) and --bg (#10151c) are only
+   a couple of lightness steps apart, so this read as one continuous flat
+   list rather than a grouped card (UX audit finding F2). Every other
+   floating surface in the app (search card, route-option cards, POI card)
+   reinforces its edge with var(--shadow) too; this now matches. */
+.docs-group { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 
 .docs-item { border-bottom: 1px solid var(--border); }
 .docs-item:last-child { border-bottom: none; }
