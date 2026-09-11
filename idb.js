@@ -9,20 +9,13 @@ import { CONFIG } from './config.js';
 //   downloadedAreas — metadata for each offline tile download
 //   currentTrip    — a single "resume where I left off" record
 //   quickPlaces    — Home/Work one-tap shortcuts (fixed keys 'home'/'work')
-//   hazardReports  — personal, device-local hazard pins (category, lat, lon,
-//                    createdAt) — see the "calm hazard reporting" concept.
-//                    Deliberately NOT shared with other users: this app has
-//                    no backend database (stateless by design, see README),
-//                    so there is no server to make a Waze-style shared
-//                    hazard layer honest — these are private trip notes,
-//                    visible only on the device that added them.
 // Every exported function rejects with a plain Error on failure; callers are
 // expected to catch and show a plain-language status message, same as every
 // other async operation in this app.
 // ============================================================================
 
 const DB_NAME = 'navigator-db';
-const DB_VERSION = 4;
+const DB_VERSION = 3;
 
 // A fresh indexedDB.open() per call (the original shape here) never closes
 // the connection it creates, so every single read/write — including the
@@ -64,11 +57,6 @@ function openDb() {
       // currentTrip above.
       if (!db.objectStoreNames.contains('quickPlaces')) {
         db.createObjectStore('quickPlaces', { keyPath: 'id' });
-      }
-      // Added in DB_VERSION 4: personal hazard pins — see the store comment
-      // at the top of this file for why these are device-local, not shared.
-      if (!db.objectStoreNames.contains('hazardReports')) {
-        db.createObjectStore('hazardReports', { keyPath: 'id', autoIncrement: true });
       }
     };
     req.onsuccess = () => {
@@ -266,16 +254,4 @@ export async function getQuickPlace(kind) {
 }
 export async function deleteQuickPlace(kind) {
   return idbDelete('quickPlaces', kind);
-}
-
-// ---- hazard reports (personal, device-local — see the store comment at the top) ----
-
-export async function addHazardReport({ category, lat, lon }) {
-  return idbAdd('hazardReports', { category, lat, lon, createdAt: Date.now() });
-}
-export async function getHazardReports() {
-  return idbGetAll('hazardReports');
-}
-export async function deleteHazardReport(id) {
-  return idbDelete('hazardReports', id);
 }

@@ -1307,64 +1307,6 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
 }
 .route-chips-popover.hidden { display: none; }
 
-/* Hazard-report popover (see openHazardReportPopover in app.js) — right-
-   anchored like .route-chips-popover, since #hazard-report-btn lives in the
-   same right-side #map-controls stack. */
-.hazard-report-popover {
-  position: fixed;
-  right: 14px;
-  z-index: 22;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--panel);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 6px;
-  width: 200px;
-}
-.hazard-report-popover.hidden { display: none; }
-.hazard-report-opt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 12px;
-  border-radius: 10px;
-  background: none;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 500;
-  text-align: left;
-}
-.hazard-report-opt:active { background: var(--panel-2); }
-.hazard-report-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
-
-/* Map pins dropped via the hazard-report popover (see
-   createHazardMarkerElement/refreshHazardMarkers in app.js). "hazard" is
-   always full-strength; roadwork/stopped are muted even when enabled —
-   the visual expression of "opt-in AND quiet", not just opt-in.
-   position:absolute is required here, not cosmetic — this is the element
-   passed straight to `new maplibregl.Marker({element:...})`, and MapLibre
-   positions a marker by transforming its root element directly; a
-   default-static root drifts away from its real lat/lon on zoom (same bug
-   already fixed once for the nav puck — see .poi-marker-wrap above for the
-   other place this pattern is already followed). */
-.hazard-marker {
-  position: absolute;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  box-shadow: var(--shadow);
-  border: 2px solid var(--bg);
-}
-.hazard-marker.cat-hazard { background: var(--danger); }
-.hazard-marker.cat-roadwork, .hazard-marker.cat-stopped { background: var(--panel-2); opacity: 0.72; width: 22px; height: 22px; font-size: 11px; }
-
 /* Inside the popover, chips become full-width list rows (icon + label,
    left-aligned) rather than the small centered pill shape used in the
    horizontal category rows elsewhere — a wider, taller tap target that's
