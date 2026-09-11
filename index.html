@@ -109,17 +109,19 @@
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19 V8 M3 13 h18 v6 M7 13 v-2 a2 2 0 0 1 2-2 h1 a2 2 0 0 1 2 2 v2 M21 19 v-4"/></svg>
             <span>Hotels</span>
           </button>
-          <!-- A filter TOGGLE, not a search trigger like the category chips
-               above — deliberately excluded from CHIP_CATEGORY_TAGS'
-               data-category iteration in app.js and given its own click
-               handler + aria-pressed semantics instead. See
-               state.filterOpenNow/applyOpenNowFilter. -->
-          <button class="chip" type="button" id="open-now-chip" aria-pressed="false" aria-label="Filter results to open now">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7 v5 l4 2"/></svg>
-            <span>Open now</span>
-          </button>
         </div>
       </div>
+      <!-- "Open now" used to live here as the 9th chip in the scrollable row
+           above — easy to miss (needed horizontal scroll to reach) and, once
+           results actually appeared, physically covered by the results
+           dropdown itself (.suggestions overlays this whole card). It's now
+           built dynamically as the first, sticky row of the results list
+           itself (see createOpenNowToggleRow/renderSuggestionResults in
+           app.js) — always the first thing you see above a category search's
+           results, whether from a chip here or from #route-chips while
+           driving, and it re-filters the results already on screen instead
+           of only affecting the next search. -->
+
 
       <!-- ============ Directions mode: from/to fields, shown after tapping "Directions" ============ -->
       <div id="search-directions" class="hidden">

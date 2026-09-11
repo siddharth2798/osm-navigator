@@ -85,7 +85,6 @@ const el = {
   offlineBtn: document.getElementById('offline-btn'),
   savedBtn: document.getElementById('saved-btn'),
   categoryChips: document.getElementById('category-chips'),
-  openNowChip: document.getElementById('open-now-chip'),
   routeOptionsRow: document.getElementById('route-options'),
   transitItineraryOptionsRow: document.getElementById('transit-itinerary-options'),
   elevationProfile: document.getElementById('elevation-profile'),
@@ -5343,13 +5342,58 @@ function showSuggestionLoading(listEl, text = 'Searching…') {
   showSuggestionList(listEl);
 }
 
+/** Builds the sticky "Open now" toggle row prepended to a category search's
+ * results list (see renderSuggestionResults's `openNowToggle` param below).
+ * Used to be the 9th chip in the horizontally-scrolling category row —
+ * easy to miss needing that much horizontal scroll, and once results
+ * actually appeared it was physically covered by the results dropdown
+ * itself (.suggestions overlays the whole search card). Living as the
+ * first row of the results list instead means it's always the first thing
+ * visible, and (via `onToggle`, always a re-render of whatever produced
+ * the current results — see both call sites) re-filters what's already on
+ * screen immediately rather than only affecting the next search. Reuses
+ * .chip/.chip.active for the button itself so it looks like every other
+ * chip in the app; `.suggestions-filter-row` just pins it in place. */
+function createOpenNowToggleRow(onToggle) {
+  const li = document.createElement('li');
+  li.className = 'suggestions-filter-row';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'chip open-now-toggle' + (state.filterOpenNow ? ' active' : '');
+  btn.setAttribute('aria-pressed', String(state.filterOpenNow));
+  btn.setAttribute('aria-label', 'Filter results to open now');
+  btn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7 v5 l4 2"/></svg><span>Open now</span>`;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation(); // this row's own <li> sits inside a clickable results list — never let the toggle also trigger a result pick
+    state.filterOpenNow = !state.filterOpenNow;
+    onToggle();
+  });
+  li.appendChild(btn);
+  return li;
+}
+
 /** Renders a results list into `listEl`, identically whether it came from
  * live-typed autocomplete or a one-tap category search — same bold-name/
  * dim-address row, save star, and street-view button everywhere. `inputEl`
- * is optional (category search has no single field to fill in). */
-function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessage, distanceSuffix = 'away') {
+ * is optional (category search has no single field to fill in).
+ * `openNowToggle`, when given (category-search callers only — see both call
+ * sites), is a callback that re-runs whatever produced `results` with the
+ * filter's new state; providing it prepends the sticky toggle row above and
+ * — unlike the plain-autocomplete path — keeps the list open even with zero
+ * matches, showing `emptyMessage` inline instead of closing the one control
+ * that could get you back to a non-empty result set. */
+function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessage, distanceSuffix = 'away', openNowToggle = null) {
   listEl.innerHTML = '';
+  if (openNowToggle) listEl.appendChild(createOpenNowToggleRow(openNowToggle));
   if (!results.length) {
+    if (openNowToggle) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = emptyMessage || 'No results found.';
+      listEl.appendChild(li);
+      showSuggestionList(listEl);
+      return;
+    }
     hideSuggestionList(listEl);
     if (emptyMessage) showStatus(emptyMessage, 'info');
     return;
@@ -5778,8 +5822,11 @@ const CHIP_CATEGORY_TAGS = {
   hotel: 'tourism=hotel',
 };
 
-// [data-category], not the broader .chip — #open-now-chip is a filter
-// TOGGLE, not a search trigger, and gets its own listener below instead.
+// [data-category], not the broader .chip — "Open now" is a filter TOGGLE,
+// not a search trigger, and is no longer one of these chips at all: it's
+// now built as the results list's own sticky first row (see
+// createOpenNowToggleRow/renderSuggestionResults) instead of a 9th chip in
+// this row, so it never needs a data-category and isn't in this NodeList.
 el.categoryChips.querySelectorAll('.chip[data-category]').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const tag = CHIP_CATEGORY_TAGS[btn.dataset.category];
@@ -5792,33 +5839,30 @@ el.categoryChips.querySelectorAll('.chip[data-category]').forEach((btn) => {
       // would actually use the chips while panning around the map.
       const center = map.getCenter();
       const rawResults = await categorySearchNear(tag, center.lat, center.lng);
-      const results = applyOpenNowFilter(decorateWithDistance(rawResults, center.lat, center.lng));
-      // Picking any one result clears the rest of the candidate markers —
-      // once you've chosen, the other options aren't relevant anymore.
-      const onPick = (r) => { clearPoiMarkers(); selectPlace(r); };
-      showPoiMarkers(results, onPick);
-      const emptyMessage = state.filterOpenNow
-        ? `No ${label.toLowerCase()} found nearby that are open now. Try turning off "Open now".`
-        : `No ${label.toLowerCase()} found nearby. Try panning the map or zooming out.`;
-      renderSuggestionResults(el.placeSuggestions, el.placeInput, results, onPick, emptyMessage);
+      // Re-invoked by the "Open now" toggle row itself (see
+      // createOpenNowToggleRow) — re-filtering rawResults already in memory
+      // rather than re-fetching means toggling re-renders instantly, and
+      // stays scoped to the exact same rawResults set this search returned
+      // (the map center could have panned since, which categorySearchNear
+      // would otherwise pick up on a fresh fetch).
+      const renderFiltered = () => {
+        const results = applyOpenNowFilter(decorateWithDistance(rawResults, center.lat, center.lng));
+        // Picking any one result clears the rest of the candidate markers —
+        // once you've chosen, the other options aren't relevant anymore.
+        const onPick = (r) => { clearPoiMarkers(); selectPlace(r); };
+        showPoiMarkers(results, onPick);
+        const emptyMessage = state.filterOpenNow
+          ? `No ${label.toLowerCase()} found nearby that are open now.`
+          : `No ${label.toLowerCase()} found nearby. Try panning the map or zooming out.`;
+        renderSuggestionResults(el.placeSuggestions, el.placeInput, results, onPick, emptyMessage, 'away', renderFiltered);
+      };
+      renderFiltered();
     } catch (err) {
       hideSuggestionList(el.placeSuggestions);
       showStatus(err.message, 'error');
     }
   });
 });
-
-if (el.openNowChip) {
-  el.openNowChip.addEventListener('click', () => {
-    state.filterOpenNow = !state.filterOpenNow;
-    el.openNowChip.classList.toggle('active', state.filterOpenNow);
-    el.openNowChip.setAttribute('aria-pressed', String(state.filterOpenNow));
-    // Affects the NEXT category/along-route search, not results already on
-    // screen — simplest behavior, and matches the natural "set the filter,
-    // then tap a category" order this row already reads left-to-right in.
-    showStatus(`"Open now" filter: ${state.filterOpenNow ? 'on' : 'off'}`, 'info');
-  });
-}
 
 // ---- "Search along the route" (shown once a drive route is planned) ------
 
@@ -6152,17 +6196,23 @@ function wireRouteChipButtons(container, { isPopover }) {
 
       try {
         const rawResults = await categorySearchAlongRoute(tag, scope.coords, scope.totalDistM, scope.waypoints);
-        const results = applyOpenNowFilter(decorateWithRouteDistance(rawResults, scope.lineFeature));
-        const onPick = (r) => { clearPoiMarkers(); addStopFromPoi(r); };
-        showPoiMarkers(results, onPick);
-        const noneFoundText = state.filterOpenNow
-          ? `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'} that are open now.`
-          : `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`;
-        renderSuggestionResults(
-          el.poiResultsList, null, results, onPick,
-          noneFoundText,
-          state.navigating ? 'ahead' : 'along your route',
-        );
+        // Same instant-re-filter-in-place pattern as the idle-mode category
+        // chips above — see that renderFiltered's own comment.
+        const renderFiltered = () => {
+          const results = applyOpenNowFilter(decorateWithRouteDistance(rawResults, scope.lineFeature));
+          const onPick = (r) => { clearPoiMarkers(); addStopFromPoi(r); };
+          showPoiMarkers(results, onPick);
+          const noneFoundText = state.filterOpenNow
+            ? `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'} that are open now.`
+            : `No ${label.toLowerCase()} found ${state.navigating ? 'ahead' : 'along this route'}.`;
+          renderSuggestionResults(
+            el.poiResultsList, null, results, onPick,
+            noneFoundText,
+            state.navigating ? 'ahead' : 'along your route',
+            renderFiltered,
+          );
+        };
+        renderFiltered();
       } catch (err) {
         hideSuggestionList(el.poiResultsList);
         showStatus(err.message, 'error');
@@ -11859,3 +11909,4 @@ if (shareTargetText) {
     }
   })();
 }
+
