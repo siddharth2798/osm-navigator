@@ -523,6 +523,20 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Distance as its own right-aligned column instead of a third line stacked
+   under the name/address — the stacked layout left this whole side of the
+   row empty. tabular-nums keeps the digits from jittering side to side as
+   you scroll past rows with different distances. */
+.result-dist {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: right;
+  padding: 8px 2px 8px 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 .save-btn {
   flex-shrink: 0;
   width: 30px;
