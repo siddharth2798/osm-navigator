@@ -5403,14 +5403,17 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
     li.className = 'result-item';
 
     const { primary, secondary } = splitPlaceLabel(r.label);
-    // Distance/hours meta line — present on results from a category/
-    // along-route search (decorateWithDistance + extratags=1), and now
-    // also on plain live-typed autocomplete results whenever the user's
-    // current position is known (see geocodeSearch's own use of
-    // decorateWithDistance/currentLiveLngLat). Simply absent otherwise, no
-    // separate code path needed either way.
+    // Distance now renders as its own right-aligned column (.result-dist,
+    // appended after .result-text below) instead of a third stacked line
+    // under the name/address — the old stacked layout left the row's whole
+    // right half empty on every result. Opening-hours (when present —
+    // category/along-route search only, see decorateWithDistance's own
+    // extratags=1) stays in the stacked .result-meta line on the left;
+    // only distance moved, since pairing it with the row's unused
+    // right-hand space (not a third text line) is what actually uses that
+    // space, and hours/distance were never really "the same kind of fact"
+    // to begin with.
     const metaParts = [];
-    if (r.distanceM != null) metaParts.push(formatDistance(r.distanceM) + ' ' + distanceSuffix);
     if (r.openingHours) metaParts.push(r.openingHours);
     const text = document.createElement('span');
     text.className = 'result-text';
@@ -5422,6 +5425,19 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
       hideSuggestionList(listEl);
       onSelect(r);
     });
+    let distEl = null;
+    if (r.distanceM != null) {
+      distEl = document.createElement('span');
+      distEl.className = 'result-dist';
+      distEl.textContent = `${formatDistance(r.distanceM)} ${distanceSuffix}`;
+      // Clicking the distance is still "pick this result" — same target as
+      // tapping the name/address, not a separate control.
+      distEl.addEventListener('click', () => {
+        if (inputEl) inputEl.value = primary;
+        hideSuggestionList(listEl);
+        onSelect(r);
+      });
+    }
 
     // Save-to-favorites star — stopPropagation so tapping it opens the
     // "which list?" prompt without also picking the result as the field's
@@ -5445,6 +5461,7 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
     });
 
     li.appendChild(text);
+    if (distEl) li.appendChild(distEl);
     const svBtn = streetViewButton(r.lat, r.lon); // null when Mapillary isn't configured
     if (svBtn) li.appendChild(svBtn);
     li.appendChild(saveBtn);
