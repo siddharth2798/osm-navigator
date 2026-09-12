@@ -84,6 +84,10 @@ if (!RELAY_SHARED_SECRET) {
 
 const NM_PER_DEG_LAT = 60;
 const MAX_RADIUS_NM = 250;
+// Fixed bbox for the `region=india` mode — see lib/flights-proxy.js's own
+// INDIA_BBOX, kept in sync here since this file can't import it (different
+// runtime, no shared module — see the file-header comment above).
+const INDIA_BBOX = { lamin: 6.5, lomin: 68.1, lamax: 37.6, lomax: 97.4 };
 const OPENSKY_STATES_URL = 'https://opensky-network.org/api/states/all';
 const OPENSKY_TOKEN_URL = 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
 const AIRPLANES_LIVE_BASE_URL = 'https://api.airplanes.live/v2/point';
@@ -163,9 +167,8 @@ const sourceStatus = {
   'airplanes.live': { lastAttemptAt: null, lastSuccessAt: null, lastError: null },
 };
 
-async function tryFetchOpenSky(lat, lon, radiusNm) {
+async function fetchOpenSkyBbox({ lamin, lamax, lomin, lomax }) {
   sourceStatus.opensky.lastAttemptAt = new Date().toISOString();
-  const { lamin, lamax, lomin, lomax } = bboxFromPoint(lat, lon, radiusNm);
   const url = `${OPENSKY_STATES_URL}?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
   const token = await getOpenSkyToken();
   const headers = token ? { ...UPSTREAM_HEADERS, Authorization: `Bearer ${token}` } : UPSTREAM_HEADERS;
@@ -185,6 +188,10 @@ async function tryFetchOpenSky(lat, lon, radiusNm) {
     sourceStatus.opensky.lastError = err.message;
     return { ok: false, status: null, err: err.message };
   }
+}
+
+async function tryFetchOpenSky(lat, lon, radiusNm) {
+  return fetchOpenSkyBbox(bboxFromPoint(lat, lon, radiusNm));
 }
 
 async function tryFetchAirplanesLive(lat, lon, radiusNm) {
@@ -227,6 +234,22 @@ const server = http.createServer(async (req, res) => {
     // time.
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ time: new Date().toISOString(), sources: sourceStatus }, null, 2));
+    return;
+  }
+
+  if (url.searchParams.get('region') === 'india') {
+    // No airplanes.live fallback here — its point+radius API can't cover a
+    // country-scale area at all (MAX_RADIUS_NM is a fraction of India's
+    // span), so OpenSky's bbox-native query is the only source that fits.
+    const result = await fetchOpenSkyBbox(INDIA_BBOX);
+    if (!result.ok) {
+      console.error('[flights-relay] India-wide OpenSky query failed (status', result.status ?? result.err, ')');
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Could not reach the flight-tracking data source.' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'x-flight-source': 'opensky' });
+    res.end(JSON.stringify(result.body));
     return;
   }
 

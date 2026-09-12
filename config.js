@@ -679,8 +679,22 @@ export const CONFIG = {
   // How long a missing aircraft stays on the map after a poll no longer
   // reports it, before it's actually removed. Live ADS-B data has real
   // gaps — one poll skipping a plane that's still there doesn't mean it's
-  // gone. 4 poll cycles' worth of grace period.
-  FLIGHT_STALE_RETENTION_MS: 60000,
+  // gone. Sized against FLIGHT_REGION_POLL_INTERVAL_MS below (the slower
+  // of the two poll cadences) — must stay comfortably longer than
+  // whichever interval is active, or aircraft would expire between polls
+  // in the slower mode.
+  FLIGHT_STALE_RETENTION_MS: 240000,
+
+  // Flight Tracking Mode / idle-mode browsing poll all of India (see
+  // lib/flights-proxy.js's INDIA_BBOX) instead of a location-centered
+  // radius. OpenSky charges by bbox area — a box this size (~900 sq°)
+  // costs 4 credits/query, its top tier. Polling that at
+  // FLIGHT_POLL_INTERVAL_MS (15s) would burn ~23,000 credits/day, past
+  // even an authenticated account's 4,000/day budget. 100s keeps it
+  // under ~3,500/day with headroom. Driving-mode's overhead alert stays
+  // on FLIGHT_POLL_INTERVAL_MS — it's a safety-relevant, position-based
+  // check that shouldn't degrade to a 2-minute cadence.
+  FLIGHT_REGION_POLL_INTERVAL_MS: 100000,
 
   // A 429 from the upstream data source means back off, not keep polling
   // at the normal cadence and hammer an already-throttling endpoint.

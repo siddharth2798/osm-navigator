@@ -22,7 +22,16 @@ On top of that, the plane button also opens **Flight Tracking Mode** — a dedic
 
 Turning the toggle on while you're just browsing the map — not mid-trip — still works: it rides the same idle GPS watch that powers the "you are here" marker (`startIdleLocationShare`) instead of the real navigation GPS watch, starting that watch itself (silently) if it isn't already running. `maybeCheckFlightsIdle` in `app.js` is the idle-mode counterpart to `maybeCheckFlights`, sharing all the same pacing/backoff/failure-warning state — the two can never poll at once, since exactly one of "navigating" or "not navigating" is true at any moment.
 
-Idle mode always plots every aircraft the query returns, using the same wider regional radius (`CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM`) the near-airport view uses while driving — there's no "en route" sliver of sky to prioritize when you're not actually going anywhere, so the useful behavior is just "show me the local air traffic picture," unconditionally, rather than only alerting on an overhead crossing. The overhead badge and per-aircraft tap-for-detail still work exactly the same as while navigating.
+Idle mode always plots every aircraft the query returns — but instead of a location-centered radius, it queries **all of India** (see "Scope" below), same as Flight Tracking Mode: there's no "en route" sliver of sky to prioritize when you're not actually going anywhere, so the useful behavior is just "show me the country's air traffic picture," unconditionally, rather than only alerting on an overhead crossing. The overhead badge and per-aircraft tap-for-detail still work exactly the same as while navigating.
+
+## Scope — what area shows flights
+
+Two different query shapes, depending on context:
+
+- **While actively driving, Flight Tracking Mode closed**: a location-centered radius — `CONFIG.FLIGHT_QUERY_RADIUS_NM` (3nm) normally, widening to `CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM` (20nm) within `CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M` (8km) of a bundled airport. Polled every `CONFIG.FLIGHT_POLL_INTERVAL_MS` (15s) — this is the safety-relevant overhead-alert case, kept fast and narrow.
+- **Flight Tracking Mode open (even mid-trip, with turn-by-turn suspended underneath it), or idle browsing with no trip at all**: **all of India** — a fixed bounding box (`INDIA_BBOX` in `lib/flights-proxy.js`), not a radius around you at all. Polled every `CONFIG.FLIGHT_REGION_POLL_INTERVAL_MS` (~100s) instead of 15s — OpenSky charges by bounding-box area, and a box this size (~900 sq°) costs 4 credits per query, its top tier; polling that every 15s would burn through even an authenticated account's daily budget in a few hours. This is a deliberate trade: broad, country-wide coverage in exchange for a slower refresh than the driving-mode case.
+
+Search (below) benefits directly from the wider scope: it searches whatever aircraft the *most recent poll* returned, so an India-wide poll means a much larger pool of aircraft to search against than a radius around your own position ever could — still bounded by the same real limits (the plane has to be inside India, currently broadcasting, and picked up by whichever source answered).
 
 ## Flight Tracking Mode (dedicated overlay)
 
@@ -42,7 +51,7 @@ Airports render as a solid map pin with an ATC control-tower glyph punched throu
 
 (That illustration is the actual glyph rendered large for clarity — in the app it's much smaller and scales with zoom, same as any other map pin.)
 
-**Search** looks through the bundled airport list (every commercial airport worldwide, not just ones near you) and whatever aircraft the most recent poll actually returned — it's not a global live-aircraft search, since that would mean either running a stateful backend (explicitly out of scope — this whole feature stays stateless) or spending OpenSky's daily anonymous quota on every keystroke. Search for an aircraft that hasn't shown up in a recent poll and it just won't be there yet.
+**Search** looks through the bundled airport list (every commercial airport worldwide, not just ones near you) and whatever aircraft the most recent poll actually returned — it's not a global live-aircraft search, since that would mean either running a stateful backend (explicitly out of scope — this whole feature stays stateless) or spending OpenSky's daily anonymous quota on every keystroke. Search for an aircraft that hasn't shown up in a recent poll and it just won't be there yet. Also matches against the ADS-B **callsign** (e.g. `IGO171`), not the public **IATA flight number** (e.g. `6E171`) most people actually search for — this app has no IATA-code data bundled today, so searching a public flight number often won't match its own callsign even when the aircraft is right there in the poll.
 
 **Size filter** (All / Wide / Narrow / Regional / GA·Heli) is a pure map filter — it doesn't change what's polled, just what's currently drawn — and resets to "All" every time the mode closes, so a filter from a previous session never silently hides traffic the next time you open it.
 

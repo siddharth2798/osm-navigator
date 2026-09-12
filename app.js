@@ -3425,15 +3425,28 @@ function nearestAirportWithin(lngLat, radiusM) {
   return nearest && nearestDistM <= radiusM ? nearest : null;
 }
 
+/** True when this check-in should query all of India (Flight Tracking
+ * Mode, or idle browsing with no trip) rather than a location-centered
+ * radius — see CONFIG.FLIGHT_REGION_POLL_INTERVAL_MS for why this needs
+ * its own, much slower poll cadence. Flight Tracking Mode forces this
+ * even mid-trip (state.navigating true, a suspended trip running
+ * underneath it) — the whole point of the mode is browsing broadly, not
+ * a narrow overhead-alert window. */
+function usesIndiaWideFlightView() {
+  return state.flightModeActive || !state.navigating;
+}
+
 /** Gates and paces flight check-ins from onPositionUpdate, same shape as
  * maybeCheckTraffic right above: only while actually navigating with the
- * feature toggled on, at most once every CONFIG.FLIGHT_POLL_INTERVAL_MS. */
+ * feature toggled on, at most once every CONFIG.FLIGHT_POLL_INTERVAL_MS
+ * (or FLIGHT_REGION_POLL_INTERVAL_MS — see usesIndiaWideFlightView). */
 function maybeCheckFlights(traveledM, lngLat) {
   if (!state.navigating || !state.flightTrackingEnabled || !state.route) return;
   if (state.flightCheckInFlight) return; // previous check-in still in flight — skip this tick rather than pile up requests
   const now = Date.now();
   if (state.flightBackoffUntil != null && now < state.flightBackoffUntil) return; // rate-limited — see applyFlightBackoff
-  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < CONFIG.FLIGHT_POLL_INTERVAL_MS) return;
+  const pollIntervalMs = usesIndiaWideFlightView() ? CONFIG.FLIGHT_REGION_POLL_INTERVAL_MS : CONFIG.FLIGHT_POLL_INTERVAL_MS;
+  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < pollIntervalMs) return;
   state.lastFlightCheckAt = now;
   runFlightCheckin(lngLat);
 }
@@ -3445,15 +3458,18 @@ function maybeCheckFlights(traveledM, lngLat) {
  * Deliberately mirrors maybeCheckFlights' own pacing/in-flight/backoff
  * guards exactly (and shares the same state fields) rather than duplicating
  * that logic with its own copy — the two can never fire at once anyway,
- * since exactly one of state.navigating is true at a time. */
+ * since exactly one of state.navigating is true at a time. Always uses the
+ * slower region cadence — usesIndiaWideFlightView is unconditionally true
+ * here, since !state.navigating already holds. */
 function maybeCheckFlightsIdle(lngLat) {
   if (state.navigating || !state.flightTrackingEnabled) return;
   if (state.flightCheckInFlight) return;
   const now = Date.now();
   if (state.flightBackoffUntil != null && now < state.flightBackoffUntil) return;
-  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < CONFIG.FLIGHT_POLL_INTERVAL_MS) return;
+  const pollIntervalMs = usesIndiaWideFlightView() ? CONFIG.FLIGHT_REGION_POLL_INTERVAL_MS : CONFIG.FLIGHT_POLL_INTERVAL_MS;
+  if (state.lastFlightCheckAt != null && now - state.lastFlightCheckAt < pollIntervalMs) return;
   state.lastFlightCheckAt = now;
-  runFlightCheckin(lngLat, { idle: true });
+  runFlightCheckin(lngLat);
 }
 
 /** OpenSky's anonymous tier caps out at 400 credits/day (see
@@ -3496,22 +3512,21 @@ function aircraftApproachDistM(lngLat, a) {
   return turf.pointToLineDistance(lngLat, turf.lineString([current, projected]), { units: 'meters' });
 }
 
-async function runFlightCheckin(lngLat, { idle = false } = {}) {
+async function runFlightCheckin(lngLat) {
   state.flightCheckInFlight = true;
   try {
     await loadFlightRefData();
-    const nearAirport = nearestAirportWithin(lngLat, CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M);
-    // Idle mode has no "en route" concept to keep the default radius tight
-    // for — there's no trip whose sliver of sky matters more than the rest
-    // — so it always uses the wider regional radius, same as being near an
-    // airport does while driving. Flight Tracking Mode always wants the
-    // wide radius too, even mid-trip (state.navigating true) — the whole
-    // point of the mode is browsing broadly, not a narrow overhead-alert
-    // window, regardless of whether a suspended trip happens to be
-    // running underneath it.
-    const radiusNm = idle || nearAirport || state.flightModeActive ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM;
+    // Flight Tracking Mode / idle browsing query all of India instead of a
+    // location-centered radius — see usesIndiaWideFlightView. Only the
+    // remaining driving case (not in Flight Tracking Mode) still needs a
+    // radius at all, widened near an airport same as before.
+    const regionWide = usesIndiaWideFlightView();
+    const nearAirport = !regionWide && nearestAirportWithin(lngLat, CONFIG.FLIGHT_NEAR_AIRPORT_RADIUS_M);
     const base = isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : '';
-    const res = await fetch(`${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${radiusNm}`);
+    const url = regionWide
+      ? `${base}/api/flights?region=india`
+      : `${base}/api/flights?lat=${lngLat[1]}&lon=${lngLat[0]}&radiusNm=${nearAirport ? CONFIG.FLIGHT_REGIONAL_QUERY_RADIUS_NM : CONFIG.FLIGHT_QUERY_RADIUS_NM}`;
+    const res = await fetch(url);
     if (!res.ok) {
       // x-flight-source is set even on the final-failure passthrough (see
       // lib/flights-proxy.js) — it names whichever tier's failure is being
@@ -3591,7 +3606,7 @@ async function runFlightCheckin(lngLat, { idle = false } = {}) {
       });
       state.flightOverheadAircraft = overhead;
       refreshFlightBadge();
-      updateFlightLayer(idle || nearAirport || state.flightModeActive ? aircraft : overhead);
+      updateFlightLayer(regionWide || nearAirport ? aircraft : overhead);
     } catch (err) {
       resolverDebugLog(`Flight tracking: rendering the result failed — ${err.message}`, 'error');
     }

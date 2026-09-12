@@ -19,6 +19,10 @@ function flightsUrl(lat = 40, lon = -73, radiusNm = 5) {
   return new URL(`https://example.com/api/flights?lat=${lat}&lon=${lon}&radiusNm=${radiusNm}`);
 }
 
+function flightsRegionUrl(region = 'india') {
+  return new URL(`https://example.com/api/flights?region=${region}`);
+}
+
 const OPENSKY_STATES = { states: [] }; // empty is fine — these tests only care about which source answered and how it was called
 
 // OpenSky is the primary (tier 1) source, airplanes.live the fallback —
@@ -290,4 +294,83 @@ test('rejects out-of-range coordinates before ever calling fetch', async () => {
     },
   );
   assert.equal(fetchCalled, false);
+});
+
+// region=india (Flight Tracking Mode / idle-mode browsing) — a separate
+// code path from the point+radius tests above: no lat/lon required, no
+// airplanes.live fallback (its point+radius API can't cover a
+// country-scale area), relay called with `region=india` instead of
+// lat/lon/radiusNm.
+
+test('region=india: relay succeeding means the direct OpenSky bbox query is never touched', async () => {
+  const env = { SELF_HOSTED_FLIGHTS_URL: 'https://relay.example.com', RELAY_SHARED_SECRET: 'shh' };
+  let openSkyDirectCalled = false;
+  await withMockedFetch(
+    async (url, opts) => {
+      if (String(url) === 'https://relay.example.com/flights?region=india') {
+        assert.equal(opts.headers['x-relay-secret'], 'shh');
+        return new Response(JSON.stringify({ ac: [{ hex: 'india1' }] }), { status: 200, headers: { 'x-flight-source': 'opensky' } });
+      }
+      openSkyDirectCalled = true;
+      throw new Error('should not be called');
+    },
+    async () => {
+      const res = await nearbyFlights(flightsRegionUrl(), env);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
+      assert.deepEqual(JSON.parse(await res.text()), { ac: [{ hex: 'india1' }] });
+    },
+  );
+  assert.equal(openSkyDirectCalled, false);
+});
+
+test('region=india: no relay configured — queries OpenSky states/all directly with the fixed India bbox, no radiusNm involved', async () => {
+  await withMockedFetch(
+    async (url) => {
+      const u = new URL(url);
+      assert.equal(u.origin + u.pathname, 'https://opensky-network.org/api/states/all');
+      // The fixed India bbox, not a point+radius-derived one — see INDIA_BBOX.
+      assert.equal(u.searchParams.get('lamin'), '6.5');
+      assert.equal(u.searchParams.get('lomin'), '68.1');
+      assert.equal(u.searchParams.get('lamax'), '37.6');
+      assert.equal(u.searchParams.get('lomax'), '97.4');
+      return new Response(JSON.stringify({ states: [] }), { status: 200 });
+    },
+    async () => {
+      const res = await nearbyFlights(flightsRegionUrl(), {});
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
+    },
+  );
+});
+
+test('region=india: OpenSky failing surfaces its real status, unfallen-back — no airplanes.live attempted (point+radius API cannot cover a country-scale area)', async () => {
+  let airplanesLiveCalled = false;
+  await withMockedFetch(
+    async (url) => {
+      if (String(url).startsWith('https://opensky-network.org/')) return new Response('', { status: 503 });
+      airplanesLiveCalled = true;
+      throw new Error('should not be called');
+    },
+    async () => {
+      const res = await nearbyFlights(flightsRegionUrl(), {});
+      assert.equal(res.status, 503); // real upstream status passed through, same as the point-query path — not collapsed to a generic 502
+    },
+  );
+  assert.equal(airplanesLiveCalled, false);
+});
+
+test('region=india: OpenSky unreachable (network error, no res at all) surfaces a generic 502', async () => {
+  await withMockedFetch(
+    async (url) => {
+      if (String(url).startsWith('https://opensky-network.org/')) throw new Error('network down');
+      throw new Error('should not be called');
+    },
+    async () => {
+      const res = await nearbyFlights(flightsRegionUrl(), {});
+      assert.equal(res.status, 502);
+      const body = await res.json();
+      assert.equal(body.error, 'Could not reach the flight-tracking data source.');
+    },
+  );
 });
