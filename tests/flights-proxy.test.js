@@ -83,6 +83,7 @@ test('valid OPENSKY_CLIENT_ID/SECRET: exchanges for a bearer token and sends it 
       if (String(url).startsWith('https://auth.opensky-network.org/')) {
         tokenRequests++;
         assert.equal(opts.method, 'POST');
+        assert.ok(opts.signal instanceof AbortSignal, 'token exchange should carry the fetchWithTimeout AbortSignal');
         const body = new URLSearchParams(opts.body);
         assert.equal(body.get('grant_type'), 'client_credentials');
         assert.equal(body.get('client_id'), 'good-id');
@@ -168,6 +169,62 @@ test('both OpenSky and airplanes.live failing surfaces the ORIGINAL OpenSky stat
       assert.equal(res.headers.get('x-flight-source'), 'opensky');
     },
   );
+});
+
+test('every upstream call carries an AbortSignal — the wiring behind the 5s timeout each fetch goes through', async () => {
+  // Regression guard for a real production incident: with no timeout at
+  // all, a silently hung connection to an upstream (not a fast error —
+  // an actual hang) stalled the whole /api/flights request until
+  // Cloudflare itself gave up and returned a 522, confirmed live via
+  // repeated curls against the deployed Worker. Every fetch in
+  // lib/flights-proxy.js now goes through fetchWithTimeout, which attaches
+  // an AbortSignal — this checks that wiring on the states/all and
+  // airplanes.live-fallback calls without waiting out a real timeout. No
+  // client credentials here deliberately: with creds, this can reuse the
+  // token minted by an earlier test in this file (the module-scope cache
+  // is shared and still valid), which would make the token-endpoint call
+  // count unpredictable — that call site's own signal is covered
+  // separately by the "valid OPENSKY_CLIENT_ID/SECRET" test above.
+  const seenSignals = [];
+  await withMockedFetch(
+    async (url, opts) => {
+      seenSignals.push(!!(opts && opts.signal instanceof AbortSignal));
+      if (String(url).startsWith('https://opensky-network.org/')) return new Response('', { status: 503 }); // forces the airplanes.live fallback below
+      if (String(url).startsWith('https://api.airplanes.live/')) return new Response(JSON.stringify({ ac: [] }), { status: 200 });
+      throw new Error(`unexpected fetch to ${url}`);
+    },
+    async () => {
+      await nearbyFlights(flightsUrl(), {});
+    },
+  );
+  assert.equal(seenSignals.length, 2, 'expected exactly 2 upstream calls: states/all, airplanes.live fallback');
+  assert.ok(seenSignals.every(Boolean), 'every upstream fetch should carry an AbortSignal');
+});
+
+test('a genuinely hung OpenSky connection times out and falls through to airplanes.live rather than hanging the whole request', async () => {
+  // The real shape of the incident above: not a fast error, a connection
+  // that never resolves on its own. Uses a real AbortSignal listener
+  // (not a fake timer) so this exercises the actual UPSTREAM_TIMEOUT_MS
+  // path end-to-end — genuinely slow (~5s), which is the point.
+  function hangUntilAborted(signal) {
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+    });
+  }
+  const start = Date.now();
+  await withMockedFetch(
+    async (url, opts) => {
+      if (String(url).startsWith('https://opensky-network.org/')) return hangUntilAborted(opts.signal);
+      if (String(url).startsWith('https://api.airplanes.live/')) return new Response(JSON.stringify({ ac: [] }), { status: 200 });
+      throw new Error(`unexpected fetch to ${url}`);
+    },
+    async () => {
+      const res = await nearbyFlights(flightsUrl(), {});
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'airplanes.live');
+    },
+  );
+  assert.ok(Date.now() - start < 8000, 'should resolve within the ~5s timeout plus a small margin, not hang indefinitely');
 });
 
 test('rejects out-of-range coordinates before ever calling fetch', async () => {
