@@ -7,7 +7,7 @@ import { nearbyFlights } from '../lib/flights-proxy.js';
 // testability), same rationale as resolve-maps-url.test.js's own
 // withMockedFetch. `caches` is left undefined here (as it is in plain
 // Node) so nearbyFlights takes its no-edge-cache branch every time,
-// which keeps these tests about the airplanes.live/OpenSky tier logic
+// which keeps these tests about the OpenSky/airplanes.live tier logic
 // only.
 function withMockedFetch(impl, fn) {
   const original = globalThis.fetch;
@@ -21,42 +21,28 @@ function flightsUrl(lat = 40, lon = -73, radiusNm = 5) {
 
 const OPENSKY_STATES = { states: [] }; // empty is fine — these tests only care about which source answered and how it was called
 
-// getOpenSkyToken caches its token at module scope (see lib/flights-proxy.js —
-// this mirrors production, where a warm Worker isolate shouldn't
-// re-authenticate on every single request). That cache is shared across every
-// test in this file, so the tests below are ORDERED deliberately: the
-// no-credentials and token-endpoint-failure cases run first (neither can leave
-// a valid cached token behind), then the success case populates the cache,
-// then the reuse case relies on exactly that.
+// OpenSky is the primary (tier 1) source, airplanes.live the fallback —
+// see lib/flights-proxy.js's own comments for why (airplanes.live
+// reliably 403s from this deployment's Cloudflare Worker runtime).
+//
+// getOpenSkyToken caches its token at module scope (mirrors production,
+// where a warm Worker isolate shouldn't re-authenticate on every single
+// request). That cache is shared across every test in this file, so the
+// tests below are ORDERED deliberately: the no-credentials and
+// token-endpoint-failure cases run first (neither can leave a valid
+// cached token behind), then the success case populates the cache, then
+// the reuse case relies on exactly that.
 
-test('airplanes.live succeeding means OpenSky (and any OAuth2 token exchange) is never touched', async () => {
-  let openSkyCalled = false;
-  await withMockedFetch(
-    async (url) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) {
-        return new Response(JSON.stringify({ ac: [{ hex: 'abc123', lat: 40, lon: -73 }] }), { status: 200 });
-      }
-      openSkyCalled = true;
-      throw new Error('should not be called');
-    },
-    async () => {
-      const res = await nearbyFlights(flightsUrl(), {});
-      assert.equal(res.status, 200);
-      assert.equal(res.headers.get('x-flight-source'), 'airplanes.live');
-    },
-  );
-  assert.equal(openSkyCalled, false);
-});
-
-test('no OPENSKY_CLIENT_ID/SECRET configured: falls back to an anonymous OpenSky call with no Authorization header', async () => {
+test('OpenSky succeeding (anonymous, no creds configured) means airplanes.live is never touched', async () => {
+  let airplanesLiveCalled = false;
   await withMockedFetch(
     async (url, opts) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('', { status: 403 });
       if (String(url).startsWith('https://opensky-network.org/')) {
         assert.equal(opts.headers.Authorization, undefined);
         return new Response(JSON.stringify(OPENSKY_STATES), { status: 200 });
       }
-      throw new Error(`unexpected fetch to ${url}`);
+      airplanesLiveCalled = true;
+      throw new Error('should not be called');
     },
     async () => {
       const res = await nearbyFlights(flightsUrl(), {});
@@ -64,19 +50,21 @@ test('no OPENSKY_CLIENT_ID/SECRET configured: falls back to an anonymous OpenSky
       assert.equal(res.headers.get('x-flight-source'), 'opensky');
     },
   );
+  assert.equal(airplanesLiveCalled, false);
 });
 
-test('token endpoint failing (bad client_id/secret) degrades to the same anonymous OpenSky call, not a thrown error', async () => {
+test('token endpoint failing (bad client_id/secret) still succeeds via the same anonymous OpenSky call — no fallback needed', async () => {
   const env = { OPENSKY_CLIENT_ID: 'bad-id', OPENSKY_CLIENT_SECRET: 'bad-secret' };
+  let airplanesLiveCalled = false;
   await withMockedFetch(
     async (url, opts) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('', { status: 403 });
       if (String(url).startsWith('https://auth.opensky-network.org/')) return new Response('', { status: 401 });
       if (String(url).startsWith('https://opensky-network.org/')) {
         assert.equal(opts.headers.Authorization, undefined);
         return new Response(JSON.stringify(OPENSKY_STATES), { status: 200 });
       }
-      throw new Error(`unexpected fetch to ${url}`);
+      airplanesLiveCalled = true;
+      throw new Error('should not be called');
     },
     async () => {
       const res = await nearbyFlights(flightsUrl(), env);
@@ -84,14 +72,14 @@ test('token endpoint failing (bad client_id/secret) degrades to the same anonymo
       assert.equal(res.headers.get('x-flight-source'), 'opensky');
     },
   );
+  assert.equal(airplanesLiveCalled, false);
 });
 
-test('valid OPENSKY_CLIENT_ID/SECRET: exchanges for a bearer token and sends it as Authorization on the states/all call', async () => {
+test('valid OPENSKY_CLIENT_ID/SECRET: exchanges for a bearer token and sends it as Authorization on the primary states/all call', async () => {
   const env = { OPENSKY_CLIENT_ID: 'good-id', OPENSKY_CLIENT_SECRET: 'good-secret' };
   let tokenRequests = 0;
   await withMockedFetch(
     async (url, opts) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('', { status: 403 });
       if (String(url).startsWith('https://auth.opensky-network.org/')) {
         tokenRequests++;
         assert.equal(opts.method, 'POST');
@@ -122,7 +110,6 @@ test('a still-valid cached token is reused across requests instead of re-hitting
   let statesRequests = 0;
   await withMockedFetch(
     async (url, opts) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('', { status: 403 });
       if (String(url).startsWith('https://auth.opensky-network.org/')) {
         tokenRequests++;
         return new Response(JSON.stringify({ access_token: 'should-not-be-refetched', expires_in: 1800 }), { status: 200 });
@@ -146,17 +133,39 @@ test('a still-valid cached token is reused across requests instead of re-hitting
   assert.equal(statesRequests, 1);
 });
 
-test('both airplanes.live and OpenSky failing surfaces the ORIGINAL airplanes.live status, not a generic 502', async () => {
+test('OpenSky failing outright falls back to airplanes.live', async () => {
+  const env = { OPENSKY_CLIENT_ID: 'good-id', OPENSKY_CLIENT_SECRET: 'good-secret' };
   await withMockedFetch(
     async (url) => {
-      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('rate limited', { status: 429 });
+      // Reuses the token cached by the previous tests — this deployment's
+      // real 403 happens on the states/all call itself, not the token
+      // exchange, so OpenSky can be fully authenticated and still need
+      // the fallback (e.g. a genuine outage, not the auth path).
       if (String(url).startsWith('https://opensky-network.org/')) return new Response('', { status: 503 });
+      if (String(url).startsWith('https://api.airplanes.live/')) {
+        return new Response(JSON.stringify({ ac: [{ hex: 'abc123', lat: 40, lon: -73 }] }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    },
+    async () => {
+      const res = await nearbyFlights(flightsUrl(), env);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'airplanes.live');
+    },
+  );
+});
+
+test('both OpenSky and airplanes.live failing surfaces the ORIGINAL OpenSky status, not a generic 502', async () => {
+  await withMockedFetch(
+    async (url) => {
+      if (String(url).startsWith('https://opensky-network.org/')) return new Response('rate limited', { status: 429 });
+      if (String(url).startsWith('https://api.airplanes.live/')) return new Response('', { status: 403 });
       throw new Error(`unexpected fetch to ${url}`);
     },
     async () => {
       const res = await nearbyFlights(flightsUrl(), {});
       assert.equal(res.status, 429);
-      assert.equal(res.headers.get('x-flight-source'), 'airplanes.live');
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
     },
   );
 });
