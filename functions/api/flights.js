@@ -1,7 +1,4 @@
-// Cloudflare Pages Function entry point — see lib/flights-proxy.js for the
-// actual logic, shared with worker.js (the plain-Worker deployment path
-// this app also supports, since Pages Functions and Workers don't discover
-// routes the same way).
+// Thin entry point; real logic is in lib/flights-proxy.js (shared with worker.js).
 import { nearbyFlights } from '../../lib/flights-proxy.js';
 
 export async function onRequestGet(context) {

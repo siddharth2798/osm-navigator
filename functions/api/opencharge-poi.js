@@ -1,7 +1,4 @@
-// Cloudflare Pages Function entry point — see lib/opencharge-poi.js for the
-// actual logic, shared with worker.js (the plain-Worker deployment path
-// this app also supports, since Pages Functions and Workers don't discover
-// routes the same way).
+// Thin entry point; real logic is in lib/opencharge-poi.js (shared with worker.js).
 import { openChargePoi } from '../../lib/opencharge-poi.js';
 
 export async function onRequestGet(context) {

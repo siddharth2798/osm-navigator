@@ -1,31 +1,13 @@
 import { CONFIG } from './config.js';
 
-// ============================================================================
-// Tiny plain-IndexedDB helper — no external library. Six object stores:
-//   favorites      — saved places (name, lat, lon, note, listId)
-//   lists          — renameable collections a favorite can be filed under
-//                     (Google-Maps-style "Favorites"/"Want to go"/custom)
-//   recentTrips    — auto-recorded origin/destination pairs, capped & pruned
-//   downloadedAreas — metadata for each offline tile download
-//   currentTrip    — a single "resume where I left off" record
-//   quickPlaces    — Home/Work one-tap shortcuts (fixed keys 'home'/'work')
-// Every exported function rejects with a plain Error on failure; callers are
-// expected to catch and show a plain-language status message, same as every
-// other async operation in this app.
-// ============================================================================
+// Tiny plain-IndexedDB helper, no external library. Six object stores:
+// favorites, lists, recentTrips, downloadedAreas, currentTrip, quickPlaces.
+// Every exported function rejects with a plain Error on failure.
 
 const DB_NAME = 'navigator-db';
 const DB_VERSION = 3;
 
-// A fresh indexedDB.open() per call (the original shape here) never closes
-// the connection it creates, so every single read/write — including the
-// getFavorites()/getRecentTrips() pair fired on every focus of a search
-// field, and the saveCurrentTrip() fired every 15s throughout a drive —
-// permanently leaked one more open IDB connection for the rest of the tab's
-// lifetime. Caching the one open connection and reusing it is the standard
-// pattern; onversionchange (another tab loading a newer DB_VERSION) closes
-// it and clears the cache so the next call reopens cleanly instead of
-// hanging against a connection this tab is now blocking an upgrade on.
+// Cache the one open connection instead of opening a fresh one per call.
 let dbPromise = null;
 function openDb() {
   if (dbPromise) return dbPromise;
@@ -45,16 +27,10 @@ function openDb() {
       if (!db.objectStoreNames.contains('currentTrip')) {
         db.createObjectStore('currentTrip', { keyPath: 'id' });
       }
-      // Added in DB_VERSION 2: existing favorites (saved before lists
-      // existed) have no listId yet — getFavorites() below migrates them
-      // to whatever the default list turns out to be, the first time
-      // they're read, rather than needing a one-off migration pass here.
+      // Favorites saved before this existed get migrated by getFavorites() below.
       if (!db.objectStoreNames.contains('lists')) {
         db.createObjectStore('lists', { keyPath: 'id', autoIncrement: true });
       }
-      // Added in DB_VERSION 3: Home/Work quick places, a two-record store
-      // (fixed keys 'home'/'work') — same singleton-record idiom as
-      // currentTrip above.
       if (!db.objectStoreNames.contains('quickPlaces')) {
         db.createObjectStore('quickPlaces', { keyPath: 'id' });
       }
@@ -65,15 +41,7 @@ function openDb() {
       resolve(db);
     };
     req.onerror = () => { dbPromise = null; reject(req.error || new Error('Could not open the local database.')); };
-    // Fires when a version-upgrade open is blocked by another tab/instance
-    // still holding a connection at an older DB_VERSION — plausible here
-    // since DB_VERSION has been bumped more than once (quick places added
-    // it to 3). Without this, neither onsuccess nor onerror ever fires
-    // until that other connection closes: dbPromise sits pending forever,
-    // with no timeout, so every caller (getFavorites, addFavorite,
-    // getRecentTrips, the 15s saveCurrentTrip ticker, getDownloadedAreas,
-    // ...) hangs indefinitely instead of hitting its existing "Could not
-    // load…" error path.
+    // Without this, an upgrade blocked by another tab would hang forever with no error.
     req.onblocked = () => {
       dbPromise = null;
       reject(new Error('Could not open the local database — it looks like another tab has this app open on an older version. Close other tabs of this app and reload.'));
@@ -110,7 +78,7 @@ async function idbDelete(storeName, key) {
   return reqToPromise(db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key));
 }
 
-// ---- lists (favorites organized into renameable collections, Google-Maps-style "Saved" screen) ----
+// ---- lists (renameable collections of favorites) ----
 
 export async function addList({ name }) {
   return idbAdd('lists', { name, createdAt: Date.now() });
@@ -124,12 +92,8 @@ export async function renameList(id, name) {
   if (!list) throw new Error('That list no longer exists.');
   return idbPut('lists', { ...list, name });
 }
-/** Deleting a list keeps its favorites rather than deleting them — they're
- * reassigned to whichever list is now first (oldest). Any list can be
- * deleted, including the only one: if that leaves affected favorites with
- * nowhere to go, a fresh "Favorites" list is created to hold them (the
- * same self-healing fallback getFavorites()/openSaveToListPrompt already
- * rely on for a brand-new install with zero lists). */
+/** Deleting a list keeps its favorites, reassigning them to the oldest
+ * remaining list (or a fresh "Favorites" list if none remain). */
 export async function deleteList(id) {
   const lists = await getLists();
   const remaining = lists.filter((l) => l.id !== id);
@@ -146,9 +110,7 @@ async function getOrCreateDefaultListId() {
   if (lists.length) return lists[0].id;
   return addList({ name: 'Favorites' });
 }
-/** Finds a list by exact name, creating it if it doesn't exist yet — used
- * to file a place under a specific named list (e.g. "To add to OSM")
- * rather than falling back to whichever list happens to be first. */
+/** Finds a list by exact name, creating it if it doesn't exist yet. */
 export async function getOrCreateNamedListId(name) {
   const lists = await getLists();
   const existing = lists.find((l) => l.name === name);
@@ -163,9 +125,7 @@ export async function addFavorite({ label, lat, lon, note, listId }) {
   return idbAdd('favorites', { name: label, lat, lon, note: note || '', listId: finalListId, createdAt: Date.now() });
 }
 /** Returns favorites sorted newest-first, optionally filtered to a single
- * list. Also self-heals favorites saved before lists existed (no listId
- * yet) by filing them under the default list the first time they're read,
- * rather than needing a one-off migration pass at DB-upgrade time. */
+ * list. Migrates any favorite with no listId to the default list first. */
 export async function getFavorites(listId) {
   const all = await idbGetAll('favorites');
   const legacy = all.filter((f) => f.listId == null);
@@ -190,9 +150,8 @@ export async function deleteFavorite(id) {
 
 // ---- recent trips -------------------------------------------------------------
 
-/** Re-searching/re-planning the same origin→destination just bumps its
- * existing entry to the top instead of piling up near-duplicates, the same
- * way Google Maps' recent-search list behaves. */
+/** Re-searching the same origin→destination bumps the existing entry
+ * instead of adding a duplicate. */
 export async function addRecentTrip(trip) {
   const all = await idbGetAll('recentTrips');
   const dup = all.find((t) => t.originLabel === trip.originLabel && t.destLabel === trip.destLabel);
@@ -229,8 +188,7 @@ export async function deleteDownloadedArea(id) {
 }
 
 // ---- current trip -----------------------------------------------------------
-// A singleton record (fixed key 'active') so a killed/reloaded tab mid-drive
-// can restore the in-progress route without a network round trip.
+// Singleton record (key 'active') so a reloaded tab mid-drive can resume.
 
 export async function saveCurrentTrip(tripData) {
   return idbPut('currentTrip', { id: 'active', ...tripData, savedAt: Date.now() });
@@ -243,8 +201,7 @@ export async function clearCurrentTrip() {
 }
 
 // ---- quick places (Home/Work) -----------------------------------------------
-// Two singleton records, keyed 'home'/'work' — one-tap shortcuts, distinct
-// from the favorites/lists system since there's always at most one of each.
+// Two singleton records, keyed 'home'/'work'.
 
 export async function setQuickPlace(kind, place) {
   return idbPut('quickPlaces', { id: kind, label: place.label, lat: place.lat, lon: place.lon });
