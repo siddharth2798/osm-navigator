@@ -33,6 +33,59 @@ const OPENSKY_STATES = { states: [] }; // empty is fine — these tests only car
 // cached token behind), then the success case populates the cache, then
 // the reuse case relies on exactly that.
 
+test('SELF_HOSTED_FLIGHTS_URL configured and succeeding means neither direct upstream is ever touched', async () => {
+  const env = { SELF_HOSTED_FLIGHTS_URL: 'https://relay.example.com', RELAY_SHARED_SECRET: 'shh' };
+  let directUpstreamCalled = false;
+  await withMockedFetch(
+    async (url, opts) => {
+      if (String(url) === 'https://relay.example.com/flights?lat=40&lon=-73&radiusNm=5') {
+        assert.equal(opts.headers['x-relay-secret'], 'shh');
+        return new Response(JSON.stringify({ ac: [{ hex: 'abc123' }] }), { status: 200, headers: { 'x-flight-source': 'opensky' } });
+      }
+      directUpstreamCalled = true;
+      throw new Error('should not be called');
+    },
+    async () => {
+      const res = await nearbyFlights(flightsUrl(), env);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
+      assert.deepEqual(JSON.parse(await res.text()), { ac: [{ hex: 'abc123' }] });
+    },
+  );
+  assert.equal(directUpstreamCalled, false);
+});
+
+test('SELF_HOSTED_FLIGHTS_URL configured but failing falls through to the direct OpenSky/airplanes.live tiers', async () => {
+  const env = { SELF_HOSTED_FLIGHTS_URL: 'https://relay.example.com', RELAY_SHARED_SECRET: 'shh' };
+  await withMockedFetch(
+    async (url) => {
+      if (String(url).startsWith('https://relay.example.com/')) return new Response('', { status: 502 });
+      if (String(url).startsWith('https://opensky-network.org/')) return new Response(JSON.stringify(OPENSKY_STATES), { status: 200 });
+      throw new Error(`unexpected fetch to ${url}`);
+    },
+    async () => {
+      const res = await nearbyFlights(flightsUrl(), env);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
+    },
+  );
+});
+
+test('no SELF_HOSTED_FLIGHTS_URL configured: relay is never called, goes straight to the direct tiers', async () => {
+  await withMockedFetch(
+    async (url) => {
+      if (String(url).includes('relay')) throw new Error('relay should never be called when unconfigured');
+      if (String(url).startsWith('https://opensky-network.org/')) return new Response(JSON.stringify(OPENSKY_STATES), { status: 200 });
+      throw new Error(`unexpected fetch to ${url}`);
+    },
+    async () => {
+      const res = await nearbyFlights(flightsUrl(), {});
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-flight-source'), 'opensky');
+    },
+  );
+});
+
 test('OpenSky succeeding (anonymous, no creds configured) means airplanes.live is never touched', async () => {
   let airplanesLiveCalled = false;
   await withMockedFetch(
