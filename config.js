@@ -676,6 +676,12 @@ export const CONFIG = {
   // projection — see FLIGHT_OVERHEAD_RADIUS_M.
   FLIGHT_POLL_INTERVAL_MS: 15000,
 
+  // How long a missing aircraft stays on the map after a poll no longer
+  // reports it, before it's actually removed. Live ADS-B data has real
+  // gaps — one poll skipping a plane that's still there doesn't mean it's
+  // gone. 4 poll cycles' worth of grace period.
+  FLIGHT_STALE_RETENTION_MS: 60000,
+
   // A 429 from the upstream data source means back off, not keep polling
   // at the normal cadence and hammer an already-throttling endpoint.
   // FLIGHT_BACKOFF_BASE_MS is the first pause; applyFlightBackoff in app.js

@@ -1509,6 +1509,10 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   z-index: 50;
   background: var(--bg);
   overflow-y: auto;
+  /* Stops a scroll gesture near the screen edge from being read as a
+     browser/OS back-swipe — html/body alone isn't enough since this is
+     the actual scrolling element. */
+  overscroll-behavior-x: none;
   padding: max(16px, env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 #offline-panel.hidden, #saved-panel.hidden, #docs-panel.hidden, #ev-details-panel.hidden, #trip-summary-panel.hidden, #flight-airport-panel.hidden { display: none; }
@@ -1567,6 +1571,7 @@ button.ev-detail-link { background: none; border: none; padding: 0; font: inheri
   z-index: 25;
   max-height: 45vh;
   overflow-y: auto;
+  overscroll-behavior-x: none;
   background: var(--panel);
   border-radius: var(--radius);
   box-shadow: var(--shadow);

@@ -1158,13 +1158,16 @@ mapLoad.then(() => {
     filter: ['!', ['get', 'on_ground']],
     layout: {
       'icon-image': 'flight-plane',
+      // Bumped up across the board — the old curve made aircraft nearly
+      // invisible at the zoom levels people actually use for Flight
+      // Tracking Mode's 20nm regional radius (z4-z10), especially 'sm'/'xs'.
       'icon-size': [
         'interpolate', ['exponential', 1.4], ['zoom'],
-        4, ['match', ['get', 'size_class'], 'xl', 0.18, 'lg', 0.15, 'md', 0.12, 'sm', 0.10, 'xs', 0.08, 0.12],
-        7, ['match', ['get', 'size_class'], 'xl', 0.36, 'lg', 0.30, 'md', 0.24, 'sm', 0.20, 'xs', 0.15, 0.24],
-        10, ['match', ['get', 'size_class'], 'xl', 0.80, 'lg', 0.68, 'md', 0.55, 'sm', 0.44, 'xs', 0.34, 0.55],
-        14, ['match', ['get', 'size_class'], 'xl', 1.80, 'lg', 1.50, 'md', 1.20, 'sm', 0.96, 'xs', 0.74, 1.20],
-        18, ['match', ['get', 'size_class'], 'xl', 3.40, 'lg', 2.90, 'md', 2.40, 'sm', 1.90, 'xs', 1.50, 2.40],
+        4, ['match', ['get', 'size_class'], 'xl', 0.30, 'lg', 0.26, 'md', 0.22, 'sm', 0.18, 'xs', 0.15, 0.22],
+        7, ['match', ['get', 'size_class'], 'xl', 0.54, 'lg', 0.46, 'md', 0.38, 'sm', 0.31, 'xs', 0.25, 0.38],
+        10, ['match', ['get', 'size_class'], 'xl', 1.00, 'lg', 0.86, 'md', 0.70, 'sm', 0.58, 'xs', 0.46, 0.70],
+        14, ['match', ['get', 'size_class'], 'xl', 2.00, 'lg', 1.70, 'md', 1.40, 'sm', 1.15, 'xs', 0.90, 1.40],
+        18, ['match', ['get', 'size_class'], 'xl', 3.60, 'lg', 3.10, 'md', 2.60, 'sm', 2.10, 'xs', 1.65, 2.60],
       ],
       'icon-rotate': ['get', 'heading'],
       'icon-rotation-alignment': 'map',
@@ -1187,11 +1190,14 @@ mapLoad.then(() => {
     filter: ['get', 'on_ground'],
     layout: {
       'icon-image': 'flight-plane',
+      // Same "was too small" bump as the airborne layer above, smaller
+      // proportionally since ground traffic is only shown once already
+      // zoomed in near an airport (minzoom 7).
       'icon-size': [
         'interpolate', ['exponential', 1.4], ['zoom'],
-        7, ['match', ['get', 'size_class'], 'xl', 0.06, 'lg', 0.05, 'md', 0.05, 'sm', 0.04, 'xs', 0.03, 0.05],
-        9, ['match', ['get', 'size_class'], 'xl', 0.10, 'lg', 0.09, 'md', 0.08, 'sm', 0.07, 'xs', 0.06, 0.08],
-        12, ['match', ['get', 'size_class'], 'xl', 0.45, 'lg', 0.38, 'md', 0.32, 'sm', 0.25, 'xs', 0.20, 0.32],
+        7, ['match', ['get', 'size_class'], 'xl', 0.09, 'lg', 0.08, 'md', 0.07, 'sm', 0.06, 'xs', 0.05, 0.07],
+        9, ['match', ['get', 'size_class'], 'xl', 0.15, 'lg', 0.13, 'md', 0.11, 'sm', 0.10, 'xs', 0.08, 0.11],
+        12, ['match', ['get', 'size_class'], 'xl', 0.55, 'lg', 0.47, 'md', 0.40, 'sm', 0.32, 'xs', 0.26, 0.40],
         14, ['match', ['get', 'size_class'], 'xl', 0.80, 'lg', 0.68, 'md', 0.55, 'sm', 0.44, 'xs', 0.34, 0.55],
         18, ['match', ['get', 'size_class'], 'xl', 1.60, 'lg', 1.35, 'md', 1.10, 'sm', 0.88, 'xs', 0.68, 1.10],
       ],
@@ -3832,8 +3838,12 @@ function openAircraftDetailPanel(hex) {
   el.flightAircraftPanelRoute.classList.add('hidden');
   el.flightAircraftPanelRouteUnknown.classList.add('hidden');
   renderAircraftDetailPanel(hex);
+  const wasHidden = el.flightAircraftPanel.classList.contains('hidden');
   el.flightAircraftPanel.classList.remove('hidden');
-  pushBackLayer(closeAircraftDetailPanel);
+  // Only push a new back-stack entry if the panel was actually closed —
+  // a double-tap re-opening an already-open panel would otherwise push a
+  // second entry, so one back press closes it but leaves a phantom one behind.
+  if (wasHidden) pushBackLayer(closeAircraftDetailPanel);
   fetchAndRenderFlightRoute(hex);
 }
 
@@ -3979,8 +3989,12 @@ async function renderAirportInfoPanel(icao) {
  * result rather than overwrite it. */
 function openAirportInfoPanel(icao) {
   el.flightAirportPanelTitle.dataset.icao = icao;
+  const wasHidden = el.flightAirportPanel.classList.contains('hidden');
   el.flightAirportPanel.classList.remove('hidden');
-  pushBackLayer(closeAirportInfoPanel);
+  // Only push a new back-stack entry if the panel was actually closed —
+  // a double-tap re-opening an already-open panel would otherwise push a
+  // second entry, so one back press closes it but leaves a phantom one behind.
+  if (wasHidden) pushBackLayer(closeAirportInfoPanel);
   renderAirportInfoPanel(icao);
 }
 
@@ -4312,10 +4326,15 @@ function updateFlightLayer(aircraftList) {
     seenHex.add(key);
     flightDRCache.set(key, { a, atMs: nowMs });
   });
-  // Drop entries this poll no longer reports — same effect as the old
-  // wholesale setData replace, just realized on the next rAF tick instead
-  // of immediately when Flight Tracking Mode is active.
-  for (const key of flightDRCache.keys()) if (!seenHex.has(key)) flightDRCache.delete(key);
+  // Only drop entries this poll no longer reports AFTER a grace period
+  // (FLIGHT_STALE_RETENTION_MS), not the instant one poll misses them —
+  // live ADS-B data regularly skips an aircraft for a cycle even while
+  // it's still there. A still-missing entry keeps rendering via
+  // buildDRFeatureCollection's dead-reckoning (frozen at its
+  // extrapolation cap once that's exceeded) until this actually expires it.
+  for (const [key, entry] of flightDRCache.entries()) {
+    if (!seenHex.has(key) && nowMs - entry.atMs > CONFIG.FLIGHT_STALE_RETENTION_MS) flightDRCache.delete(key);
+  }
 
   if (!state.flightModeActive) {
     // Guarded the same way startFlightModeRendering's own rAF tick already
