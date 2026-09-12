@@ -24,38 +24,54 @@
 // simpler than trying to share a module across two genuinely different
 // execution environments.
 //
-// Deployment (systemd, on the same box as a self-hosted Valhalla instance):
+// Deployment (systemd + Cloudflare Tunnel, same box as a self-hosted
+// Valhalla instance):
 //   1. Copy this file to the server, e.g. /opt/flights-relay/flights-relay.mjs
 //   2. Create /etc/systemd/system/flights-relay.service:
 //        [Unit]
 //        Description=osm-navigator flights relay
 //        After=network.target
 //        [Service]
-//        ExecStart=/usr/bin/node /opt/flights-relay/flights-relay.mjs
+//        ExecStart=<path from `which node`> /opt/flights-relay/flights-relay.mjs
 //        Environment=PORT=8091
-//        Environment=RELAY_SHARED_SECRET=<a long random string>
-//        Environment=OPENSKY_CLIENT_ID=<optional, from opensky-network.org's API client page>
-//        Environment=OPENSKY_CLIENT_SECRET=<optional>
+//        EnvironmentFile=/etc/flights-relay/env   (RELAY_SHARED_SECRET, optionally OPENSKY_CLIENT_ID/SECRET — chmod 600, not embedded directly in this world-readable file)
 //        Restart=on-failure
-//        User=<a non-root user>
+//        User=<whichever user owns the `node` install — nvm installs are per-user>
 //        [Install]
 //        WantedBy=multi-user.target
-//   3. systemctl enable --now flights-relay
-//   4. Reverse-proxy it under your existing domain (nginx, alongside
-//      whatever already fronts Valhalla), e.g.:
-//        location /flights-relay/ {
-//          proxy_pass http://127.0.0.1:8091/;
-//        }
-//      then set the Cloudflare secret SELF_HOSTED_FLIGHTS_URL to
-//      https://valhalla.first-time.space/flights-relay (no trailing
-//      slash) and RELAY_SHARED_SECRET to the same random string as above.
+//   3. systemctl daemon-reload && systemctl enable --now flights-relay
+//   4. Add an ingress rule to your existing cloudflared config.yml (same
+//      tunnel that already serves Valhalla), e.g.:
+//        ingress:
+//          - hostname: valhalla.first-time.space
+//            service: http://localhost:8002
+//          - hostname: flights.first-time.space
+//            service: http://localhost:8091
+//          - service: http_status:404
+//      then `cloudflared tunnel route dns <tunnel-name> flights.first-time.space`
+//      (or add the CNAME manually in the dashboard, pointing at the same
+//      <tunnel-uuid>.cfargotunnel.com target as the valhalla record, if
+//      `route dns` complains about a missing origin cert) and
+//      `systemctl restart cloudflared`.
+//   5. Set the Cloudflare Worker secrets: SELF_HOSTED_FLIGHTS_URL to
+//      https://flights.first-time.space (no trailing slash) and
+//      RELAY_SHARED_SECRET to the same value as step 2's env file.
 //
 // RELAY_SHARED_SECRET is required, not optional — unlike Valhalla's own
 // proxy (which just forwards to a real Valhalla binary that only does
 // routing math), this relay holds real upstream credentials and spends a
 // real, personal OpenSky/airplanes.live quota. Without a shared secret,
 // anyone who finds this URL could run up against that quota on your
-// behalf. The Worker sends it as the `x-relay-secret` header.
+// behalf. The Worker sends it as the `x-relay-secret` header. Same secret
+// gates /status below — it reports real operational detail (whether each
+// upstream is actually working), not something to leave open either.
+//
+// GET /status (same x-relay-secret auth as /flights) returns
+// { time, sources: { opensky: {...}, 'airplanes.live': {...} } } — `time`
+// is when the response was generated (so you know you're looking at a
+// live page), lastSuccessAt/lastAttemptAt/lastError per source is the
+// real "is this actually working" signal, since the process can be "up"
+// for days while a source quietly stopped answering.
 
 import http from 'node:http';
 
@@ -138,44 +154,79 @@ function openSkyStateToAircraft(state, nowS) {
   };
 }
 
+// Tracked purely for /status below — lets you glance at the page and see
+// WHEN each source last actually worked, not just whether the relay
+// process is up. Reset on every restart (in-memory only, no need to
+// persist this across a reboot).
+const sourceStatus = {
+  opensky: { lastAttemptAt: null, lastSuccessAt: null, lastError: null },
+  'airplanes.live': { lastAttemptAt: null, lastSuccessAt: null, lastError: null },
+};
+
 async function tryFetchOpenSky(lat, lon, radiusNm) {
+  sourceStatus.opensky.lastAttemptAt = new Date().toISOString();
   const { lamin, lamax, lomin, lomax } = bboxFromPoint(lat, lon, radiusNm);
   const url = `${OPENSKY_STATES_URL}?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
   const token = await getOpenSkyToken();
   const headers = token ? { ...UPSTREAM_HEADERS, Authorization: `Bearer ${token}` } : UPSTREAM_HEADERS;
   try {
     const res = await fetchWithTimeout(url, { headers });
-    if (!res.ok) return { ok: false, status: res.status };
+    if (!res.ok) {
+      sourceStatus.opensky.lastError = `HTTP ${res.status}`;
+      return { ok: false, status: res.status };
+    }
     const data = await res.json();
     const nowS = Math.floor(Date.now() / 1000);
     const ac = (Array.isArray(data.states) ? data.states : []).map((s) => openSkyStateToAircraft(s, nowS)).filter(Boolean);
+    sourceStatus.opensky.lastSuccessAt = sourceStatus.opensky.lastAttemptAt;
+    sourceStatus.opensky.lastError = null;
     return { ok: true, body: { ac } };
   } catch (err) {
+    sourceStatus.opensky.lastError = err.message;
     return { ok: false, status: null, err: err.message };
   }
 }
 
 async function tryFetchAirplanesLive(lat, lon, radiusNm) {
+  sourceStatus['airplanes.live'].lastAttemptAt = new Date().toISOString();
   try {
     const res = await fetchWithTimeout(`${AIRPLANES_LIVE_BASE_URL}/${lat}/${lon}/${radiusNm}`, { headers: UPSTREAM_HEADERS });
-    if (!res.ok) return { ok: false, status: res.status };
+    if (!res.ok) {
+      sourceStatus['airplanes.live'].lastError = `HTTP ${res.status}`;
+      return { ok: false, status: res.status };
+    }
     const body = await res.json();
+    sourceStatus['airplanes.live'].lastSuccessAt = sourceStatus['airplanes.live'].lastAttemptAt;
+    sourceStatus['airplanes.live'].lastError = null;
     return { ok: true, body };
   } catch (err) {
+    sourceStatus['airplanes.live'].lastError = err.message;
     return { ok: false, status: null, err: err.message };
   }
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (url.pathname !== '/flights') {
+  if (url.pathname !== '/flights' && url.pathname !== '/status') {
     res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found. Only /flights is served here.' }));
+    res.end(JSON.stringify({ error: 'Not found. Only /flights and /status are served here.' }));
     return;
   }
   if (req.headers['x-relay-secret'] !== RELAY_SHARED_SECRET) {
     res.writeHead(401, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'Missing or wrong x-relay-secret.' }));
+    return;
+  }
+
+  if (url.pathname === '/status') {
+    // `time` is when THIS response was generated — glance at it against
+    // the wall clock to know you're looking at a live page, not a stale
+    // cached one. lastSuccessAt per source is the actual "is this working
+    // right now" signal — a real fetch could have last succeeded minutes
+    // or hours ago even while the process itself has been "up" the whole
+    // time.
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ time: new Date().toISOString(), sources: sourceStatus }, null, 2));
     return;
   }
 
