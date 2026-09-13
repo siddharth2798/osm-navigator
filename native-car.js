@@ -30,3 +30,17 @@ export function setNavigating(active) {
 export function updateTurnCard({ maneuverKind, instruction, stepDistM, remainingDistM, remainingTimeS }) {
   return CarNav.updateTurnCard({ maneuverKind, instruction, stepDistM, remainingDistM, remainingTimeS });
 }
+
+/** Pushes the full route line to the car screen's map — call once per route
+ * computed or rerouted (see renderRoute in app.js), not on every tick.
+ * `coordinates` is the same [lng, lat] pair array as state.route.coords. */
+export function updateRoute({ coordinates }) {
+  return CarNav.updateRoute({ coordinates });
+}
+
+/** Pushes the live position + heading to the car screen's map — call at the
+ * same cadence onPositionUpdate already runs at (same tick that drives the
+ * WebView puck/camera). */
+export function updatePosition({ lng, lat, headingDeg }) {
+  return CarNav.updatePosition({ lng, lat, headingDeg });
+}

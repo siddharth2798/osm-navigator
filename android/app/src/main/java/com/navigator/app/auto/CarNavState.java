@@ -24,6 +24,15 @@ final class CarNavState {
   private static volatile double stepDistM = 0;
   private static volatile double remainingDistM = 0;
   private static volatile double remainingTimeS = 0;
+  // Route line for the SurfaceCallback map — [ [lng, lat], ... ], same order
+  // as app.js's state.route.coords. Null until the first route is pushed;
+  // replaced wholesale (not mutated) on every route/reroute, so a reader
+  // grabbing the reference never sees a half-updated array.
+  @Nullable private static volatile double[][] routeCoords = null;
+  private static volatile boolean hasPosition = false;
+  private static volatile double posLng = 0;
+  private static volatile double posLat = 0;
+  private static volatile double posHeadingDeg = 0;
 
   private CarNavState() {}
 
@@ -72,6 +81,40 @@ final class CarNavState {
 
   static double getRemainingTimeS() {
     return remainingTimeS;
+  }
+
+  static void setRoute(double[][] coords) {
+    routeCoords = coords;
+    notifyListener();
+  }
+
+  @Nullable
+  static double[][] getRouteCoords() {
+    return routeCoords;
+  }
+
+  static void setPosition(double lng, double lat, double headingDeg) {
+    posLng = lng;
+    posLat = lat;
+    posHeadingDeg = headingDeg;
+    hasPosition = true;
+    notifyListener();
+  }
+
+  static boolean hasPosition() {
+    return hasPosition;
+  }
+
+  static double getPosLng() {
+    return posLng;
+  }
+
+  static double getPosLat() {
+    return posLat;
+  }
+
+  static double getPosHeadingDeg() {
+    return posHeadingDeg;
   }
 
   private static void notifyListener() {

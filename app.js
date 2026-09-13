@@ -11,7 +11,7 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
-import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard } from './native-car.js';
+import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard, updateRoute as updateCarNavRoute, updatePosition as updateCarNavPosition } from './native-car.js';
 import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
@@ -5520,6 +5520,9 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   // reroute needs to slice this exact array, not the possibly-larger current getStops() list.
   built.stops = stops;
   state.route = built;
+  // Android Auto's SurfaceCallback map — pushed once per route computed/rerouted,
+  // not per tick (see updatePosition in onPositionUpdate for the live puck).
+  if (isNativePlatform()) updateCarNavRoute({ coordinates: built.coords }).catch(() => {});
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.spokenContinue = new Set();
@@ -7071,6 +7074,8 @@ function onPositionUpdate(pos) {
 
   updatePuck(displayLngLat, headingDeg);
   if (state.followMode) followCamera(displayLngLat, headingDeg);
+  // Android Auto's SurfaceCallback map puck — same cadence as the WebView puck above.
+  if (isNativePlatform()) updateCarNavPosition({ lng: displayLngLat[0], lat: displayLngLat[1], headingDeg }).catch(() => {});
   if (!state.route) return;
 
   state.traveledM = traveledM;
@@ -7819,6 +7824,7 @@ if (shareTargetText) {
       if (saved && saved.route && saved.to) {
         state.route = saved.route;
         state.route.lineFeature = turf.lineString(state.route.coords);
+        if (isNativePlatform()) updateCarNavRoute({ coordinates: state.route.coords }).catch(() => {});
         state.from = saved.from;
         state.to = saved.to;
         state.travelMode = saved.travelMode || 'drive';
