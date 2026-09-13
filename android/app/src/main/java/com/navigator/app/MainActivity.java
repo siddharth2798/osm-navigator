@@ -23,6 +23,7 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.Priority;
+import com.navigator.app.auto.CarNavPlugin;
 
 public class MainActivity extends BridgeActivity {
   private View pipTurnCardView;
@@ -38,6 +39,7 @@ public class MainActivity extends BridgeActivity {
     registerPlugin(LocationSettingsPlugin.class);
     registerPlugin(NavPipPlugin.class);
     registerPlugin(AudioFocusPlugin.class);
+    registerPlugin(CarNavPlugin.class);
     super.onCreate(savedInstanceState);
 
     // Inflated once, kept hidden (GONE) until PiP actually starts — see

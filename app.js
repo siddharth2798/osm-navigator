@@ -11,6 +11,7 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
+import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard } from './native-car.js';
 import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
@@ -6806,6 +6807,7 @@ function updateActiveManeuver(traveledM, lngLat) {
   state.currentLegIndex = maneuvers[currentIdx].legIndex; // which origin/stop/destination leg we're on, for reroute
   const nextIdx = currentIdx + 1 < maneuvers.length ? currentIdx + 1 : null;
   const remainingM = Math.max(0, state.route.totalDistM - traveledM);
+  let distToNextM = 0; // hoisted out of the if/nextIdx block below — also needed at the native-car.js call site further down
 
   // Ends the ride by remaining distance alone, not by maneuver index — Valhalla's cumulative
   // lengths and turf's measured distance can drift apart on a long route, so gating on
@@ -6841,7 +6843,7 @@ function updateActiveManeuver(traveledM, lngLat) {
   }
 
   if (nextIdx !== null) {
-    const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
+    distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
     highlightManeuver(nextIdx);
     el.navBannerIcon.innerHTML = maneuverIcon(maneuvers[nextIdx].type);
     el.navBannerInstruction.textContent = maneuvers[nextIdx].instruction;
@@ -6908,6 +6910,16 @@ function updateActiveManeuver(traveledM, lngLat) {
       instruction: el.navBannerInstruction.textContent,
       distanceText: el.navBannerDistance.textContent,
       etaText: `${formatDistance(remainingM)} left · ${formatDuration(remainingTimeS)}`,
+    }).catch(() => {});
+    // Android Auto's NavigationTemplate — same tick, raw numbers instead of
+    // pre-formatted text since the car template needs a real Distance
+    // object natively, not a string (see CarNavState/NavigationScreen.java).
+    updateCarNavTurnCard({
+      maneuverKind: nextIdx !== null ? maneuverPipIconKey(maneuvers[nextIdx].type) : 'arrive',
+      instruction: el.navBannerInstruction.textContent,
+      stepDistM: distToNextM,
+      remainingDistM: remainingM,
+      remainingTimeS,
     }).catch(() => {});
   }
 }
@@ -7209,6 +7221,7 @@ async function startNavigation({ resuming = false } = {}) {
   state.navigating = true; // claimed before the await below so a second tap can't start a second GPS watch/wake lock
   stopIdleLocationShare(); // stop the idle "where am I" watch — no overlapping GPS watches once the nav puck takes over
   if (isNativePlatform()) setPipNavigating(true).catch(() => {}); // lets native PiP know it can auto-enter if the user leaves the app
+  if (isNativePlatform()) setCarNavNavigating(true).catch(() => {});
   // mapLoad may not have settled yet on the resume-on-reload path (unlike a normal Start tap, which already awaited it via renderRoute).
   resolverDebugLog('Awaiting map load…');
   try {
@@ -7218,6 +7231,7 @@ async function startNavigation({ resuming = false } = {}) {
     resolverDebugLog(`Map load failed: ${err.message}`, 'error');
     state.navigating = false;
     if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+    if (isNativePlatform()) setCarNavNavigating(false).catch(() => {});
     showStatus(err.message, 'error');
     return;
   }
@@ -7228,6 +7242,7 @@ async function startNavigation({ resuming = false } = {}) {
     resolverDebugLog('state.route/state.to disappeared while awaiting map load (route was cancelled) — aborting startNavigation.', 'warn');
     state.navigating = false;
     if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+    if (isNativePlatform()) setCarNavNavigating(false).catch(() => {});
     return;
   }
 
@@ -7329,6 +7344,7 @@ async function startNavigation({ resuming = false } = {}) {
     state.navigating = false;
     releaseWakeLock();
     if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+    if (isNativePlatform()) setCarNavNavigating(false).catch(() => {});
     showStatus('Could not start navigation: ' + err.message, 'error');
   }
 }
@@ -7351,6 +7367,7 @@ function endNavigation({ showSummary = false, arrived = false } = {}) {
   state.navigating = false;
   releaseWakeLock();
   if (isNativePlatform()) setPipNavigating(false).catch(() => {}); // see the matching call in startNavigation
+  if (isNativePlatform()) setCarNavNavigating(false).catch(() => {});
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   // Stops whatever's still speaking — speechSynthesis.cancel() alone is a silent no-op on the native shell.
@@ -7675,6 +7692,7 @@ async function startTransitNavigation(itinerary) {
   state.lastHeading = 0;
   acquireWakeLock();
   if (isNativePlatform()) setPipNavigating(true).catch(() => {});
+  if (isNativePlatform()) setCarNavNavigating(true).catch(() => {});
 
   stopIdleLocationShare(); // same "the live puck takes over" handoff startNavigation does
   if (state.originMarker) { state.originMarker.remove(); state.originMarker = null; }
@@ -7718,6 +7736,7 @@ function endTransitNavigation({ arrived = false } = {}) {
   state.transitTracking = false;
   releaseWakeLock();
   if (isNativePlatform()) setPipNavigating(false).catch(() => {});
+  if (isNativePlatform()) setCarNavNavigating(false).catch(() => {});
 
   if (state.puckMarker) { state.puckMarker.remove(); state.puckMarker = null; }
   if (isNativePlatform()) stopNative().catch(() => {});
