@@ -2662,6 +2662,8 @@ const TOMTOM_CATEGORY_TERM = {
   'amenity=restaurant': 'restaurant',
   'amenity=parking': 'parking',
   'tourism=hotel': 'hotel',
+  'railway=station': 'railway station',
+  'aeroway=aerodrome': 'airport',
 };
 
 /** Fallback for when Nominatim's OSM-tag search comes back empty at both
@@ -4599,6 +4601,8 @@ const CATEGORY_KEYWORDS = [
   { tag: 'amenity=restaurant', keys: ['restaurant', 'food', 'dining', 'eatery'] },
   { tag: 'amenity=parking', keys: ['parking', 'car park'] },
   { tag: 'tourism=hotel', keys: ['hotel', 'lodging', 'accommodation'] },
+  { tag: 'railway=station', keys: ['railway station', 'train station'] },
+  { tag: 'aeroway=aerodrome', keys: ['airport'] },
 // Word-boundary matching, not a raw substring check — e.g. `s.includes('atm')`
 // matched "Katmandu Kitchen" and "Atmiya Institute" (confirmed live), silently
 // hijacking a specific-place lookup into an ATM category search near the
@@ -4613,6 +4617,19 @@ function matchCategoryTag(subject) {
   const s = subject.toLowerCase();
   for (const entry of CATEGORY_KEYWORDS) {
     if (entry.re.test(s)) return entry.tag;
+  }
+  return null;
+}
+
+/** Like matchCategoryTag, but only for a query that IS a bare category term (modulo a "nearest"/"closest"/
+ * "nearby" prefix) rather than just containing one — so a plain search for "Apollo Hospital" still goes
+ * through Nominatim's own name search instead of getting redirected to "nearest hospital". Used by
+ * geocodeSearch for a plain (non-"near X") query, matching a real OSM feature nearest the user instead of
+ * whatever Nominatim's text ranking considers most "important" by name. */
+function matchCategoryTagWhole(query) {
+  const s = query.trim().toLowerCase().replace(/^(?:nearest|nearby|closest)\s+/, '');
+  for (const entry of CATEGORY_KEYWORDS) {
+    if (entry.keys.includes(s)) return entry.tag;
   }
   return null;
 }
@@ -5302,14 +5319,28 @@ async function geocodeSearch(query, opts = {}) {
   // have this problem (the place always resolves to the same anchor), so it
   // stays cached as normal.
   const isNearMe = !!nearMatch && NEAR_ME_KEYWORDS.has(nearMatch[2].trim().toLowerCase());
+  // A bare category term ("railway station", "airport") has the exact same problem as "near me" — it
+  // resolves against the device's current location, so the same text means a different nearest feature
+  // in a different place and can't be cached by text alone either.
+  const categoryTag = !nearMatch ? matchCategoryTagWhole(trimmed) : null;
+  const skipCache = isNearMe || !!categoryTag;
 
   let results;
-  if (!isNearMe && nominatimCache.has(cacheKey)) {
+  if (!skipCache && nominatimCache.has(cacheKey)) {
     results = nominatimCache.get(cacheKey);
   } else {
-    results = nearMatch
-      ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
-      : await nominatimSearch(trimmed);
+    if (nearMatch) {
+      results = await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim());
+    } else if (categoryTag) {
+      // Same tag+proximity search "near X" uses (see geocodeNear/categorySearchNear), anchored to the
+      // live GPS fix instead of an explicit "near" place — Nominatim's plain text ranking has no notion
+      // of physical distance and can rank a same-named feature in another town over the actual nearest one.
+      const liveLngLat = currentLiveLngLat();
+      results = liveLngLat ? await categorySearchNear(categoryTag, liveLngLat[1], liveLngLat[0]) : [];
+      if (!results.length) results = await nominatimSearch(trimmed); // no live fix yet, or nothing tagged nearby
+    } else {
+      results = await nominatimSearch(trimmed);
+    }
 
     // Fuzzy fallback only applies to a plain place-name search — a "near X"
     // query already does its own two-step anchor lookup with its own error
@@ -5326,7 +5357,7 @@ async function geocodeSearch(query, opts = {}) {
     // empty. Caching it as [] here would let a later, real search for this
     // exact string be wrongly answered from cache instead of actually
     // trying.
-    if (!aborted && !isNearMe) nominatimCache.set(cacheKey, results);
+    if (!aborted && !skipCache) nominatimCache.set(cacheKey, results);
   }
 
   // Bias plain-text results toward wherever the user actually is right
@@ -6556,14 +6587,27 @@ async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } 
   if (listEl.children.length) showSuggestionList(listEl);
 }
 
-/** Fetches a fresh GPS fix into `inputEl`, then hands the resulting place to
- * `apply` — shared by the from-field/to-field directions quick picks and
- * the main search box's own "Use my current location" quick pick (see
- * useCurrentLocationFor below). getCurrentPosition() is what actually
- * triggers the browser/OS location-permission prompt the first time it's
- * called — nothing extra needed here to ask for it. */
+/** Resolves into `inputEl`, then hands the resulting place to `apply` —
+ * shared by the from-field/to-field directions quick picks and the main
+ * search box's own "Use my current location" quick pick (see
+ * useCurrentLocationFor below). Prefers the fix the idle location share
+ * (or live nav) is already tracking — see currentLiveLngLat — over a
+ * fresh one-shot request, since that watch has usually been running
+ * since app open and a redundant getCurrentPosition() call just makes
+ * the user wait for GPS that's already known. Only falls back to a
+ * fresh fix when nothing is live yet (e.g. permission not granted, no
+ * fix acquired). getCurrentPosition() is what actually triggers the
+ * browser/OS location-permission prompt the first time it's called in
+ * that fallback case — nothing extra needed here to ask for it. */
 function useCurrentLocationInto(inputEl, suggestionsEl, apply) {
   hideSuggestionList(suggestionsEl); // not a direct classList toggle — needs to forgetBackLayerIfTop() too, see showSuggestionList
+  const liveLngLat = currentLiveLngLat();
+  if (liveLngLat) {
+    const place = { label: CURRENT_LOCATION_LABEL, lat: liveLngLat[1], lon: liveLngLat[0] };
+    inputEl.value = CURRENT_LOCATION_LABEL;
+    apply(place);
+    return;
+  }
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location.', 'error');
     return;
