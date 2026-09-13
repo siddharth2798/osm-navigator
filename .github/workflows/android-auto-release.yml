@@ -1,0 +1,84 @@
+name: Android Auto Debug Build
+
+on:
+  push:
+    branches: [android-auto]
+  workflow_dispatch: # Allows you to trigger it manually for testing
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for GitHub Actions to create a release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required so gh release's --generate-notes can diff against the previous tag
+
+      - name: Generate Tag Name
+        id: tag
+        run: |
+          # Same same-day-collapsing convention as daily-release.yml's
+          # "vYYYY-MM-DD" tag, just prefixed so it can never collide with a
+          # main-branch release tag: "android-auto-vYYYY-MM-DD". android-auto
+          # gets pushed to far more often than main during active
+          # development, so collapsing same-day pushes onto one release
+          # matters even more here.
+          echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # @capacitor/cli 8.x requires >=22
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Sync web assets into the Android shell
+        run: npm run cap:sync
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21' # @capacitor/android 8.x's own build.gradle requires Java 21 source/target compatibility
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Debug build only — this branch is personal/developer use, not merged
+      # to main, no Play Store distribution (see docs/ANDROID.md's Android
+      # Auto section). android/app/build.gradle's debug buildType already
+      # signs with the default debug keystore and applies
+      # applicationIdSuffix ".debug" so it installs side by side with any
+      # release build; there's no release-signing setup to add here.
+      - name: Build debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon -PappVersionCode=${{ github.run_number }}
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK_SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+          cp "$APK_SRC" osm-navigator-android-auto-debug.apk
+
+          TAG="android-auto-v${{ steps.tag.outputs.date }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A day with more than one push (or a manual workflow_dispatch
+            # re-run) would otherwise collide on the date-based tag —
+            # update the existing release's asset instead of failing.
+            gh release upload "$TAG" osm-navigator-android-auto-debug.apk --clobber
+          else
+            gh release create "$TAG" \
+              --title "Android Auto dev build ${{ steps.tag.outputs.date }}" \
+              --prerelease \
+              --generate-notes \
+              osm-navigator-android-auto-debug.apk
+          fi
