@@ -46,6 +46,19 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (releaseKeystorePath) signingConfig signingConfigs.release
         }
+        debug {
+            // Own applicationId (same pattern personal/flight-tracking uses for
+            // its own AeroNav rename) — a local debug build is signed with the
+            // default debug keystore, never the same key as a real release
+            // build, so without this a phone that already has a release build
+            // installed can't accept a debug one as an "update" at all (Android
+            // enforces matching signatures) — the only alternative would be
+            // uninstalling the existing app first, which loses its local data
+            // (saved places, offline maps, settings). This installs side by
+            // side instead, leaving whatever's already there untouched.
+            applicationIdSuffix ".debug"
+            resValue "string", "app_name", "Navigator (Dev)"
+        }
     }
 }
 

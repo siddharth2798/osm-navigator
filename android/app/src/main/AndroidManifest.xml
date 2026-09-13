@@ -16,6 +16,20 @@
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
 
+        <!-- Required — the host throws IllegalArgumentException("Min API
+             level not declared in manifest") and shows a generic "app
+             encountered an error" screen without this, confirmed live via
+             logcat (CarApp.H.Tem, androidx.car.app.AppInfo.create). Value 2
+             matches androidx.car.app.versioning.CarAppApiLevels.LEVEL_2 —
+             checked against the actual androidx.car.app:app:1.7.0 jar via
+             javap: NavigationTemplate/NavigationTemplate.Builder.setActionStrip
+             are @RequiresCarApi(2), nothing this app uses requires higher
+             (TravelEstimate.Builder.setTripText/setTripIcon are gated at 5,
+             but neither is called here). -->
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="2" />
+
         <service
             android:name=".auto.CarNavService"
             android:exported="true">
@@ -76,4 +90,9 @@
          but the next phase does and this permission can't be requested at
          runtime the way a normal dangerous permission can. -->
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
+    <!-- Required for AppManager.setSurfaceCallback() — confirmed live: without
+         this, the host throws SecurityException("The car app does not have a
+         required permission: androidx.car.app.ACCESS_SURFACE") the instant
+         NavigationScreen's constructor calls it, crashing the whole app. -->
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
 </manifest>
