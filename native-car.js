@@ -38,6 +38,15 @@ export function updateRoute({ coordinates }) {
   return CarNav.updateRoute({ coordinates });
 }
 
+/** Pushes destination/stop pins to the car screen's map — same call site and
+ * cadence as updateRoute (once per route computed/rerouted). `destination`
+ * is {lng, lat} or omitted if there's no destination yet; `stops` is an
+ * array of {lng, lat} in visit order, same convention as the phone's own
+ * numbered stop pins (see updatePlanningMarkers in app.js). */
+export function updateWaypoints({ destination, stops }) {
+  return CarNav.updateWaypoints({ destination, stops });
+}
+
 /** Pushes the live position + heading to the car screen's map — call at the
  * same cadence onPositionUpdate already runs at (same tick that drives the
  * WebView puck/camera). */
@@ -57,4 +66,48 @@ export function onStopRequested(callback) {
  * reverse-direction shape as onStopRequested, wired into voice-mode-btn. */
 export function onToggleVoiceRequested(callback) {
   return CarNav.addListener('toggleVoiceRequested', callback);
+}
+
+/** Drives the car screen's Mute icon (speaker-with-waves vs. speaker-with-X)
+ * — call from renderVoiceModeBtn() so the phone and car icons always change
+ * together. `mode` is the same value as state.voiceMode ("all"/"off"). */
+export function setVoiceMode(mode) {
+  return CarNav.setVoiceMode({ mode });
+}
+
+/** Fires when a category is picked on the car's search-along-route screen
+ * (CarSearchScreen). `tag` is an OSM tag string, same shape as
+ * CHIP_CATEGORY_TAGS' values — pass straight to categorySearchAlongRoute(). */
+export function onSearchRequested(callback) {
+  return CarNav.addListener('searchRequested', callback);
+}
+
+/** Reports search results back to CarSearchResultsScreen. `results` is an
+ * array of {label, distanceText} (both pre-formatted JS-side); omit (pass
+ * undefined/null) together with `error` to report a failed search instead. */
+export function updateSearchResults({ results, error }) {
+  return CarNav.updateSearchResults({ results, error });
+}
+
+/** Fires when a row is tapped on the car's search results screen — `index`
+ * is into the same results array most recently sent via updateSearchResults. */
+export function onSearchResultSelected(callback) {
+  return CarNav.addListener('searchResultSelected', callback);
+}
+
+/** Fires as the driver types into the car's "Where to?" destination search
+ * (CarDestinationSearchScreen) — a different feature from onSearchRequested
+ * above (that one searches *along an already-active route*; this one plans
+ * a brand-new trip). `query` is free text, same shape geocodeSearch()
+ * already takes. Results report back via updateSearchResults, same as the
+ * along-route search — the two screens are never open at once. */
+export function onDestinationSearchRequested(callback) {
+  return CarNav.addListener('destinationSearchRequested', callback);
+}
+
+/** Fires when a row is tapped on the car's destination search results —
+ * `index` is into the same results array most recently sent via
+ * updateSearchResults. */
+export function onDestinationSelected(callback) {
+  return CarNav.addListener('destinationSelected', callback);
 }

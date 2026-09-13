@@ -2,6 +2,8 @@ package com.navigator.app.auto;
 
 import androidx.annotation.Nullable;
 
+import java.util.List;
+
 /**
  * Plain in-process singleton — the bridge between CarNavPlugin (written to
  * from app.js on every updateActiveManeuver tick) and NavigationScreen (read
@@ -20,14 +22,47 @@ final class CarNavState {
   /** The reverse direction — car screen to phone. CarNavPlugin registers
    * itself once (see its load()) and forwards these into
    * Plugin.notifyListeners() as JS events; NavigationScreen's ActionStrip
-   * buttons call requestStop()/requestToggleVoice() when tapped. */
+   * buttons call requestStop()/requestToggleVoice() when tapped, and
+   * CarSearchScreen/CarSearchResultsScreen call the search two. */
   interface ActionListener {
     void onStopRequested();
     void onToggleVoiceRequested();
+    void onSearchRequested(String tag);
+    void onSearchResultSelected(int index);
+    void onDestinationSearchRequested(String query);
+    void onDestinationSelected(int index);
+  }
+
+  /** CarSearchResultsScreen listens for this while it's on screen — separate
+   * from Listener above (which stays dedicated to NavigationScreen's own
+   * turn-card/trip updates) so a search screen being open doesn't steal
+   * NavigationScreen's listener slot and pause its NavigationManager
+   * updates. */
+  interface SearchResultsListener {
+    void onSearchResultsChanged();
+  }
+
+  /** One result row — label + a pre-formatted route-distance string, both
+   * computed JS-side (same formatDistance() the phone's own results list
+   * uses) so native doesn't need its own copy of that formatting logic. */
+  static final class SearchResult {
+    final String label;
+    final String distanceText;
+
+    SearchResult(String label, String distanceText) {
+      this.label = label;
+      this.distanceText = distanceText;
+    }
   }
 
   @Nullable private static volatile Listener listener;
   @Nullable private static volatile ActionListener actionListener;
+  @Nullable private static volatile SearchResultsListener searchResultsListener;
+  private static volatile String voiceMode = "all";
+  // null results + null error = still loading; non-null results (possibly
+  // empty) = a completed search; non-null error = the search failed.
+  @Nullable private static volatile List<SearchResult> searchResults = null;
+  @Nullable private static volatile String searchError = null;
   private static volatile boolean navigating = false;
   private static volatile String maneuverKind = "straight";
   private static volatile String instruction = "";
@@ -39,6 +74,9 @@ final class CarNavState {
   // replaced wholesale (not mutated) on every route/reroute, so a reader
   // grabbing the reference never sees a half-updated array.
   @Nullable private static volatile double[][] routeCoords = null;
+  // Same null-until-first-push/wholesale-replace shape as routeCoords.
+  @Nullable private static volatile double[] destinationCoords = null;
+  private static volatile double[][] stopCoords = new double[0][2];
   private static volatile boolean hasPosition = false;
   private static volatile double posLng = 0;
   private static volatile double posLat = 0;
@@ -72,8 +110,92 @@ final class CarNavState {
     if (l != null) l.onToggleVoiceRequested();
   }
 
+  static void setVoiceMode(String mode) {
+    voiceMode = mode;
+    notifyListener();
+  }
+
+  static String getVoiceMode() {
+    return voiceMode;
+  }
+
+  static void setSearchResultsListener(@Nullable SearchResultsListener l) {
+    searchResultsListener = l;
+  }
+
+  /** Called by CarSearchResultsScreen when it starts — resets to the
+   * loading state and asks app.js to run the search, mirroring exactly what
+   * the phone's own along-route-search category chips do. */
+  static void requestSearch(String tag) {
+    searchResults = null;
+    searchError = null;
+    notifySearchResultsListener();
+    ActionListener l = actionListener;
+    if (l != null) l.onSearchRequested(tag);
+  }
+
+  static void setSearchResults(@Nullable List<SearchResult> results, @Nullable String error) {
+    searchResults = results;
+    searchError = error;
+    notifySearchResultsListener();
+  }
+
+  @Nullable
+  static List<SearchResult> getSearchResults() {
+    return searchResults;
+  }
+
+  @Nullable
+  static String getSearchError() {
+    return searchError;
+  }
+
+  static void requestSelectSearchResult(int index) {
+    ActionListener l = actionListener;
+    if (l != null) l.onSearchResultSelected(index);
+  }
+
+  /** Same request/response shape and the same searchResults/searchError/
+   * SearchResultsListener slot as requestSearch() above — CarSearchResultsScreen
+   * and CarDestinationSearchScreen are never on screen at the same time (Car
+   * App Library shows exactly one Screen at once), so sharing the slot is
+   * simpler than a second parallel copy of the same three fields. */
+  static void requestDestinationSearch(String query) {
+    searchResults = null;
+    searchError = null;
+    notifySearchResultsListener();
+    ActionListener l = actionListener;
+    if (l != null) l.onDestinationSearchRequested(query);
+  }
+
+  static void requestSelectDestination(int index) {
+    ActionListener l = actionListener;
+    if (l != null) l.onDestinationSelected(index);
+  }
+
+  /** Called when CarDestinationSearchScreen's query becomes too short to
+   * search (see its onSearchTextChanged) — clears any previous results
+   * without going through the loading state a real search would. */
+  static void clearSearchResults() {
+    searchResults = null;
+    searchError = null;
+    notifySearchResultsListener();
+  }
+
   static void setNavigating(boolean active) {
     navigating = active;
+    // Clears the just-finished trip's route line so it doesn't linger on
+    // the car map forever — confirmed live: without this, setRoute() kept
+    // firing with the same stale coordinates after "ended navigation" since
+    // nothing ever told the map the route was gone. Position/puck are left
+    // alone — same as Google Maps, which keeps showing your dot after a
+    // trip ends, just without the route line. Destination/stop pins clear
+    // the same way, for the same reason.
+    if (!active) {
+      routeCoords = null;
+      destinationCoords = null;
+      stopCoords = new double[0][2];
+    }
     notifyListener();
   }
 
@@ -120,6 +242,25 @@ final class CarNavState {
     return routeCoords;
   }
 
+  /** Destination/stop pins for the car map — same phone convention (see
+   * updatePlanningMarkers in app.js): a red pin for the destination, numbered
+   * orange pins for stops in visit order. `destination` is null if there's
+   * no destination yet (matches getRouteCoords' null-until-first-push shape). */
+  static void setWaypoints(@Nullable double[] destination, double[][] stops) {
+    destinationCoords = destination;
+    stopCoords = stops;
+    notifyListener();
+  }
+
+  @Nullable
+  static double[] getDestinationCoords() {
+    return destinationCoords;
+  }
+
+  static double[][] getStopCoords() {
+    return stopCoords;
+  }
+
   static void setPosition(double lng, double lat, double headingDeg) {
     posLng = lng;
     posLat = lat;
@@ -147,5 +288,10 @@ final class CarNavState {
   private static void notifyListener() {
     Listener l = listener;
     if (l != null) l.onCarNavStateChanged();
+  }
+
+  private static void notifySearchResultsListener() {
+    SearchResultsListener l = searchResultsListener;
+    if (l != null) l.onSearchResultsChanged();
   }
 }

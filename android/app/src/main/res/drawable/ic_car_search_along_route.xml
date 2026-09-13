@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Search along route" (fuel/food/etc. near the active route) — a solid
+     map-pin shape, deliberately distinct from ic_car_search's magnifying
+     glass (the two looked identical/confusing as the same icon — see
+     NavigationScreen.buildActionStrip's own note). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:pathData="M12 2 C8 2 5 5 5 9 C5 14 12 22 12 22 C12 22 19 14 19 9 C19 5 16 2 12 2 Z"
+      android:fillColor="#FFFFFF" />
+</vector>

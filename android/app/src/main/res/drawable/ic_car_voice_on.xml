@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android Auto ActionStrip voice-guidance toggle — see NavigationScreen's
-     buildActionStrip(), wired to CarNavState.requestToggleVoice() ->
-     el.voiceModeBtn's existing click handler on the phone side. One static
-     glyph regardless of on/off state, same simplification the PiP mini-view
-     already makes for its own icon set. -->
+<!-- Android Auto ActionStrip voice-guidance toggle — shown while
+     state.voiceMode is "all" (see NavigationScreen's buildActionStrip and
+     CarNavState.getVoiceMode). Same speaker+waves shape as app.js's own
+     voiceModeIcon('all'), for a consistent mental model between the phone
+     and car icons. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
+    android:width="48dp"
+    android:height="48dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
   <path

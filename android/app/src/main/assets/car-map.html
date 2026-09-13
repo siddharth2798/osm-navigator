@@ -11,10 +11,20 @@
   Capacitor bridge, no app.js — native pushes data in by calling setRoute()/
   setPosition() through WebView.evaluateJavascript().
 -->
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<!-- Style, tiles, sprite, AND glyphs are all served from this one host
+     (confirmed by fetching the style JSON directly) — starts DNS+TCP+TLS
+     setup to it immediately, in parallel with maplibre-gl.js parsing/init,
+     instead of only after MapLibre issues its first style fetch. A cold
+     first connection to this host (fresh DNS lookup + TLS handshake, no
+     warm cache) was the actual measured bottleneck on a real device: one
+     run sat well past 3 minutes without finishing; a second run moments
+     later (same code, warm cache/connection) finished in under 2 seconds. -->
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
 <style>
   html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #202124; }
   .car-puck { width: 18px; height: 18px; border-radius: 50%; background: #ffffff; border: 3px solid #4a9eff; box-shadow: 0 0 0 2px rgba(0,0,0,0.35); }
+  .car-pin { width: 24px; height: 32px; }
 </style>
 </head>
 <body>
@@ -28,8 +38,13 @@
   };
   console.log('car-map: document script starting');
 </script>
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
-        onerror="console.error('car-map: failed to load maplibre-gl.js from unpkg')"
+<!-- Vendored locally (android/app/src/main/assets/vendor/), not fetched from
+     unpkg every session — the CDN round trip (JS + CSS, ~870KB combined) was
+     a real, measured, avoidable chunk of the map's cold-load time; the
+     style/tiles/sprite/glyph fetches below are real map data and still hit
+     the network, same as they would anywhere. -->
+<script src="vendor/maplibre-gl.js"
+        onerror="console.error('car-map: failed to load vendored maplibre-gl.js')"
         onload="console.log('car-map: maplibre-gl.js loaded')"></script>
 <script>
   console.log('car-map: init script running, maplibregl defined: ' + (typeof maplibregl));
@@ -60,8 +75,15 @@
   var ready = false; // style/tiles loaded — only gates the route line, which needs addSource/addLayer
   var pendingRoute = null;
   var puck = hasInit ? addPuck(initLng, initLat) : null; // shown immediately, no need to wait for 'load' — see applyPosition
+  var lastPosition = hasInit ? { lng: initLng, lat: initLat, headingDeg: isNaN(initHeading) ? 0 : initHeading } : null;
+  // Suspended by a manual pan (see window.panBy) so the next position push
+  // doesn't immediately yank the camera back — restored by the Recenter
+  // button (window.recenter). Same "followMode" concept as state.followMode
+  // on the phone's own map.
+  var followMode = true;
 
   map.on('load', function () {
+    console.log('car-map: style load event fired');
     map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
     map.addLayer({
       id: 'route',
@@ -74,8 +96,15 @@
     if (pendingRoute) { applyRoute(pendingRoute); pendingRoute = null; }
   });
 
+  // A LineString needs >= 2 positions per the GeoJSON spec — native calls
+  // this with an empty array specifically to *clear* the line (see
+  // NavigationScreen.pushRouteAndPositionToCarMap's own note), so that case
+  // gets an empty FeatureCollection instead of a malformed empty LineString.
   function applyRoute(coords) {
-    map.getSource('route').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } });
+    var data = coords.length > 1
+      ? { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } }
+      : { type: 'FeatureCollection', features: [] };
+    map.getSource('route').setData(data);
   }
 
   function addPuck(lng, lat) {
@@ -88,8 +117,9 @@
   // addSource/addLayer do) — "where am I" should show up the instant a fix
   // arrives, even mid-tile-fetch, not wait behind the route line's 'load' gate.
   function applyPosition(lng, lat, headingDeg) {
+    lastPosition = { lng: lng, lat: lat, headingDeg: headingDeg };
     if (!puck) puck = addPuck(lng, lat); else puck.setLngLat([lng, lat]);
-    map.easeTo({ center: [lng, lat], bearing: headingDeg, duration: 300 });
+    if (followMode) map.easeTo({ center: [lng, lat], bearing: headingDeg, duration: 300 });
   }
 
   // Called from native (NavigationScreen.pushRouteAndPositionToCarMap via
@@ -102,6 +132,64 @@
 
   window.setPosition = function (lng, lat, headingDeg) {
     applyPosition(lng, lat, headingDeg);
+  };
+
+  // ---- Map action strip: pan (NavigationScreen.onScroll), pinch/button
+  // zoom (onScale/zoomBy action), recenter (buildMapActionStrip's Recenter
+  // action) ----
+
+  // dx/dy are screen-pixel deltas in the *drag* direction (see
+  // NavigationScreen.onScroll's own note on sign convention) — panBy's own
+  // argument is how far the MAP moves, which is the drag direction directly
+  // (content follows the finger), duration 0 so it tracks the drag 1:1
+  // instead of lagging behind an animation queue.
+  window.panBy = function (dx, dy) {
+    followMode = false; // a manual pan means "stop overriding my view on the next position update"
+    map.panBy([dx, dy], { duration: 0 });
+  };
+
+  // deltaZoom is in MapLibre's own log2 zoom units (matches
+  // NavigationScreen's onScale conversion from Android's multiplicative
+  // scaleFactor) — panning doesn't change followMode, only panBy does.
+  window.zoomBy = function (deltaZoom) {
+    map.zoomTo(map.getZoom() + deltaZoom, { duration: 0 });
+  };
+
+  window.recenter = function () {
+    followMode = true;
+    if (lastPosition) map.easeTo({ center: [lastPosition.lng, lastPosition.lat], bearing: lastPosition.headingDeg, duration: 300 });
+  };
+
+  // ---- Destination/stop pins — same teardrop shape + colors as the phone's
+  // own createPinElement/createStopPinElement (app.js): red for the
+  // destination, orange with a number for each stop in visit order. ----
+  var destMarker = null;
+  var stopMarkers = [];
+
+  function clearStopMarkers() {
+    stopMarkers.forEach(function (m) { m.remove(); });
+    stopMarkers = [];
+  }
+
+  function addPinMarker(lng, lat, colorHex, number) {
+    var el = document.createElement('div');
+    el.className = 'car-pin';
+    var inner = number != null
+      ? '<circle cx="12" cy="12" r="8" fill="#fff"/><text x="12" y="16" text-anchor="middle" font-size="11" font-weight="700" fill="' + colorHex + '">' + number + '</text>'
+      : '<circle cx="12" cy="12" r="5" fill="#fff"/>';
+    el.innerHTML = '<svg viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">'
+      + '<path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 20 12 20s12-11 12-20C24 5.4 18.6 0 12 0z" fill="' + colorHex + '"/>'
+      + inner + '</svg>';
+    return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([lng, lat]).addTo(map);
+  }
+
+  // destination is [lng, lat] or null; stops is an array of [lng, lat] in
+  // visit order. Markers don't need the style/tiles loaded, same as the puck.
+  window.setWaypoints = function (destination, stops) {
+    if (destMarker) { destMarker.remove(); destMarker = null; }
+    clearStopMarkers();
+    if (destination) destMarker = addPinMarker(destination[0], destination[1], '#ef4444', null);
+    stops.forEach(function (s, i) { stopMarkers.push(addPinMarker(s[0], s[1], '#f59e0b', i + 1)); });
   };
 </script>
 </body>

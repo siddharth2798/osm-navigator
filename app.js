@@ -11,7 +11,7 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
-import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard, updateRoute as updateCarNavRoute, updatePosition as updateCarNavPosition, onStopRequested as onCarStopRequested, onToggleVoiceRequested as onCarToggleVoiceRequested } from './native-car.js';
+import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard, updateRoute as updateCarNavRoute, updateWaypoints as updateCarNavWaypoints, updatePosition as updateCarNavPosition, onStopRequested as onCarStopRequested, onToggleVoiceRequested as onCarToggleVoiceRequested, setVoiceMode as setCarNavVoiceMode, onSearchRequested as onCarSearchRequested, updateSearchResults as updateCarNavSearchResults, onSearchResultSelected as onCarSearchResultSelected, onDestinationSearchRequested as onCarDestinationSearchRequested, onDestinationSelected as onCarDestinationSelected } from './native-car.js';
 import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
@@ -335,6 +335,94 @@ if (isNativePlatform()) {
   // routing the hardware back button through the existing close-layer logic.
   onCarStopRequested(() => el.endNavBtn.click());
   onCarToggleVoiceRequested(() => el.voiceModeBtn.click());
+
+  // CarSearchScreen/CarSearchResultsScreen (car-side "search along route") —
+  // reuses the exact same categorySearchAlongRoute()/addStopFromPoi() the
+  // phone's own along-route popover calls, just triggered from the car and
+  // reporting results back over the bridge instead of rendering a DOM list.
+  // Results are cached here (not just sent to native) so a later selection
+  // can hand the *original* place object to addStopFromPoi() — same object
+  // shape addStopFromPoi already expects, not a re-serialized copy.
+  let carSearchResultsCache = [];
+  onCarSearchRequested(async ({ tag }) => {
+    if (!state.route) {
+      updateCarNavSearchResults({ results: [], error: 'No active route' }).catch(() => {});
+      return;
+    }
+    try {
+      const scope = routeSearchScope();
+      const rawResults = await categorySearchAlongRoute(tag, scope.coords, scope.totalDistM, scope.waypoints);
+      const results = applyOpenNowFilter(decorateWithRouteDistance(rawResults, scope.lineFeature));
+      carSearchResultsCache = results;
+      updateCarNavSearchResults({
+        results: results.map((r) => ({
+          label: splitPlaceLabel(r.label).primary,
+          distanceText: formatDistance(r.distanceM),
+        })),
+      }).catch(() => {});
+    } catch (err) {
+      carSearchResultsCache = [];
+      updateCarNavSearchResults({ results: [], error: err.message }).catch(() => {});
+    }
+  });
+  onCarSearchResultSelected(({ index }) => {
+    const picked = carSearchResultsCache[index];
+    if (picked) addStopFromPoi(picked);
+  });
+
+  // CarDestinationSearchScreen ("Where to?" on the car screen) — plans and
+  // immediately starts a brand-new trip, the Android Auto equivalent of
+  // typing into the phone's own search box and tapping Directions. Debounced
+  // here (car-side fires on every keystroke) rather than in Java, since the
+  // debounce needs to race against geocodeSearch()'s own async result — a
+  // `generation` counter discards a stale response a newer keystroke has
+  // already superseded, same idea as any other type-ahead search.
+  let carDestinationResultsCache = [];
+  let carDestinationSearchTimer = null;
+  let carDestinationSearchGeneration = 0;
+  onCarDestinationSearchRequested(({ query }) => {
+    clearTimeout(carDestinationSearchTimer);
+    const generation = ++carDestinationSearchGeneration;
+    carDestinationSearchTimer = setTimeout(async () => {
+      try {
+        const results = await geocodeSearch(query);
+        if (generation !== carDestinationSearchGeneration) return; // superseded by a newer keystroke
+        carDestinationResultsCache = results;
+        updateCarNavSearchResults({
+          results: results.map((r) => ({
+            label: splitPlaceLabel(r.label).primary,
+            distanceText: r.distanceM != null ? formatDistance(r.distanceM) : '',
+          })),
+        }).catch(() => {});
+      } catch (err) {
+        if (generation !== carDestinationSearchGeneration) return;
+        carDestinationResultsCache = [];
+        updateCarNavSearchResults({ results: [], error: err.message }).catch(() => {});
+      }
+    }, 400);
+  });
+  onCarDestinationSelected(({ index }) => {
+    const picked = carDestinationResultsCache[index];
+    if (picked) navigateToPlaceFromCar(picked).catch((err) => resolverDebugLog(`navigateToPlaceFromCar failed: "${err.message}"`, 'error'));
+  });
+}
+
+/** Plans a route from the current live position to `picked` and starts
+ * navigating immediately — the car screen has no "review the route, tap
+ * Start" intermediate step the phone UI has (no room for it, and matching
+ * how Google Maps/Waze behave when you pick a destination on Android Auto).
+ * Mirrors addStopFromPoi/triggerReroute's own requestRoute -> renderRoute
+ * shape, just with an empty stops list and a fresh state.from. */
+async function navigateToPlaceFromCar(picked) {
+  const liveLngLat = currentLiveLngLat();
+  if (!liveLngLat) throw new Error('Current location not available yet');
+  state.from = { lat: liveLngLat[1], lon: liveLngLat[0] };
+  state.to = picked;
+  const { trip } = await requestRoute(state.from, state.to, [], 0, COSTING_BY_MODE[state.travelMode] || 'auto', { avoidTolls: state.avoidTolls, avoidHighways: state.avoidHighways });
+  state.routeOptions = [trip];
+  state.selectedRouteIndex = 0;
+  await renderRoute(trip, { stops: [] });
+  await startNavigation();
 }
 
 // ============================================================================
@@ -1095,6 +1183,16 @@ async function startIdleLocationShare({ silent = false } = {}) {
       // GPS course-over-ground while moving, device compass while stationary — same order as onPositionUpdate.
       const headingDeg = typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading) ? pos.coords.heading : compassHeadingDeg;
       updateMyLocationMarker(lngLat, headingDeg);
+      // Android Auto's car map — idle sharing runs a separate watchPosition
+      // from real navigation's own onPositionUpdate, so it needs this same
+      // push wired in separately too, or the car screen stays blank (no
+      // route, just a puck) until Start is actually tapped. Real nav apps
+      // (Google Maps, Waze) show "you are here" on the car before you've
+      // picked a destination — this matches that.
+      if (isNativePlatform()) {
+        updateCarNavPosition({ lng: lngLat[0], lat: lngLat[1], headingDeg })
+          .catch((err) => resolverDebugLog(`startIdleLocationShare: updateCarNavPosition rejected: "${err.message}"`, 'error'));
+      }
     },
     (err) => {
       // Reset so a retry tap doesn't hit stopIdleLocationShare's "already sharing" no-op.
@@ -1989,6 +2087,10 @@ function voiceModeIcon(mode) {
 function renderVoiceModeBtn() {
   el.voiceModeBtn.innerHTML = voiceModeIcon(state.voiceMode);
   el.voiceModeBtn.setAttribute('aria-label', VOICE_MODE_LABEL[state.voiceMode]);
+  // Keeps Android Auto's own Mute icon (speaker-with-waves vs. speaker-with-X)
+  // in lockstep with the phone's — single choke point, since every place
+  // state.voiceMode changes already calls this to update the phone icon.
+  if (isNativePlatform()) setCarNavVoiceMode(state.voiceMode).catch(() => {});
 }
 
 /** What to say the moment voice guidance is switched back on mid-trip, so
@@ -5529,7 +5631,16 @@ async function renderRoute(trip, { fitView = true, stops = [] } = {}) {
   state.route = built;
   // Android Auto's SurfaceCallback map — pushed once per route computed/rerouted,
   // not per tick (see updatePosition in onPositionUpdate for the live puck).
-  if (isNativePlatform()) updateCarNavRoute({ coordinates: built.coords }).catch(() => {});
+  if (isNativePlatform()) {
+    updateCarNavRoute({ coordinates: built.coords }).catch(() => {});
+    // Same red-destination/orange-numbered-stops convention as the phone's
+    // own updatePlanningMarkers — state.to, not built/trip data, since the
+    // destination itself isn't part of the route geometry.
+    updateCarNavWaypoints({
+      destination: state.to ? { lng: state.to.lon, lat: state.to.lat } : undefined,
+      stops: stops.map((s) => ({ lng: s.lon, lat: s.lat })),
+    }).catch(() => {});
+  }
   state.spokenFar = new Set();
   state.spokenNear = new Set();
   state.spokenContinue = new Set();
@@ -7082,7 +7193,10 @@ function onPositionUpdate(pos) {
   updatePuck(displayLngLat, headingDeg);
   if (state.followMode) followCamera(displayLngLat, headingDeg);
   // Android Auto's SurfaceCallback map puck — same cadence as the WebView puck above.
-  if (isNativePlatform()) updateCarNavPosition({ lng: displayLngLat[0], lat: displayLngLat[1], headingDeg }).catch(() => {});
+  if (isNativePlatform()) {
+    updateCarNavPosition({ lng: displayLngLat[0], lat: displayLngLat[1], headingDeg })
+      .catch((err) => resolverDebugLog(`updateCarNavPosition rejected: "${err.message}"`, 'error'));
+  }
   if (!state.route) return;
 
   state.traveledM = traveledM;
@@ -7831,9 +7945,15 @@ if (shareTargetText) {
       if (saved && saved.route && saved.to) {
         state.route = saved.route;
         state.route.lineFeature = turf.lineString(state.route.coords);
-        if (isNativePlatform()) updateCarNavRoute({ coordinates: state.route.coords }).catch(() => {});
         state.from = saved.from;
         state.to = saved.to;
+        if (isNativePlatform()) {
+          updateCarNavRoute({ coordinates: state.route.coords }).catch(() => {});
+          updateCarNavWaypoints({
+            destination: state.to ? { lng: state.to.lon, lat: state.to.lat } : undefined,
+            stops: (state.route.stops || []).map((s) => ({ lng: s.lon, lat: s.lat })),
+          }).catch(() => {});
+        }
         state.travelMode = saved.travelMode || 'drive';
         modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === state.travelMode));
 
