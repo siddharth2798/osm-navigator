@@ -1,6 +1,6 @@
 # The optional Android shell
 
-The web app also works wrapped in [Capacitor](https://capacitorjs.com/) as a native Android app, specifically for reliable location tracking and voice guidance with the screen off or the app minimized (plain `watchPosition` isn't reliable once Android backgrounds the WebView, and `WebView.onPause()` freezes all JS execution on top of that). Needs Node/npm; the web app itself still doesn't.
+The web app also works wrapped in [Capacitor](https://capacitorjs.com/) as a native Android app, for reliable location tracking and voice guidance with the screen off or the app minimized (plain `watchPosition` isn't reliable once Android backgrounds the WebView, and `WebView.onPause()` freezes all JS on top of that). Needs Node/npm; the web app itself still doesn't.
 
 ```
 npm install                  # @capacitor/core, @capacitor/android, background-geolocation/text-to-speech/app plugins
@@ -27,7 +27,7 @@ gh secret set ANDROID_KEY_PASSWORD --body "..."
 
 Without these, the release is still created, just without an APK attached.
 
-Also worth knowing: `@capacitor-community/background-geolocation`'s notification text is set once and can't update live afterward — [`@transistorsoft/capacitor-background-geolocation`](https://github.com/transistorsoft/capacitor-background-geolocation) supports that, at the cost of being a commercial plugin.
+Also worth knowing: `@capacitor-community/background-geolocation`'s notification text is set once and can't update live afterward. [`@transistorsoft/capacitor-background-geolocation`](https://github.com/transistorsoft/capacitor-background-geolocation) supports that, but is a commercial plugin.
 
 **Picture-in-Picture on some OEM Android skins (e.g. MIUI/HyperOS) may need a manual permission grant.** These skins gate PiP behind their own per-app permission (Settings → Privacy protection → Special permissions → Picture-in-picture), defaulted off for every non-preinstalled app. If PiP doesn't auto-enter when minimizing during navigation, grant it directly:
 ```
@@ -35,4 +35,4 @@ adb shell appops set com.navigator.app PICTURE_IN_PICTURE allow
 ```
 `adb logcat -s NavPip` after minimizing shows exactly why it didn't enter, if it's still not working after that.
 
-**`TOMTOM_FEATURES_ENABLED`'s `/api/traffic` and `/api/places` calls now work on the Android shell** — fixed on both ends: `app.js` uses the same `isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : ''` prefix pattern the Google Maps link resolver already used, and the routes themselves are now actually wired into `worker.js` (`lib/tomtom-traffic-proxy.js`/`lib/tomtom-places-proxy.js`) — they previously only existed as Cloudflare Pages Functions, which never run under this project's actual plain-Worker deployment path at all, so live traffic silently never reached TomTom on *any* platform, not just the shell.
+**`TOMTOM_FEATURES_ENABLED`'s `/api/traffic` and `/api/places` calls work on the Android shell** — `app.js` uses the same `isNativePlatform() ? CONFIG.RESOLVE_MAPS_URL_BASE : ''` prefix pattern the Google Maps link resolver already uses, and the routes are wired into `worker.js` (`lib/tomtom-traffic-proxy.js`/`lib/tomtom-places-proxy.js`).
