@@ -9,6 +9,22 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- Android Auto (phone-projection) declaration — see
+             res/xml/automotive_app_desc.xml and
+             com.navigator.app.auto.CarNavService. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <service
+            android:name=".auto.CarNavService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
+            </intent-filter>
+        </service>
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
@@ -55,4 +71,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Gates NavigationTemplate/NavigationManager — added ahead of Phase 1
+         (see the plan doc), since MessageTemplate itself doesn't need it,
+         but the next phase does and this permission can't be requested at
+         runtime the way a normal dangerous permission can. -->
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
 </manifest>

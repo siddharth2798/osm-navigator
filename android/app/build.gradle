@@ -65,6 +65,9 @@ dependencies {
     // also depends on this, but only as `implementation`, which Gradle does
     // NOT expose transitively to :app's own compile classpath.
     implementation "com.google.android.gms:play-services-location:$playServicesLocationVersion"
+    // Android Auto (Car App Library) — see com.navigator.app.auto and
+    // AndroidManifest.xml's CarNavService declaration.
+    implementation "androidx.car.app:app:$carAppVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

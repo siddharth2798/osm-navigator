@@ -23,4 +23,6 @@ ext {
     // rootProject.ext.playServicesLocationVersion before its own '21.0.1'
     // fallback.
     playServicesLocationVersion = '21.0.1'
+    // Android Auto (Car App Library) — see android/app/src/main/java/com/navigator/app/auto/.
+    carAppVersion = '1.7.0'
 }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares Android Auto phone-projection support (the "template" capability)
+     for CarNavService, referenced from AndroidManifest.xml. Deliberately NOT
+     the separate "automotive" capability — that's for Android Automotive OS
+     (an app running directly on a car's own head unit with no phone), which
+     is out of scope; this app only targets phone-projected Android Auto. -->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>
