@@ -1896,6 +1896,8 @@ const TOMTOM_CATEGORY_TERM = {
   'amenity=restaurant': 'restaurant',
   'amenity=parking': 'parking',
   'tourism=hotel': 'hotel',
+  'railway=station': 'railway station',
+  'aeroway=aerodrome': 'airport',
 };
 
 /** Fallback for when Nominatim's OSM-tag search comes back empty at both
@@ -2434,6 +2436,8 @@ const CATEGORY_KEYWORDS = [
   { tag: 'amenity=restaurant', keys: ['restaurant', 'food', 'dining', 'eatery'] },
   { tag: 'amenity=parking', keys: ['parking', 'car park'] },
   { tag: 'tourism=hotel', keys: ['hotel', 'lodging', 'accommodation'] },
+  { tag: 'railway=station', keys: ['railway station', 'train station'] },
+  { tag: 'aeroway=aerodrome', keys: ['airport'] },
 // Word-boundary matching, not a raw substring check — a substring check would match "atm" inside unrelated words.
 ].map((entry) => ({
   ...entry,
@@ -2444,6 +2448,16 @@ function matchCategoryTag(subject) {
   const s = subject.toLowerCase();
   for (const entry of CATEGORY_KEYWORDS) {
     if (entry.re.test(s)) return entry.tag;
+  }
+  return null;
+}
+
+/** Like matchCategoryTag, but only when the whole query IS a category term, not just contains one —
+ * so "Apollo Hospital" still goes to Nominatim's name search instead of "nearest hospital". */
+function matchCategoryTagWhole(query) {
+  const s = query.trim().toLowerCase().replace(/^(?:nearest|nearby|closest)\s+/, '');
+  for (const entry of CATEGORY_KEYWORDS) {
+    if (entry.keys.includes(s)) return entry.tag;
   }
   return null;
 }
@@ -2870,14 +2884,24 @@ async function geocodeSearch(query, opts = {}) {
   // "near me"/"near here" resolves against the device's current location, so it can't be cached by text alone
   // like a fixed-place "near X" query can.
   const isNearMe = !!nearMatch && NEAR_ME_KEYWORDS.has(nearMatch[2].trim().toLowerCase());
+  // A bare category term ("railway station") resolves against the live GPS fix too, same as "near me".
+  const categoryTag = !nearMatch ? matchCategoryTagWhole(trimmed) : null;
+  const skipCache = isNearMe || !!categoryTag;
 
   let results;
-  if (!isNearMe && nominatimCache.has(cacheKey)) {
+  if (!skipCache && nominatimCache.has(cacheKey)) {
     results = nominatimCache.get(cacheKey);
   } else {
-    results = nearMatch
-      ? await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim())
-      : await nominatimSearch(trimmed);
+    if (nearMatch) {
+      results = await geocodeNear(nearMatch[1].trim(), nearMatch[2].trim());
+    } else if (categoryTag) {
+      // Same tag+proximity search "near X" uses (geocodeNear/categorySearchNear), anchored to the live fix.
+      const liveLngLat = currentLiveLngLat();
+      results = liveLngLat ? await categorySearchNear(categoryTag, liveLngLat[1], liveLngLat[0]) : [];
+      if (!results.length) results = await nominatimSearch(trimmed); // no live fix yet, or nothing tagged nearby
+    } else {
+      results = await nominatimSearch(trimmed);
+    }
 
     // Fuzzy fallback only applies to a plain place-name search — "near X" already does its own two-step lookup.
     let aborted = false;
@@ -2887,7 +2911,7 @@ async function geocodeSearch(query, opts = {}) {
     }
 
     // Don't cache an aborted attempt as [] — it stopped early, it didn't genuinely come up empty.
-    if (!aborted && !isNearMe) nominatimCache.set(cacheKey, results);
+    if (!aborted && !skipCache) nominatimCache.set(cacheKey, results);
   }
 
   // Bias plain-text results toward the user's current position, closest first (Nominatim's own ranking has no
@@ -3847,9 +3871,18 @@ async function showQuickPicksFor(inputEl, listEl, { locationOptionSide = null } 
   if (listEl.children.length) showSuggestionList(listEl);
 }
 
-/** Fetches a fresh GPS fix into `inputEl`, then hands the resulting place to `apply`. Shared by the from/to and search-box quick picks. */
+/** Resolves into `inputEl`, then hands the resulting place to `apply`. Shared by the from/to and search-box
+ * quick picks. Reuses the fix the idle location share is already tracking (currentLiveLngLat) instead of a
+ * redundant fresh GPS request; falls back to a one-shot fix only when nothing is live yet. */
 function useCurrentLocationInto(inputEl, suggestionsEl, apply) {
   hideSuggestionList(suggestionsEl); // not a direct classList toggle — needs to forgetBackLayerIfTop() too, see showSuggestionList
+  const liveLngLat = currentLiveLngLat();
+  if (liveLngLat) {
+    const place = { label: CURRENT_LOCATION_LABEL, lat: liveLngLat[1], lon: liveLngLat[0] };
+    inputEl.value = CURRENT_LOCATION_LABEL;
+    apply(place);
+    return;
+  }
   if (!('geolocation' in navigator)) {
     showStatus('This browser does not support GPS location.', 'error');
     return;
