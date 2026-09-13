@@ -1,6 +1,7 @@
 package com.navigator.app.auto;
 
 import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -17,6 +18,26 @@ import org.json.JSONException;
  */
 @CapacitorPlugin(name = "CarNav")
 public class CarNavPlugin extends Plugin {
+  /** Called once by the Bridge when it instantiates this plugin — the
+   * matching half of NavigationScreen's ActionStrip buttons, which call
+   * CarNavState.requestStop()/requestToggleVoice() when tapped on the car
+   * screen. Registered here rather than per-call since this plugin instance
+   * (unlike a car Screen) lives for the whole app process. */
+  @Override
+  public void load() {
+    CarNavState.setActionListener(new CarNavState.ActionListener() {
+      @Override
+      public void onStopRequested() {
+        notifyListeners("stopRequested", new JSObject());
+      }
+
+      @Override
+      public void onToggleVoiceRequested() {
+        notifyListeners("toggleVoiceRequested", new JSObject());
+      }
+    });
+  }
+
   @PluginMethod
   public void setNavigating(PluginCall call) {
     boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));

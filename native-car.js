@@ -44,3 +44,17 @@ export function updateRoute({ coordinates }) {
 export function updatePosition({ lng, lat, headingDeg }) {
   return CarNav.updatePosition({ lng, lat, headingDeg });
 }
+
+/** Fires when the car screen's own Stop button is tapped (see
+ * NavigationScreen.buildActionStrip/CarNavPlugin's load()) — the reverse
+ * direction from everything above. Callers wire this straight into the
+ * phone's own end-nav-btn, not a separate implementation. */
+export function onStopRequested(callback) {
+  return CarNav.addListener('stopRequested', callback);
+}
+
+/** Fires when the car screen's own mute/voice button is tapped — same
+ * reverse-direction shape as onStopRequested, wired into voice-mode-btn. */
+export function onToggleVoiceRequested(callback) {
+  return CarNav.addListener('toggleVoiceRequested', callback);
+}

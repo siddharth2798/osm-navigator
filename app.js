@@ -11,7 +11,7 @@ import { startLocationWatch, stopLocationWatch, isNativePlatform, ensureLocation
 import { speakNative, primeNativeVoices, stopNative } from './native-tts.js';
 import { initNativeBackButton } from './native-back.js';
 import { setNavigating as setPipNavigating, updateTurnCard as updatePipTurnCard } from './native-pip.js';
-import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard, updateRoute as updateCarNavRoute, updatePosition as updateCarNavPosition } from './native-car.js';
+import { setNavigating as setCarNavNavigating, updateTurnCard as updateCarNavTurnCard, updateRoute as updateCarNavRoute, updatePosition as updateCarNavPosition, onStopRequested as onCarStopRequested, onToggleVoiceRequested as onCarToggleVoiceRequested } from './native-car.js';
 import { formatDistance, formatDuration, formatWaitText, formatWaitsText, formatBytes, formatFareINR } from './lib/format-utils.js';
 import { splitPlaceLabel, escapeHtml, isSafeHttpUrl } from './lib/text-utils.js';
 import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
@@ -328,6 +328,13 @@ if (isNativePlatform()) {
       goBackInApp();
     },
   });
+
+  // Android Auto's own ActionStrip Stop/Mute buttons (see NavigationScreen.
+  // buildActionStrip) — reuse the phone's exact same buttons/handlers rather
+  // than a separate implementation, same principle as initNativeBackButton
+  // routing the hardware back button through the existing close-layer logic.
+  onCarStopRequested(() => el.endNavBtn.click());
+  onCarToggleVoiceRequested(() => el.voiceModeBtn.click());
 }
 
 // ============================================================================

@@ -1,11 +1,20 @@
 package com.navigator.app.auto;
 
-import android.graphics.Canvas;
+import android.app.Presentation;
+import android.content.Context;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Path;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+import android.view.ViewGroup;
+import android.webkit.ConsoleMessage;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 
 import java.time.ZonedDateTime;
 import java.util.HashMap;
@@ -20,6 +29,7 @@ import androidx.car.app.SurfaceCallback;
 import androidx.car.app.SurfaceContainer;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.ActionStrip;
+import androidx.car.app.model.CarIcon;
 import androidx.car.app.model.Distance;
 import androidx.car.app.model.Template;
 import androidx.car.app.navigation.NavigationManager;
@@ -30,18 +40,26 @@ import androidx.car.app.navigation.model.RoutingInfo;
 import androidx.car.app.navigation.model.Step;
 import androidx.car.app.navigation.model.TravelEstimate;
 import androidx.car.app.navigation.model.Trip;
+import androidx.core.graphics.drawable.IconCompat;
 import androidx.lifecycle.DefaultLifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
+
+import com.navigator.app.R;
 
 /**
  * The real Android Auto nav screen — Phase 1: live maneuver text/ETA in a
  * NavigationTemplate, driven by CarNavState (which app.js's
  * updateActiveManeuver pushes into on every tick via native-car.js /
- * CarNavPlugin). Phase 2: a hand-rolled Canvas map — route line + a
- * heading-up position puck, no basemap tiles — drawn straight onto the
- * Surface (androidx.car.app.ACCESS_SURFACE) on every route/position push.
- * No real zoom/projection library involved: a fixed local equirectangular
- * approximation good enough at city-block scale (see redrawMap below).
+ * CarNavPlugin). Phase 2: a real rendered map — same technique as CoMaps'
+ * (github.com/comaps/comaps, android/app/.../car/renderer/SurfaceCallback.java):
+ * a DisplayManager.createVirtualDisplay() backed by the Car App's Surface,
+ * with a Presentation showing a View on it. CoMaps presents their existing
+ * native C++ map View; we don't have one — MapLibre GL JS runs inside a
+ * WebView — so this presents a second, offscreen WebView loaded with
+ * car-map.html (a standalone map-only page, no Capacitor bridge) instead.
+ * Route/position get pushed into it via WebView.evaluateJavascript(), the
+ * same shape as the JS→native bridge everywhere else in this package, just
+ * running the other direction.
  *
  * Listens to CarNavState only while actually on screen (LifecycleObserver,
  * matching Screen's own LifecycleOwner) — a car session with this screen
@@ -49,6 +67,7 @@ import androidx.lifecycle.LifecycleOwner;
  * rendering.
  */
 final class NavigationScreen extends Screen implements CarNavState.Listener, DefaultLifecycleObserver, NavigationManagerCallback, SurfaceCallback {
+  private static final String TAG = "NavCarMap";
   private static final Map<String, Integer> MANEUVER_TYPES = buildManeuverTypes();
 
   private final NavigationManager navigationManager;
@@ -68,10 +87,15 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
   // Tracked here, not read off the host, since NavigationManager exposes no
   // getter for it.
   private boolean hostNavigationStarted = false;
-  // Set in onSurfaceAvailable, cleared in onSurfaceDestroyed — redrawMap is a
-  // no-op without it (e.g. the brief window before the host hands us a
-  // Surface at all, or after it's torn one down on disconnect).
-  @Nullable private SurfaceContainer surfaceContainer;
+  private static final String CAR_MAP_URL = "file:///android_asset/car-map.html";
+  // All three set up together in onSurfaceAvailable, torn down together in
+  // onSurfaceDestroyed — a car session disconnecting/reconnecting (e.g. the
+  // phone screen locking, DHU restarting) tears the Surface down and hands
+  // us a new one, so this rebuilds from scratch each time rather than trying
+  // to reparent a WebView across Presentations.
+  @Nullable private WebView carMapWebView;
+  @Nullable private VirtualDisplay virtualDisplay;
+  @Nullable private Presentation presentation;
 
   NavigationScreen(@NonNull CarContext carContext) {
     super(carContext);
@@ -84,108 +108,108 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
     getLifecycle().addObserver(this);
   }
 
+  // SurfaceCallback methods are documented to run on the main thread (same as
+  // Screen's own onGetTemplate) — safe to touch the WebView directly here,
+  // same assumption CoMaps' own SurfaceCallback makes.
   @Override
-  public void onSurfaceAvailable(@NonNull SurfaceContainer surfaceContainer) {
-    this.surfaceContainer = surfaceContainer;
-    redrawMap();
-  }
-
-  @Override
-  public void onSurfaceDestroyed(@NonNull SurfaceContainer surfaceContainer) {
-    this.surfaceContainer = null;
-  }
-
-  /** Fixed MVP scale — no real zoom yet, just enough to make the road ahead
-   * legible at typical city-driving speed. */
-  private static final double METERS_PER_PIXEL = 0.5;
-  /** Puck sits near the bottom of the screen so more of the road ahead is
-   * visible than behind — same convention every turn-by-turn app uses. */
-  private static final float PUCK_ANCHOR_Y_FRACTION = 0.8f;
-
-  /** Redraws the Surface from scratch: dark background, then (only while
-   * navigating with both a route and a live fix) the route line and puck,
-   * heading-up and centered on the current position. Called on every
-   * CarNavState change (see onCarNavStateChanged) — route/position pushes
-   * arrive far less often than turn-card ticks, so this just repaints the
-   * same picture most of the time; cheap enough not to bother distinguishing. */
-  private void redrawMap() {
-    SurfaceContainer sc = surfaceContainer;
-    if (sc == null) return;
-    Canvas canvas = sc.getSurface().lockCanvas(null);
-    if (canvas == null) return;
-    try {
-      canvas.drawColor(Color.rgb(0x20, 0x21, 0x24));
-      double[][] route = CarNavState.getRouteCoords();
-      if (CarNavState.isNavigating() && CarNavState.hasPosition() && route != null && route.length > 1) {
-        drawRoute(canvas, sc.getWidth(), sc.getHeight(), route);
-        drawPuck(canvas, sc.getWidth(), sc.getHeight());
+  public void onSurfaceAvailable(@NonNull SurfaceContainer sc) {
+    CarContext carContext = getCarContext();
+    WebView webView = new WebView(carContext); // biggest unproven step here — WebView has never been built with a CarContext before, only Activity contexts
+    webView.getSettings().setJavaScriptEnabled(true);
+    webView.setBackgroundColor(Color.rgb(0x20, 0x21, 0x24));
+    webView.setLayoutParams(new ViewGroup.LayoutParams(sc.getWidth(), sc.getHeight()));
+    // Chromium logs console messages to logcat under its own "chromium" tag
+    // by default, but only at WARNING+ — this guarantees every level (plain
+    // console.log included) shows up under one grep-able tag, and also
+    // confirms whether the page's script is running at all.
+    webView.setWebChromeClient(new WebChromeClient() {
+      @Override
+      public boolean onConsoleMessage(ConsoleMessage cm) {
+        Log.d(TAG, "console: " + cm.message() + " (" + cm.sourceId() + ":" + cm.lineNumber() + ")");
+        return true;
       }
-    } finally {
-      sc.getSurface().unlockCanvasAndPost(canvas);
+    });
+    webView.setWebViewClient(new WebViewClient() {
+      @Override
+      public void onPageFinished(WebView view, String finishedUrl) {
+        Log.d(TAG, "onPageFinished: " + finishedUrl);
+      }
+
+      @Override
+      public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+        Log.e(TAG, "onReceivedError: " + request.getUrl() + " -> " + error.getDescription());
+      }
+    });
+    // Seeds the initial camera/puck when a fix is already known (idle
+    // location sharing starts on app open, well before a car session
+    // connects, so this is normally true) — avoids the map opening centered
+    // on [0, 0] and only then jumping once the first position push arrives.
+    String url = CAR_MAP_URL;
+    if (CarNavState.hasPosition()) {
+      url += "?lng=" + CarNavState.getPosLng() + "&lat=" + CarNavState.getPosLat() + "&heading=" + CarNavState.getPosHeadingDeg();
+    }
+    Log.d(TAG, "onSurfaceAvailable: loading " + url);
+    webView.loadUrl(url);
+    carMapWebView = webView;
+
+    DisplayManager displayManager = (DisplayManager) carContext.getSystemService(Context.DISPLAY_SERVICE);
+    virtualDisplay = displayManager.createVirtualDisplay(
+        "NavigatorCarMap", sc.getWidth(), sc.getHeight(), sc.getDpi(), sc.getSurface(), 0);
+    presentation = new Presentation(carContext, virtualDisplay.getDisplay());
+    presentation.setContentView(webView);
+    presentation.show();
+
+    pushRouteAndPositionToCarMap();
+  }
+
+  @Override
+  public void onSurfaceDestroyed(@NonNull SurfaceContainer sc) {
+    if (presentation != null) {
+      presentation.dismiss();
+      presentation = null;
+    }
+    if (virtualDisplay != null) {
+      virtualDisplay.release();
+      virtualDisplay = null;
+    }
+    if (carMapWebView != null) {
+      carMapWebView.destroy();
+      carMapWebView = null;
     }
   }
 
-  /** Projects the route's [lng, lat] pairs into screen space: a local
-   * equirectangular approximation (flat-earth meters relative to the current
-   * fix — fine at the few-hundred-meter scale a car screen shows, no need
-   * for a real map projection), then rotated so the direction of travel
-   * points up the screen (heading-up, matching every real driving nav UI). */
-  private void drawRoute(Canvas canvas, int width, int height, double[][] route) {
-    double posLng = CarNavState.getPosLng();
-    double posLat = CarNavState.getPosLat();
-    double headingRad = Math.toRadians(CarNavState.getPosHeadingDeg());
-    double cosT = Math.cos(headingRad);
-    double sinT = Math.sin(headingRad);
-    double metersPerDegLat = 111_320.0;
-    double metersPerDegLng = 111_320.0 * Math.cos(Math.toRadians(posLat));
-    float centerX = width / 2f;
-    float centerY = height * PUCK_ANCHOR_Y_FRACTION;
-
-    Path path = new Path();
-    boolean first = true;
-    for (double[] pt : route) {
-      double dxM = (pt[0] - posLng) * metersPerDegLng; // east-positive
-      double dyM = (pt[1] - posLat) * metersPerDegLat; // north-positive
-      // Rotate the east/north vector by -heading so "the direction we're
-      // driving" maps to "up the screen", then flip north to screen-y (which
-      // increases downward).
-      double screenEastM = dxM * cosT - dyM * sinT;
-      double screenNorthM = dxM * sinT + dyM * cosT;
-      float x = (float) (centerX + screenEastM / METERS_PER_PIXEL);
-      float y = (float) (centerY - screenNorthM / METERS_PER_PIXEL);
-      if (first) {
-        path.moveTo(x, y);
-        first = false;
-      } else {
-        path.lineTo(x, y);
-      }
+  /** Pushes the current route/position into car-map.html's setRoute()/
+   * setPosition() — plain JS argument literals, not JSON strings, since
+   * evaluateJavascript runs real code (see car-map.html's own note on this).
+   * Called on every CarNavState change (see onCarNavStateChanged); the page
+   * itself buffers calls that arrive before its 'load' event, so there's no
+   * ordering dependency on the WebView finishing its first paint. */
+  private void pushRouteAndPositionToCarMap() {
+    WebView webView = carMapWebView;
+    if (webView == null) {
+      Log.d(TAG, "pushRouteAndPositionToCarMap: no WebView yet, skipping");
+      return;
     }
-    Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    paint.setStyle(Paint.Style.STROKE);
-    paint.setStrokeWidth(14f);
-    paint.setStrokeCap(Paint.Cap.ROUND);
-    paint.setStrokeJoin(Paint.Join.ROUND);
-    paint.setColor(Color.rgb(0x4a, 0x9e, 0xff));
-    canvas.drawPath(path, paint);
+    double[][] route = CarNavState.getRouteCoords();
+    if (route != null && route.length > 1) {
+      webView.evaluateJavascript("setRoute(" + routeToJsArrayLiteral(route) + ")", result -> Log.d(TAG, "setRoute() evaluateJavascript result: " + result));
+    }
+    if (CarNavState.hasPosition()) {
+      String call = "setPosition(" + CarNavState.getPosLng() + "," + CarNavState.getPosLat() + "," + CarNavState.getPosHeadingDeg() + ")";
+      webView.evaluateJavascript(call, result -> Log.d(TAG, "setPosition() evaluateJavascript result: " + result));
+    }
   }
 
-  /** Fixed at the same screen anchor drawRoute projects everything else
-   * relative to, always pointing straight up — heading-up rendering means
-   * the puck's own rotation is constant, only the world around it turns. */
-  private void drawPuck(Canvas canvas, int width, int height) {
-    float centerX = width / 2f;
-    float centerY = height * PUCK_ANCHOR_Y_FRACTION;
-    float r = 22f;
-    Path arrow = new Path();
-    arrow.moveTo(centerX, centerY - r);
-    arrow.lineTo(centerX - r * 0.7f, centerY + r * 0.6f);
-    arrow.lineTo(centerX, centerY + r * 0.2f);
-    arrow.lineTo(centerX + r * 0.7f, centerY + r * 0.6f);
-    arrow.close();
-    Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    paint.setStyle(Paint.Style.FILL);
-    paint.setColor(Color.WHITE);
-    canvas.drawPath(arrow, paint);
+  /** Double.toString() is locale-independent (always '.'), unlike
+   * String.format without an explicit Locale — safe to build a JS literal
+   * with directly, no locale-comma gotcha. */
+  private static String routeToJsArrayLiteral(double[][] route) {
+    StringBuilder sb = new StringBuilder("[");
+    for (int i = 0; i < route.length; i++) {
+      if (i > 0) sb.append(',');
+      sb.append('[').append(route[i][0]).append(',').append(route[i][1]).append(']');
+    }
+    return sb.append(']').toString();
   }
 
   @Override
@@ -203,7 +227,7 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
   public void onCarNavStateChanged() {
     mainHandler.post(() -> {
       invalidate();
-      redrawMap();
+      pushRouteAndPositionToCarMap();
       if (CarNavState.isNavigating()) {
         if (!hostNavigationStarted) {
           navigationManager.navigationStarted();
@@ -217,13 +241,17 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
     });
   }
 
-  /** Host asked us to stop (e.g. a "stop routing" affordance on the car's
-   * own UI) — the phone's own app.js state stays the actual source of
-   * truth for whether navigation is running in Phase 1; deciding whether a
-   * car-initiated stop should also end the phone's trip is a Phase 3
-   * question (same "who owns what" territory as voice-guidance ownership). */
+  /** Host asked us to stop — distinct from our own ActionStrip Stop button
+   * (buildActionStrip), this fires when the *host* decides navigation should
+   * end (e.g. a system-level "stop navigation" affordance). Routed through
+   * the same CarNavState.requestStop() -> el.endNavBtn.click() path as our
+   * own button (Phase 3's "who owns what" question, resolved: the host's
+   * stop is real and must reach the phone, or the car would show idle while
+   * the phone still thinks it's navigating). */
   @Override
-  public void onStopNavigation() {}
+  public void onStopNavigation() {
+    CarNavState.requestStop();
+  }
 
   /** Required for DHU's own auto-drive/simulated-route testing feature to
    * work at all — app.js's own route/position state isn't driven by this
@@ -243,8 +271,7 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
   @NonNull
   @Override
   public Template onGetTemplate() {
-    NavigationTemplate.Builder builder = new NavigationTemplate.Builder()
-        .setActionStrip(new ActionStrip.Builder().addAction(Action.APP_ICON).build());
+    NavigationTemplate.Builder builder = new NavigationTemplate.Builder().setActionStrip(buildActionStrip());
 
     if (!CarNavState.isNavigating()) {
       return builder.setNavigationInfo(new RoutingInfo.Builder().setLoading(true).build()).build();
@@ -257,6 +284,32 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
         .setNavigationInfo(routingInfo)
         .setDestinationTravelEstimate(buildDestinationEstimate())
         .build();
+  }
+
+  /** Mute and Stop only appear while actually navigating — matches the phone
+   * UI, where end-nav-btn/voice-mode-btn's own visibility is gated the same
+   * way. Both call straight through CarNavState.request*() into the exact
+   * same click handlers the phone's own buttons already use (see app.js) —
+   * not reimplemented, just triggered from a second place. */
+  private ActionStrip buildActionStrip() {
+    ActionStrip.Builder builder = new ActionStrip.Builder().addAction(Action.APP_ICON);
+    if (CarNavState.isNavigating()) {
+      builder.addAction(
+          new Action.Builder()
+              .setIcon(carIcon(R.drawable.ic_car_mute))
+              .setOnClickListener(CarNavState::requestToggleVoice)
+              .build());
+      builder.addAction(
+          new Action.Builder()
+              .setIcon(carIcon(R.drawable.ic_car_stop))
+              .setOnClickListener(CarNavState::requestStop)
+              .build());
+    }
+    return builder.build();
+  }
+
+  private CarIcon carIcon(int drawableResId) {
+    return new CarIcon.Builder(IconCompat.createWithResource(getCarContext(), drawableResId)).build();
   }
 
   private Trip buildTrip() {

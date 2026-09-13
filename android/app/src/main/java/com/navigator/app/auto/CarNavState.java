@@ -17,7 +17,17 @@ final class CarNavState {
     void onCarNavStateChanged();
   }
 
+  /** The reverse direction — car screen to phone. CarNavPlugin registers
+   * itself once (see its load()) and forwards these into
+   * Plugin.notifyListeners() as JS events; NavigationScreen's ActionStrip
+   * buttons call requestStop()/requestToggleVoice() when tapped. */
+  interface ActionListener {
+    void onStopRequested();
+    void onToggleVoiceRequested();
+  }
+
   @Nullable private static volatile Listener listener;
+  @Nullable private static volatile ActionListener actionListener;
   private static volatile boolean navigating = false;
   private static volatile String maneuverKind = "straight";
   private static volatile String instruction = "";
@@ -43,6 +53,23 @@ final class CarNavState {
    * needed — a single Screen instance per car connection. */
   static void setListener(@Nullable Listener l) {
     listener = l;
+  }
+
+  /** CarNavPlugin registers this exactly once, in its load() (called once
+   * per app process by the Capacitor Bridge) — unlike Listener above, this
+   * one has nothing to do with which Screen is currently visible. */
+  static void setActionListener(@Nullable ActionListener l) {
+    actionListener = l;
+  }
+
+  static void requestStop() {
+    ActionListener l = actionListener;
+    if (l != null) l.onStopRequested();
+  }
+
+  static void requestToggleVoice() {
+    ActionListener l = actionListener;
+    if (l != null) l.onToggleVoiceRequested();
   }
 
   static void setNavigating(boolean active) {

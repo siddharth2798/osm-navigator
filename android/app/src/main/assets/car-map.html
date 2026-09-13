@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<!--
+  Standalone map-only page for the Android Auto car screen — NOT part of the
+  Capacitor web app bundle (see NavigationScreen.java, which loads this via
+  file:///android_asset/car-map.html into a second, offscreen WebView
+  presented onto the car's Surface via VirtualDisplay+Presentation). No
+  Capacitor bridge, no app.js — native pushes data in by calling setRoute()/
+  setPosition() through WebView.evaluateJavascript().
+-->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #202124; }
+  .car-puck { width: 18px; height: 18px; border-radius: 50%; background: #ffffff; border: 3px solid #4a9eff; box-shadow: 0 0 0 2px rgba(0,0,0,0.35); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  // Uncaught errors anywhere in this page — including a failure to even
+  // parse/run the maplibre-gl.js <script> tag below — land here, forwarded
+  // to logcat under the "NavCarMap" tag via NavigationScreen's WebChromeClient.
+  window.onerror = function (message, source, line, col, error) {
+    console.error('window.onerror: ' + message + ' at ' + source + ':' + line + ':' + col);
+  };
+  console.log('car-map: document script starting');
+</script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+        onerror="console.error('car-map: failed to load maplibre-gl.js from unpkg')"
+        onload="console.log('car-map: maplibre-gl.js loaded')"></script>
+<script>
+  console.log('car-map: init script running, maplibregl defined: ' + (typeof maplibregl));
+
+  // Seeded from the URL when native already knows the current fix at load
+  // time (see NavigationScreen.onSurfaceAvailable) — starting the map
+  // centered on the real position instead of [0, 0] avoids both a Null
+  // Island flash and a wasted first tile fetch for the wrong place.
+  var params = new URLSearchParams(location.search);
+  var initLng = parseFloat(params.get('lng'));
+  var initLat = parseFloat(params.get('lat'));
+  var initHeading = parseFloat(params.get('heading'));
+  var hasInit = !isNaN(initLng) && !isNaN(initLat);
+  console.log('car-map: hasInit=' + hasInit + ' initLng=' + initLng + ' initLat=' + initLat);
+
+  var map = new maplibregl.Map({
+    container: 'map',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
+    center: hasInit ? [initLng, initLat] : [0, 0],
+    zoom: 16,
+    bearing: isNaN(initHeading) ? 0 : initHeading,
+    pitch: 60, // heading-up "driving" perspective, same idea as the Canvas prototype this replaces
+    attributionControl: false,
+  });
+  console.log('car-map: maplibregl.Map constructed');
+  map.on('error', function (e) { console.error('car-map: maplibre error event: ' + (e && e.error && e.error.message)); });
+
+  var ready = false; // style/tiles loaded — only gates the route line, which needs addSource/addLayer
+  var pendingRoute = null;
+  var puck = hasInit ? addPuck(initLng, initLat) : null; // shown immediately, no need to wait for 'load' — see applyPosition
+
+  map.on('load', function () {
+    map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
+    map.addLayer({
+      id: 'route',
+      type: 'line',
+      source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#4a9eff', 'line-width': 6 },
+    });
+    ready = true;
+    if (pendingRoute) { applyRoute(pendingRoute); pendingRoute = null; }
+  });
+
+  function applyRoute(coords) {
+    map.getSource('route').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords } });
+  }
+
+  function addPuck(lng, lat) {
+    var el = document.createElement('div');
+    el.className = 'car-puck';
+    return new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+  }
+
+  // Markers and camera moves don't need the style/tiles loaded (only
+  // addSource/addLayer do) — "where am I" should show up the instant a fix
+  // arrives, even mid-tile-fetch, not wait behind the route line's 'load' gate.
+  function applyPosition(lng, lat, headingDeg) {
+    if (!puck) puck = addPuck(lng, lat); else puck.setLngLat([lng, lat]);
+    map.easeTo({ center: [lng, lat], bearing: headingDeg, duration: 300 });
+  }
+
+  // Called from native (NavigationScreen.pushRouteAndPositionToCarMap via
+  // WebView.evaluateJavascript). Arguments are plain values, not JSON
+  // strings — native builds a real JS array/argument literal, so there's
+  // nothing to parse here.
+  window.setRoute = function (coords) {
+    if (ready) applyRoute(coords); else pendingRoute = coords;
+  };
+
+  window.setPosition = function (lng, lat, headingDeg) {
+    applyPosition(lng, lat, headingDeg);
+  };
+</script>
+</body>
+</html>
