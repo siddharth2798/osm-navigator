@@ -138,12 +138,24 @@
   // zoom (onScale/zoomBy action), recenter (buildMapActionStrip's Recenter
   // action) ----
 
+  // No Capacitor bridge on this page (see the header comment) —
+  // AndroidCarBridge is a plain WebView.addJavascriptInterface() object
+  // NavigationScreen registers, the only way to tell native the Recenter
+  // icon should change. Guarded since it won't exist yet on the very first
+  // evaluateJavascript call race, if any (addJavascriptInterface and
+  // loadUrl happen back to back in onSurfaceAvailable, so this is mostly
+  // defensive).
+  function notifyFollowModeChanged(following) {
+    if (window.AndroidCarBridge) window.AndroidCarBridge.onFollowModeChanged(following);
+  }
+
   // dx/dy are screen-pixel deltas in the *drag* direction (see
   // NavigationScreen.onScroll's own note on sign convention) — panBy's own
   // argument is how far the MAP moves, which is the drag direction directly
   // (content follows the finger), duration 0 so it tracks the drag 1:1
   // instead of lagging behind an animation queue.
   window.panBy = function (dx, dy) {
+    if (followMode) notifyFollowModeChanged(false); // only notify on the actual transition, not every drag tick
     followMode = false; // a manual pan means "stop overriding my view on the next position update"
     map.panBy([dx, dy], { duration: 0 });
   };
@@ -156,6 +168,7 @@
   };
 
   window.recenter = function () {
+    if (!followMode) notifyFollowModeChanged(true);
     followMode = true;
     if (lastPosition) map.easeTo({ center: [lastPosition.lng, lastPosition.lat], bearing: lastPosition.headingDeg, duration: 300 });
   };

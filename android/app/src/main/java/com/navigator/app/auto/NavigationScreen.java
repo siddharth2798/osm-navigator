@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -31,6 +32,7 @@ import androidx.car.app.model.Action;
 import androidx.car.app.model.ActionStrip;
 import androidx.car.app.model.CarIcon;
 import androidx.car.app.model.Distance;
+import androidx.car.app.model.MessageTemplate;
 import androidx.car.app.model.Template;
 import androidx.car.app.navigation.NavigationManager;
 import androidx.car.app.navigation.NavigationManagerCallback;
@@ -96,6 +98,15 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
   @Nullable private WebView carMapWebView;
   @Nullable private VirtualDisplay virtualDisplay;
   @Nullable private Presentation presentation;
+  // Mirrors car-map.html's own `followMode` JS variable — that page has no
+  // Capacitor bridge (see its own header comment), so this class's
+  // JsBridge/addJavascriptInterface is the only way it can tell native its
+  // camera just got manually panned away from the puck. Read by
+  // buildMapActionStrip() to pick a different Recenter icon, matching the
+  // phone's own locateBtnIcon()'s "two distinct glyphs, not just a recolor"
+  // reasoning — an icon swap survives a host that doesn't honor CarColor
+  // tints (confirmed earlier this session it doesn't, on DHU at least).
+  private boolean followModeActive = true;
 
   NavigationScreen(@NonNull CarContext carContext) {
     super(carContext);
@@ -153,6 +164,17 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
           Log.e(TAG, "onReceivedError: " + request.getUrl() + " -> " + error.getDescription());
         }
       });
+      // car-map.html has no Capacitor bridge — this is the one way it can
+      // tell native anything. @JavascriptInterface methods run on a
+      // background thread (documented Android behavior), same as
+      // CarNavState's own listener callbacks, hence the mainHandler.post.
+      webView.addJavascriptInterface(new Object() {
+        @JavascriptInterface
+        public void onFollowModeChanged(boolean following) {
+          followModeActive = following;
+          mainHandler.post(NavigationScreen.this::invalidate);
+        }
+      }, "AndroidCarBridge");
       // Seeds the initial camera/puck when a fix is already known (idle
       // location sharing starts on app open, well before a car session
       // connects, so this is normally true) — avoids the map opening centered
@@ -324,6 +346,24 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
   @NonNull
   @Override
   public Template onGetTemplate() {
+    // A car session can connect to CarNavService (and this Screen start
+    // showing templates) entirely independently of whether the phone app
+    // has ever been opened — confirmed live, the host launches this app's
+    // process directly for the car service. Until CarNavPlugin.load() has
+    // run (which only happens once MainActivity/the Capacitor bridge has),
+    // nothing from the phone — position, route, search — can reach the car
+    // at all; showing the normal map+action-strip UI in that state would
+    // just look silently broken (blank map, a search icon that does
+    // nothing when tapped). CarNavState.setActionListener() notifies this
+    // Screen the moment the bridge does connect, so this swaps back to the
+    // real UI on its own once the phone app is opened, no manual refresh needed.
+    if (!CarNavState.isPhoneBridgeConnected()) {
+      // No headerAction — Action.APP_ICON is meant for an ActionStrip's own
+      // app-icon slot, not verified safe as a MessageTemplate header action,
+      // and this screen has nowhere to navigate "back" from anyway.
+      return new MessageTemplate.Builder("Open Navigator on your phone to get started").build();
+    }
+
     NavigationTemplate.Builder builder = new NavigationTemplate.Builder()
         .setActionStrip(buildActionStrip())
         .setMapActionStrip(buildMapActionStrip());
@@ -391,7 +431,9 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
    * it puts the host in pan mode, which is what actually triggers onScroll
    * below on most hosts) plus Zoom In/Out/Recenter. Shown regardless of
    * navigating state — map controls are useful while just looking around
-   * too, same as any real map app. */
+   * too, same as any real map app. Recenter's icon reflects followModeActive
+   * (a different glyph, not just a color change — see its own field
+   * comment), same as the phone's own locate button. */
   private ActionStrip buildMapActionStrip() {
     return new ActionStrip.Builder()
         .addAction(Action.PAN)
@@ -407,7 +449,7 @@ final class NavigationScreen extends Screen implements CarNavState.Listener, Def
                 .build())
         .addAction(
             new Action.Builder()
-                .setIcon(carIcon(R.drawable.ic_car_recenter))
+                .setIcon(carIcon(followModeActive ? R.drawable.ic_car_recenter : R.drawable.ic_car_recenter_offcenter))
                 .setOnClickListener(this::recenter)
                 .build())
         .build();

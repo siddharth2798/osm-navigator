@@ -95,9 +95,22 @@ final class CarNavState {
 
   /** CarNavPlugin registers this exactly once, in its load() (called once
    * per app process by the Capacitor Bridge) — unlike Listener above, this
-   * one has nothing to do with which Screen is currently visible. */
+   * one has nothing to do with which Screen is currently visible. A car
+   * session can connect to CarNavService entirely independently of whether
+   * MainActivity has ever run (confirmed live: the host launches this app's
+   * process directly for CarNavService, phone UI or not) — until this is
+   * non-null, nothing on the phone side (position, route, search) will ever
+   * reach the car at all. notifyListener() here (not just in the state
+   * setters, as everywhere else in this class) is what lets NavigationScreen
+   * notice the bridge just connected and swap its "open on your phone"
+   * message for the real map — see isPhoneBridgeConnected(). */
   static void setActionListener(@Nullable ActionListener l) {
     actionListener = l;
+    notifyListener();
+  }
+
+  static boolean isPhoneBridgeConnected() {
+    return actionListener != null;
   }
 
   static void requestStop() {
