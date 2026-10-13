@@ -6839,6 +6839,9 @@ function updateActiveManeuver(traveledM, lngLat) {
   state.currentLegIndex = maneuvers[currentIdx].legIndex; // which origin/stop/destination leg we're on, for reroute
   const nextIdx = currentIdx + 1 < maneuvers.length ? currentIdx + 1 : null;
   const remainingM = Math.max(0, state.route.totalDistM - traveledM);
+  // Hoisted out of the if/nextIdx block below — needed by the gap-announcement check right
+  // below as well as the native-car.js call site further down.
+  let distToNextM = nextIdx !== null ? Math.max(0, maneuvers[nextIdx].startDistM - traveledM) : 0;
 
   // Ends the ride by remaining distance alone, not by maneuver index — Valhalla's cumulative
   // lengths and turf's measured distance can drift apart on a long route, so gating on
@@ -6859,22 +6862,33 @@ function updateActiveManeuver(traveledM, lngLat) {
     return; // navigation just ended — nothing below is still meaningful
   }
 
-  // "Continue straight for X km", spoken once at the start of a straight run (not every
-  // maneuver in it, since straightAheadDistanceM already looks ahead through the whole run).
+  // Long-gap heads-up, spoken once immediately when a maneuver becomes current: if there's
+  // enough distance before the *next* instruction that the driver would otherwise hear nothing
+  // until the normal far cue kicks in (capped at VOICE_PROMPT_MAX_M, ~700m), call out the gap
+  // right away so they know a silence is expected — then the regular far/near prompts below
+  // still fire later, unaffected. For a straight-through run (not every maneuver in it, since
+  // straightAheadDistanceM already looks ahead through the whole run) this reuses the existing
+  // "Continue straight for X km" phrasing with the aggregated run length; for any other maneuver
+  // type, it's the plain distance to the next turn.
   const current = maneuvers[currentIdx];
   const startsStraightRun = CONTINUE_STRAIGHT_TYPES.has(current.type)
     && (currentIdx === 0 || !CONTINUE_STRAIGHT_TYPES.has(maneuvers[currentIdx - 1].type));
-  if (startsStraightRun && !state.spokenContinue.has(currentIdx)) {
-    const aheadM = straightAheadDistanceM(maneuvers, currentIdx);
+  const midStraightRun = CONTINUE_STRAIGHT_TYPES.has(current.type) && !startsStraightRun;
+  if (!midStraightRun && !state.spokenContinue.has(currentIdx)) {
+    const aheadM = startsStraightRun ? straightAheadDistanceM(maneuvers, currentIdx) : distToNextM;
     if (aheadM >= CONTINUE_STRAIGHT_MIN_LENGTH_M) {
       state.spokenContinue.add(currentIdx);
-      resolverDebugLog(`Voice: continue-straight run starting at maneuver ${currentIdx}, aggregate ${Math.round(aheadM)}m ahead (own maneuver length alone: ${Math.round(current.lengthM)}m) — announcing the aggregate.`);
-      speak(`Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+      if (startsStraightRun) {
+        resolverDebugLog(`Voice: continue-straight run starting at maneuver ${currentIdx}, aggregate ${Math.round(aheadM)}m ahead (own maneuver length alone: ${Math.round(current.lengthM)}m) — announcing the aggregate.`);
+        speak(`Continue straight for ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+      } else {
+        resolverDebugLog(`Voice: long gap before next instruction at maneuver ${currentIdx}, ${Math.round(aheadM)}m ahead — announcing instantly.`);
+        speak(`Next instruction in ${formatDistanceForSpeech(aheadM)}.`, { queue: true });
+      }
     }
   }
 
   if (nextIdx !== null) {
-    const distToNextM = Math.max(0, maneuvers[nextIdx].startDistM - traveledM);
     highlightManeuver(nextIdx);
     el.navBannerIcon.innerHTML = maneuverIcon(maneuvers[nextIdx].type);
     el.navBannerInstruction.textContent = maneuvers[nextIdx].instruction;
