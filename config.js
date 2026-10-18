@@ -60,6 +60,12 @@ export const CONFIG = {
   // a relative same-origin path instead, regardless of this value.
   RESOLVE_MAPS_URL_BASE: 'https://osm-navigator.siddharthshiv2798.workers.dev',
 
+  // --- Secret spot collections (docs/SPOT_COLLECTIONS.md) -----------------------
+  // Keyword-unlocked community map layers, served by this deployment's own /api/spots routes
+  // (same base-URL rule as above). Stays invisible unless the Worker has a D1 database bound;
+  // set false to skip even the one manifest request made the first time a search is typed.
+  SPOTS_ENABLED: true,
+
   // --- Navigation / voice guidance behaviour ----------------------------------
   // Callout distances are speed-scaled (target lead TIME, not a flat distance) —
   // see dynamicVoiceLeadM in app.js. *_LEAD_TIME_S is the target, *_MIN_M/*_MAX_M

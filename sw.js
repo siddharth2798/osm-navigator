@@ -1,6 +1,6 @@
 // Service worker: makes the app installable and lets the map work offline,
 // using two caches — the static app shell, and map tiles.
-const SHELL_CACHE_NAME = 'navigator-shell-v118';
+const SHELL_CACHE_NAME = 'navigator-shell-v119';
 const TILE_CACHE_NAME = 'offline-tiles'; // keep in sync with CONFIG.TILE_CACHE_NAME in config.js — explicit downloads only, never auto-evicted
 // Tiles from ordinary browsing (not an explicit download) go in this
 // separate, size-capped cache so they can't crowd out downloaded areas.
@@ -17,6 +17,7 @@ const SHELL_FILES = [
   './app.js',
   './config.js',
   './idb.js',
+  './spots.js',
   './native-location.js',
   './native-tts.js',
   './native-audio-focus.js',

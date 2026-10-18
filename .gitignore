@@ -20,3 +20,6 @@ android/.idea/
 .dev.vars
 
 .DS_Store
+
+# Your own collection seeds (titles, categories — and anything else you put in them) stay local.
+seeds/*.local.sql
