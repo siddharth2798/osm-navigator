@@ -52,7 +52,10 @@ Worker deployments only (not Pages Functions, not GitHub Pages).
 
 1. Create the database and note its id:
    `wrangler d1 create osm-navigator-spots`
-2. In `wrangler.jsonc`, uncomment the `d1_databases` block and paste the id (add a comma after the `assets` block).
+2. In `wrangler.jsonc`, add the `d1_databases` block with the id from step 1. **The binding must be named exactly
+   `DB`.** `wrangler d1 create` may offer to add the binding for you under another name (e.g. `osm_navigator_spots`);
+   if so, rename it, or every `/api/spots` route answers `501 Spot collections are not enabled`. Also leave out
+   `"remote": true`, which would make `wrangler dev` use your production database.
 3. Create the tables: `wrangler d1 migrations apply DB --remote`
 4. Create a collection: copy `seeds/food.example.sql` to `seeds/food.local.sql` (gitignored),
    edit the title / icon / colour / categories, then
