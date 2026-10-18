@@ -23,3 +23,6 @@ android/.idea/
 
 # Your own collection seeds (titles, categories — and anything else you put in them) stay local.
 seeds/*.local.sql
+
+places.json
+link.txt
