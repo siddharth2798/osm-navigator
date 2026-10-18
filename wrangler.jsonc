@@ -9,4 +9,11 @@
     "directory": "./",
     "binding": "ASSETS"
   }
+  // Optional: secret spot collections (docs/SPOT_COLLECTIONS.md). Create the database with
+  // `wrangler d1 create osm-navigator-spots`, paste its id below and uncomment (add a comma after the
+  // "assets" block). Without this binding the /api/spots routes return 501 and the feature stays
+  // invisible in the app.
+  // "d1_databases": [
+  //   { "binding": "DB", "database_name": "osm-navigator-spots", "database_id": "<id from wrangler d1 create>", "migrations_dir": "migrations" }
+  // ]
 }

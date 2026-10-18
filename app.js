@@ -18,6 +18,7 @@ import { parseGoogleMapsUrl } from './lib/google-maps-url.js';
 import { nearestKochiStation, findKochiTransferPoints as findKochiTransferPointsPure, feederRouteMetroEnd } from './lib/kochi-geo.js';
 import { stopDragPromoteTarget } from './lib/stop-drag-utils.js';
 import { kochiItineraryBaseParts, buildTransitItineraryLabels } from './lib/transit-labels.js';
+import { createSpots } from './spots.js';
 // Plus Code decoding is dynamically imported below — rarely needed, so skip loading it up front.
 
 // maplibregl and turf are loaded as plain <script> globals in index.html.
@@ -385,7 +386,8 @@ if (isNativePlatform()) {
     const generation = ++carDestinationSearchGeneration;
     carDestinationSearchTimer = setTimeout(async () => {
       try {
-        const results = await geocodeSearch(query);
+        // A secret spot-collection keyword (spots.js) lists that collection's nearest spots instead of geocoding it.
+        const results = (await spots.nearestForCar(query).catch(() => null)) || await geocodeSearch(query);
         if (generation !== carDestinationSearchGeneration) return; // superseded by a newer keystroke
         carDestinationResultsCache = results;
         updateCarNavSearchResults({
@@ -3162,7 +3164,9 @@ function renderSuggestionResults(listEl, inputEl, results, onSelect, emptyMessag
 }
 
 /** `opts.onDirectionsShortcut(fromText, toText, isStale)`, if given, is checked first on every debounce firing —
- * only the plain search box passes this, since "X to Y" only makes sense there, not in a dedicated from/to field. */
+ * only the plain search box passes this, since "X to Y" only makes sense there, not in a dedicated from/to field.
+ * `opts.onKeyword(query, isStale)` is checked right after the Google Maps link check, for the same reason: a secret
+ * spot-collection keyword (spots.js) is only meaningful in the plain search box. It resolves true when it handled the query. */
 function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
   let debounceTimer = null;
   let seq = 0; // guards against out-of-order network responses
@@ -3196,6 +3200,9 @@ function setupAutocomplete(inputEl, listEl, onSelect, opts = {}) {
         }
         return;
       }
+
+      if (opts.onKeyword && await opts.onKeyword(query, isStale)) return;
+      if (isStale()) return;
 
       if (opts.onDirectionsShortcut && !NEAR_QUERY_PATTERN.test(query)) {
         const toMatch = query.match(TO_QUERY_PATTERN);
@@ -3436,7 +3443,52 @@ async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
   }
 }
 
-setupAutocomplete(el.placeInput, el.placeSuggestions, selectPlace, { onDirectionsShortcut: handlePlaceToPlaceDirections });
+// ---- Secret spot collections (spots.js) — keyword-unlocked community map layers ----
+const spots = createSpots({
+  map,
+  awaitMapLoad,
+  showStatus,
+  pushBackLayer,
+  forgetBackLayerIfTop,
+  goBackInApp,
+  fetchWithTimeout,
+  isNativePlatform,
+  currentLiveLngLat,
+  resolveCurrentLocationAnchor,
+  showSuggestionList,
+  hideSuggestionList,
+  createPinElement,
+  geocodePlace: async (text) => (await geocodeSearch(text))[0] || null,
+  // Same two steps as picking a search result and tapping Directions on its place card.
+  openDirectionsTo: (place) => {
+    selectPlace(place);
+    el.placeDirectionsBtn.click();
+  },
+  saveToFavorites: (place) => openSaveToListPrompt(place.label, null, async (listId) => {
+    try {
+      await addFavorite({ label: place.label, lat: place.lat, lon: place.lon, listId });
+      showStatus('Saved to favorites.', 'success');
+    } catch (err) {
+      showStatus('Could not save this favorite: ' + err.message, 'error');
+    }
+  }),
+});
+
+setupAutocomplete(el.placeInput, el.placeSuggestions, selectPlace, {
+  onDirectionsShortcut: handlePlaceToPlaceDirections,
+  onKeyword: (query, isStale) => spots.handleSearchQuery(query, { listEl: el.placeSuggestions, isStale }),
+});
+
+// Enter has no other meaning in the search box, so it opens a collection straight away instead of waiting out the debounce.
+el.placeInput.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const query = el.placeInput.value.trim();
+  spots.handleSearchQuery(query, {
+    listEl: el.placeSuggestions,
+    isStale: () => el.placeInput.value.trim() !== query,
+    enter: true,
+  }).catch(() => {});
+});
 
 el.placeClearBtn.addEventListener('click', () => {
   el.placeInput.value = '';
@@ -4397,6 +4449,7 @@ el.savedBtn.addEventListener('click', async () => {
   pushBackLayer(closeSavedPanel);
   showSavedListsView();
   el.savedPanel.classList.remove('hidden');
+  spots.renderUnlockedMaps();
   await Promise.all([renderQuickPlaces(), renderSavedLists()]);
 });
 el.savedBackBtn.addEventListener('click', goBackInApp);

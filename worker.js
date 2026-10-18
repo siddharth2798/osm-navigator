@@ -7,6 +7,7 @@ import { valhallaProxy } from './lib/valhalla-proxy.js';
 import { nearbyFlights } from './lib/flights-proxy.js';
 import { tomtomTrafficFlow } from './lib/tomtom-traffic-proxy.js';
 import { tomtomPlacesSearch } from './lib/tomtom-places-proxy.js';
+import { handleSpotsRequest } from './lib/spots-api.js';
 
 export default {
   async fetch(request, env) {
@@ -24,6 +25,8 @@ export default {
     // routes are the ones actually live.
     if (url.pathname === '/api/traffic') return tomtomTrafficFlow(url, env);
     if (url.pathname === '/api/places') return tomtomPlacesSearch(url, env);
+    // Optional secret spot collections (docs/SPOT_COLLECTIONS.md); 501 unless a D1 binding named DB exists.
+    if (url.pathname === '/api/spots' || url.pathname.startsWith('/api/spots/')) return handleSpotsRequest(request, env);
     return env.ASSETS.fetch(request);
   },
 };

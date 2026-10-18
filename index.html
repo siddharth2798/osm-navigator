@@ -65,6 +65,23 @@
           </button>
         </div>
 
+        <!-- Secret spot collections (spots.js): shown only after a collection's keyword
+             is searched. Replaces the category chip row below while open. -->
+        <div id="spots-banner" class="spots-banner hidden">
+          <span id="spots-banner-icon" class="spots-banner-icon" aria-hidden="true"></span>
+          <div class="spots-banner-text">
+            <div id="spots-banner-title" class="spots-banner-title"></div>
+            <div id="spots-banner-sub" class="spots-banner-sub" aria-live="polite"></div>
+          </div>
+          <button id="spots-list-btn" class="icon-btn" type="button" aria-label="Show spots as a list">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6 h12 M8 12 h12 M8 18 h12 M4 6 h.01 M4 12 h.01 M4 18 h.01"/></svg>
+          </button>
+          <button id="spots-exit-btn" class="icon-btn" type="button" aria-label="Exit this map">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+          </button>
+        </div>
+        <div id="spots-chips" class="category-chips hidden" role="group" aria-label="Filter by type"></div>
+
         <!-- One-tap POI category search, Google-Maps-style chip row. Always
              a single horizontally-scrollable row — never grows the card. -->
         <div id="category-chips" class="category-chips">
@@ -373,6 +390,10 @@
 
   <!-- ============ Map control stack: zoom + locate, Google-Maps style ============ -->
   <div id="map-controls">
+    <!-- Add a spot to the open secret map (spots.js) — only visible while one is open. -->
+    <button id="spots-add-btn" class="fab spots-add-fab hidden" type="button" aria-label="Add a spot to this map">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-7.58 7-12A7 7 0 0 0 5 9c0 4.42 7 12 7 12z"/><path d="M12 6.5 v5 M9.5 9 h5"/></svg>
+    </button>
     <!-- "Search along the route" — shown only once navigation has actually
          started (before that, see #route-chips-inline above, which sits
          under the from/to fields instead). Opens the floating #route-chips
@@ -630,6 +651,51 @@
   </div>
 
   <!-- ============ Saved places — Google-Maps-style lists of favorites ============ -->
+  <!-- ============ Secret spot collections (spots.js): list sheet, placement crosshair, add sheet ============ -->
+  <div id="spots-list-sheet" class="spots-sheet hidden" role="dialog" aria-label="Spots in this area">
+    <div class="spots-sheet-header">
+      <div id="spots-list-title" class="panel-title"></div>
+      <button id="spots-list-close" class="icon-btn" type="button" aria-label="Close list">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5 L19 19 M19 5 L5 19"/></svg>
+      </button>
+    </div>
+    <ul id="spots-list" class="spots-list"></ul>
+  </div>
+
+  <!-- Fixed to the centre of the map while placing a new spot; the map moves under it. -->
+  <div id="spots-crosshair" class="hidden" aria-hidden="true">
+    <svg viewBox="0 0 24 32" width="36" height="48" xmlns="http://www.w3.org/2000/svg"><path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 20 12 20s12-11 12-20C24 5.4 18.6 0 12 0z" fill="#e8590c" stroke="#fff" stroke-width="1.5"/><circle cx="12" cy="12" r="5" fill="#fff"/></svg>
+  </div>
+
+  <div id="spots-add-sheet" class="spots-sheet hidden" role="dialog" aria-label="Add a spot">
+    <div id="spots-add-place">
+      <div class="spots-add-title">Place the pin</div>
+      <p class="spots-add-hint">Move and zoom the map so the pin sits exactly on the spot.</p>
+      <div class="spots-add-actions">
+        <button id="spots-add-cancel" class="secondary" type="button">Cancel</button>
+        <button id="spots-add-here" class="secondary" type="button">Use my location</button>
+        <button id="spots-add-next" type="button">Next</button>
+      </div>
+    </div>
+    <form id="spots-add-form" class="hidden" novalidate>
+      <div class="spots-add-title">Add a spot</div>
+      <label class="field-label" for="spots-name">Name</label>
+      <input id="spots-name" type="text" autocomplete="off" required>
+      <div class="field-label" id="spots-type-label">Type</div>
+      <div id="spots-type" class="spots-type" role="radiogroup" aria-labelledby="spots-type-label"></div>
+      <label class="field-label" for="spots-note">Note <span id="spots-note-count" class="spots-note-count">0/500</span></label>
+      <textarea id="spots-note" rows="3" placeholder="What should people try? Any tips?"></textarea>
+      <label class="field-label" for="spots-url">Link (optional)</label>
+      <input id="spots-url" type="url" inputmode="url" autocomplete="off" placeholder="https://">
+      <div id="spots-form-error" class="spots-form-error hidden" role="alert"></div>
+      <div class="spots-add-actions">
+        <button id="spots-add-back" class="secondary" type="button">Back</button>
+        <button id="spots-add-form-cancel" class="secondary" type="button">Cancel</button>
+        <button id="spots-add-submit" type="submit">Add spot</button>
+      </div>
+    </form>
+  </div>
+
   <div id="saved-panel" class="hidden">
     <div class="panel-header">
       <button id="saved-back-btn" class="icon-btn hidden" type="button" aria-label="Back to lists">
@@ -646,6 +712,11 @@
       <div class="panel-section">
         <div class="panel-section-title">Quick places</div>
         <ul id="quick-places-list" class="saved-list"></ul>
+      </div>
+      <!-- Secret maps this device has unlocked (spots.js); hidden when there are none. -->
+      <div id="spots-unlocked-section" class="panel-section hidden">
+        <div class="panel-section-title">Secret maps</div>
+        <ul id="spots-unlocked-list" class="saved-list"></ul>
       </div>
       <div class="panel-section">
         <div class="panel-section-title">Your lists</div>

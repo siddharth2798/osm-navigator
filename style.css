@@ -1745,6 +1745,229 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 
 .storage-estimate { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
 
+/* ---------------------------------------------------------------- secret spot collections (spots.js) */
+
+/* While a map is open its filter chips take the place of the category chips. */
+#search-card.spots-mode #category-chips { display: none; }
+
+.spots-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px 2px;
+}
+.spots-banner-icon, .spots-unlock-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  background: #e8590c;
+}
+.spots-unlock-icon { width: 30px; height: 30px; font-size: 16px; margin-right: 10px; }
+.spots-banner-text { flex: 1; min-width: 0; }
+.spots-banner-title {
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spots-banner-sub { font-size: 12px; color: var(--text-dim); }
+.spots-banner + .category-chips { margin-top: 6px; }
+
+.spots-unlock-row { display: flex; align-items: center; }
+
+/* The add button is tinted with the open map's colour (set from spots.js). */
+.spots-add-fab { background: var(--spots-color, #e8590c); border-color: #fff; color: #fff; }
+
+/* Bottom sheets: the spots list and the add-a-spot flow. */
+.spots-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  max-width: 480px;
+  margin: 0 auto;
+  max-height: 62vh;
+  max-height: 62dvh;
+  overflow-y: auto;
+  background: var(--panel);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: var(--shadow);
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+}
+.spots-sheet-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.spots-list { list-style: none; margin: 0; padding: 0; }
+.spots-list li.empty { padding: 12px 4px; color: var(--text-dim); font-size: 14px; }
+.spots-list-row {
+  width: 100%;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 10px 6px;
+  border-radius: 12px;
+  background: none;
+  color: var(--text);
+}
+.spots-list-row:active { background: var(--panel-2); }
+.spots-list-emoji {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+}
+.spots-list-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.spots-list-name { font-size: 15px; font-weight: 600; }
+.spots-list-meta { font-size: 12px; color: var(--text-dim); }
+.spots-list-note {
+  font-size: 13px;
+  color: var(--docs-body);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Pin fixed at the centre of the map while placing a new spot. Its tip (not its middle) marks the location. */
+#spots-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 30;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  filter: drop-shadow(0 3px 5px rgba(0,0,0,0.45));
+}
+#spots-crosshair.hidden { display: none; }
+
+.spots-add-title { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+.spots-add-hint { margin: 0 0 14px; font-size: 14px; color: var(--text-dim); }
+.spots-add-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+.spots-add-actions button { min-height: 44px; padding: 0 16px; font-size: 14px; font-weight: 600; }
+.spots-add-actions button:not(.secondary) { background: var(--accent); color: #fff; }
+.spots-add-actions button:disabled { opacity: 0.6; }
+#spots-add-form .field-label { margin: 12px 0 6px; }
+#spots-add-form input[type="text"], #spots-add-form input[type="url"], #spots-add-form textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS zooming the page on focus */
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+#spots-add-form textarea { resize: none; }
+.spots-note-count { float: right; font-variant-numeric: tabular-nums; }
+.spots-type { display: flex; flex-wrap: wrap; gap: 6px; }
+.spots-type-option { position: relative; }
+.spots-type-option input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.spots-type-option span {
+  display: block;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 500;
+}
+.spots-type-option input:checked + span { background: var(--accent); border-color: var(--accent); color: #fff; }
+.spots-type-option input:focus-visible + span { outline: 2px solid #fff; outline-offset: 2px; }
+.spots-form-error { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: #401616; color: #ffd0d0; font-size: 13px; }
+
+.spots-unlocked-item { justify-content: space-between; }
+.spots-unlocked-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  padding: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 15px;
+}
+
+/* Spot popup (maplibregl.Popup) — restyled to match the app's dark cards. */
+.spot-popup .maplibregl-popup-content {
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 14px 14px 12px;
+}
+.spot-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: var(--panel); }
+.spot-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--panel); }
+.spot-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--panel); }
+.spot-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--panel); }
+.spot-popup .maplibregl-popup-close-button {
+  width: 36px;
+  height: 36px;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-dim);
+  border-radius: 0 14px 0 14px;
+}
+.spot-card { padding-right: 20px; }
+.spot-card-name { margin: 0 0 6px; font-size: 16px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.spot-card-type { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+.spot-card-note {
+  margin: 10px 0 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--docs-body);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.spot-card-links { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.spot-card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.spot-card-link:hover, .spot-card-link:focus-visible { text-decoration: underline; }
+.spot-card-actions, .spot-card-confirm { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.spot-card-confirm { font-size: 13px; color: var(--text-dim); }
+.spot-card-confirm span { flex: 1 1 100%; }
+.spot-card-btn {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.spot-card-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.spot-card-btn.subtle { background: none; border-color: transparent; color: var(--text-dim); margin-left: auto; }
+.spot-card-btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.spot-card-btn:disabled { opacity: 0.6; }
+
 /* ---------------------------------------------------------------- misc */
 
 .hidden { display: none !important; }
