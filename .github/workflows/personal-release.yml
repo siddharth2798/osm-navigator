@@ -45,7 +45,7 @@ jobs:
           java-version: '21' # @capacitor/android 8.x's own build.gradle requires Java 21 source/target compatibility
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4.0.2
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
