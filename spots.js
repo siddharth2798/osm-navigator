@@ -8,13 +8,19 @@ import { CONFIG } from './config.js';
 import { formatDistance } from './lib/format-utils.js';
 import { isSafeHttpUrl } from './lib/text-utils.js';
 import {
-  googleMapsSpotUrl, haversineM, matchCollection, SPOT_LIMITS, validateSpotDraft,
+  bboxAround, googleMapsSpotUrl, haversineM, matchCollection, SPOT_LIMITS, validateSpotDraft,
 } from './lib/collections.js';
 
 const UNLOCKED_STORAGE_KEY = 'navigator-spots-unlocked'; // { [collectionId]: { key, title, icon, color } }
 const MANIFEST_STORAGE_KEY = 'navigator-spots-manifest'; // last good manifest, so a keyword still matches offline
-const MAX_SPAN_DEG = 4;          // the API refuses bigger boxes; see parseBbox in lib/collections.js
 const MAX_CACHED_SPOTS = 2000;   // per open map, before older pans are dropped
+const WORLD_BOX = '-180,-90,180,90';
+const FOCUS_NEAR_HALF_DEG = 0.35; // first look for spots within ~40 km of where the user asked about
+const FOCUS_MAX_SPOTS = 8;        // frame at most this many of the nearest spots when opening
+const FOCUS_EXTRA_M = 15000;      // ...and only those within this much (at least) further than the very nearest one
+const FOCUS_ANCHOR_M = 30000;     // include the searched place in the frame only if a spot is this close to it
+const FOCUS_FAR_M = 40000;        // beyond this, say that the nearest spots are far away
+const FOCUS_MAX_ZOOM = 16;        // never zoom in closer than this when framing
 const MANIFEST_RETRY_MS = 30000; // don't hammer a deployment that has no spots API
 const ADD_MIN_ZOOM = 15;         // a pin placed from further out than this would be too imprecise to be useful
 const POPUP_CLEARANCE_PX = 420;  // search card + banner + chips + a full popup must fit above a pin
@@ -43,14 +49,15 @@ const ICON_CLOSE = '<path d="M5 5 L19 19 M19 5 L5 19"/>';
 const ICON_EXTERNAL = '<path d="M14 4 h6 v6 M20 4 L10 14 M18 14 v5 a1 1 0 0 1-1 1 H5 a1 1 0 0 1-1-1 V7 a1 1 0 0 1 1-1 h5"/>';
 
 /**
- * @param {object} deps helpers from app.js: map, awaitMapLoad, showStatus, pushBackLayer, forgetBackLayerIfTop,
+ * @param {object} deps helpers from app.js: map, mapLoad (promise that resolves once the base map has loaded),
+ *   showStatus, pushBackLayer, forgetBackLayerIfTop,
  *   goBackInApp, fetchWithTimeout, isNativePlatform, currentLiveLngLat, resolveCurrentLocationAnchor,
  *   geocodePlace(text) -> {lat, lon} | null, showSuggestionList(listEl), hideSuggestionList(listEl),
  *   openDirectionsTo({label, lat, lon}), saveToFavorites({label, lat, lon}), createPinElement(color, label)
  */
 export function createSpots(deps) {
   const {
-    map, awaitMapLoad, showStatus, pushBackLayer, forgetBackLayerIfTop, goBackInApp, fetchWithTimeout, isNativePlatform,
+    map, mapLoad, showStatus, pushBackLayer, forgetBackLayerIfTop, goBackInApp, fetchWithTimeout, isNativePlatform,
     currentLiveLngLat, resolveCurrentLocationAnchor, geocodePlace, showSuggestionList, hideSuggestionList,
     openDirectionsTo, saveToFavorites, createPinElement,
   } = deps;
@@ -215,7 +222,11 @@ export function createSpots(deps) {
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
     });
-    map.on('moveend', () => { if (active) scheduleLoad(); });
+    map.on('moveend', () => {
+      if (!active) return;
+      renderBannerSubtitle(); // "N in view" follows the camera, even when nothing new needs loading
+      scheduleLoad();
+    });
   }
 
   function paintCollectionColor(color) {
@@ -244,7 +255,7 @@ export function createSpots(deps) {
         properties: { id: s.id, name: s.name, category: s.category },
       })),
     });
-    renderBannerSubtitle(spots.length);
+    renderBannerSubtitle();
     if (listOpen) renderList();
   }
 
@@ -264,47 +275,41 @@ export function createSpots(deps) {
     if (!current) return;
     const b = map.getBounds();
     const view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-    const spanLon = view[2] - view[0];
-    const spanLat = view[3] - view[1];
-    current.tooWide = spanLon > MAX_SPAN_DEG || spanLat > MAX_SPAN_DEG;
-    if (current.tooWide) { renderBannerSubtitle(visibleSpots().length); return; }
     if (boxContains(current.loadedBox, view)) return;
 
-    // Fetch a little beyond the screen so small pans don't trigger another request, while staying under the cap.
-    const padFactor = Math.min(0.15, (MAX_SPAN_DEG - Math.max(spanLon, spanLat)) / (2 * Math.max(spanLon, spanLat)));
-    const padLon = spanLon * Math.max(0, padFactor);
-    const padLat = spanLat * Math.max(0, padFactor);
+    // Fetch a little beyond the screen so small pans don't trigger another request.
+    const padLon = (view[2] - view[0]) * 0.15;
+    const padLat = (view[3] - view[1]) * 0.15;
     const box = [
       Math.max(-180, view[0] - padLon), Math.max(-90, view[1] - padLat),
       Math.min(180, view[2] + padLon), Math.min(90, view[3] + padLat),
     ].map((n) => +n.toFixed(5));
+    const centre = map.getCenter();
 
     const seq = ++current.loadSeq;
     current.loading = true;
-    renderBannerSubtitle(visibleSpots().length);
+    renderBannerSubtitle();
     let result;
     try {
-      result = await api(`/api/spots?c=${encodeURIComponent(current.details.id)}&bbox=${box.join(',')}`, { key: current.key });
+      // `near` makes the server keep the closest spots if a very wide view holds more than it will return.
+      result = await api(
+        `/api/spots?c=${encodeURIComponent(current.details.id)}&bbox=${box.join(',')}&near=${centre.lat.toFixed(5)},${centre.lng.toFixed(5)}`,
+        { key: current.key },
+      );
     } catch {
       result = null;
     }
     if (active !== current || seq !== current.loadSeq) return;
     current.loading = false;
 
-    if (result && result.status === 401) {
-      // The keyword was changed or the map removed on the server.
-      forgetUnlocked(current.details.id);
-      deactivate();
-      showStatus('That map is no longer available.', 'error');
-      return;
-    }
+    if (result && result.status === 401) { handleCollectionGone(current); return; } // keyword changed / map removed
     if (!result || !result.ok) {
       if (Date.now() - lastLoadErrorAt > 15000) {
         lastLoadErrorAt = Date.now();
         showStatus('Couldn’t load spots for this area. Check your connection and move the map to retry.', 'error');
       }
       current.loadedBox = null;
-      renderBannerSubtitle(visibleSpots().length);
+      renderBannerSubtitle();
       return;
     }
 
@@ -318,14 +323,21 @@ export function createSpots(deps) {
 
   // ---------------------------------------------------------------- banner, filter chips, list
 
-  function renderBannerSubtitle(count) {
+  /** What the banner says: spots in the current view, and a nudge when the loaded ones are all off-screen. */
+  function renderBannerSubtitle() {
     if (!active) return;
     const sub = $('spots-banner-sub');
-    if (active.status) sub.textContent = active.status;
-    else if (active.tooWide) sub.textContent = 'Zoom in to see spots';
-    else if (active.loading && count === 0) sub.textContent = 'Loading…';
-    else if (count === 0) sub.textContent = active.category ? 'None of this type here yet' : 'No spots here yet — add the first one';
-    else sub.textContent = `${count} spot${count === 1 ? '' : 's'}${active.truncated ? ' · zoom in to see more' : ''}`;
+    if (active.status) { sub.textContent = active.status; return; }
+    const loaded = visibleSpots();
+    const bounds = map.getBounds();
+    const inView = loaded.filter((s) => bounds.contains([s.lon, s.lat])).length;
+    if (loaded.length === 0) {
+      sub.textContent = active.loading ? 'Loading…' : (active.category ? 'None of this type yet' : 'No spots here yet — add the first one');
+    } else if (inView === 0) {
+      sub.textContent = 'None in view — zoom out, or open the list';
+    } else {
+      sub.textContent = `${inView} in view${active.truncated ? ' · zoom in for more' : ''}`;
+    }
   }
 
   function renderBanner() {
@@ -334,7 +346,7 @@ export function createSpots(deps) {
     $('spots-banner-icon').style.background = details.color;
     $('spots-banner-title').textContent = details.title;
     $('spots-banner').classList.remove('hidden');
-    renderBannerSubtitle(0);
+    renderBannerSubtitle();
     renderChips();
   }
 
@@ -701,6 +713,8 @@ export function createSpots(deps) {
     }
   }
 
+  const lookingForText = (placeText) => (placeText ? `Finding ${placeText}…` : 'Finding your location…');
+
   /**
    * Opens the map straight away and only then works out where to look, so a slow place lookup ("near Fort Kochi")
    * shows a "Finding…" banner instead of leaving the search box looking dead.
@@ -708,9 +722,6 @@ export function createSpots(deps) {
   async function openCollection(details, key, placeText = null) {
     lastOpenAt = Date.now();
     if (active) deactivate();
-    try { await awaitMapLoad(); } catch (err) { showStatus(err.message, 'error'); return; }
-    ensureLayers();
-
     const backClose = () => { if (active && active.backClose === backClose) deactivate(false); };
     active = {
       details: { ...details, categories: details.categories || [] },
@@ -721,30 +732,125 @@ export function createSpots(deps) {
       loadedBox: null,
       loading: false,
       truncated: false,
-      tooWide: false,
       popup: null,
       backClose,
       placeholder: $('place-input').placeholder,
-      status: placeText ? `Finding ${placeText}…` : 'Finding your location…',
+      status: map.isStyleLoaded() ? lookingForText(placeText) : 'Loading the map…',
     };
     const current = active;
     rememberUnlocked(details, key);
-    paintCollectionColor(details.color || DEFAULT_COLOR);
     $('search-card').classList.add('spots-mode');
     $('place-input').placeholder = 'Search a place to explore…';
     $('place-input').value = '';
     $('spots-add-btn').classList.remove('hidden');
     $('spots-add-btn').style.setProperty('--spots-color', details.color || DEFAULT_COLOR);
     renderBanner();
-    render();
     pushBackLayer(backClose);
 
-    const anchor = await resolveAnchor(placeText);
-    if (active !== current) return; // the user left (or opened another map) while we were looking
+    // Look the place up while the base map is still loading — the two are independent. A slow connection should delay
+    // the pins, never cancel opening, so the map is awaited however long it takes (the banner is already up).
+    const anchorPromise = resolveAnchor(placeText);
+    await mapLoad;
+    if (active !== current) return; // the user left (or opened another map) in the meantime
+    ensureLayers();
+    paintCollectionColor(details.color || DEFAULT_COLOR);
+    render();
+    current.status = lookingForText(placeText);
+    renderBannerSubtitle();
+
+    const anchor = await anchorPromise;
+    if (active !== current) return;
+    current.status = 'Finding the nearest spots…';
+    renderBannerSubtitle();
+    await focusNearest(current, anchor, placeText);
+    if (active !== current) return;
     current.status = null;
-    if (anchor) map.flyTo({ center: [anchor.lon, anchor.lat], zoom: 14.5, duration: 700 });
-    renderBannerSubtitle(visibleSpots().length);
-    scheduleLoad(anchor ? 800 : 0);
+    renderBannerSubtitle();
+    scheduleLoad(200);
+  }
+
+  /**
+   * Frames the map on the spots nearest to `anchor` (the searched place, the user, or — with neither — the whole
+   * collection), however far away they are. Opening on a fixed zoom around the anchor could land on an empty street
+   * with the spots a few streets, or a few hundred kilometres, off-screen.
+   */
+  async function focusNearest(current, anchor, placeText) {
+    const centre = anchor || { lat: map.getCenter().lat, lon: map.getCenter().lng };
+    const fetchBox = async (box) => {
+      try {
+        const r = await api(
+          `/api/spots?c=${encodeURIComponent(current.details.id)}&bbox=${box}&near=${centre.lat.toFixed(5)},${centre.lon.toFixed(5)}`,
+          { key: current.key },
+        );
+        if (r.status === 401) return { gone: true };
+        return r.ok ? { data: r.data } : null;
+      } catch {
+        return null;
+      }
+    };
+
+    // Look near the anchor first; only if there is nothing there, look everywhere.
+    let found = anchor ? await fetchBox(bboxAround(centre.lat, centre.lon, FOCUS_NEAR_HALF_DEG)) : null;
+    if (active !== current) return;
+    if (found && found.gone) { handleCollectionGone(current); return; }
+    if (!anchor || (found && found.data.spots.length === 0)) {
+      found = await fetchBox(WORLD_BOX);
+      if (active !== current) return;
+      if (found && found.gone) { handleCollectionGone(current); return; }
+    }
+
+    const spots = found && found.data ? found.data.spots : [];
+    if (spots.length === 0) {
+      // Nothing at all (or the lookup failed): show the place itself, and the banner says what is going on.
+      if (anchor) map.flyTo({ center: [anchor.lon, anchor.lat], zoom: 13, duration: 700 });
+      return;
+    }
+
+    if (current.spots.size + spots.length > MAX_CACHED_SPOTS) current.spots.clear();
+    spots.forEach((s) => current.spots.set(s.id, s));
+    current.truncated = Boolean(found.data.truncated);
+    render();
+
+    const ranked = spots
+      .map((s) => ({ s, d: haversineM(centre.lat, centre.lon, s.lat, s.lon) }))
+      .sort((a, b) => a.d - b.d);
+    const nearestM = ranked[0].d;
+    // With a place or a position: the closest few. With neither: everything, as an overview of the whole collection.
+    // The window grows with distance: when the nearest spot is hundreds of km away, its neighbours within ~25% of that
+    // are worth showing alongside it rather than a lone pin.
+    const reachM = nearestM + Math.max(FOCUS_EXTRA_M, nearestM * 0.25);
+    const group = anchor ? ranked.filter((r) => r.d <= reachM).slice(0, FOCUS_MAX_SPOTS) : ranked;
+    const points = group.map((r) => [r.s.lon, r.s.lat]);
+    if (anchor && nearestM <= FOCUS_ANCHOR_M) points.push([anchor.lon, anchor.lat]);
+    frameMapOn(points);
+
+    if (anchor && nearestM > FOCUS_FAR_M) {
+      showStatus(`The nearest spots are about ${formatDistance(nearestM)} from ${placeText || 'you'} — showing them.`, 'info');
+    }
+  }
+
+  /** Fits the map to `points` ([lon, lat]) with room for the search card above and a sensible zoom limit. */
+  function frameMapOn(points) {
+    const bounds = points.reduce((b, p) => b.extend(p), new maplibregl.LngLatBounds(points[0], points[0]));
+    const box = map.getContainer();
+    const side = Math.min(48, Math.round(box.clientWidth * 0.1));
+    map.fitBounds(bounds, {
+      padding: {
+        top: Math.min(230, Math.round(box.clientHeight * 0.38)),
+        bottom: Math.min(80, Math.round(box.clientHeight * 0.12)),
+        left: side,
+        right: side,
+      },
+      maxZoom: FOCUS_MAX_ZOOM,
+      duration: 900,
+    });
+  }
+
+  /** The server no longer accepts the keyword (changed or removed): forget it and leave. */
+  function handleCollectionGone(current) {
+    forgetUnlocked(current.details.id);
+    deactivate();
+    showStatus('That map is no longer available.', 'error');
   }
 
   /** Leaves the map. `unwindBackLayer` is false when the back button itself is what triggered this. */

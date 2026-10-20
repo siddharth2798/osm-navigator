@@ -115,5 +115,16 @@ reports. To find a spot id: `wrangler d1 execute DB --remote --command "select i
 ## Limits (in `lib/spots-api.js`)
 
 20 additions per device per day, 5 reports per hour, names ≤ 80 characters, notes ≤ 500, one report per device per
-spot, ≤ 500 spots per map request, map requests limited to a ~4° box (zoomed out far enough, the app asks you to zoom
-in). Spot text is stored as plain data and always rendered as text, never as HTML.
+spot, and at most 500 spots per map request. A map request can cover any area, up to the whole world; if more than 500
+spots fall inside it, the response says `"truncated": true` and, because the app also sends `near=lat,lon`, the 500
+returned are the ones closest to that point. Spot text is stored as plain data and always rendered as text, never as
+HTML.
+
+## How the map opens
+
+Opening a collection frames the spots nearest to where you asked — "near Mangalore" uses that place, a plain keyword
+uses your location — however far away they are, rather than a fixed zoom that might show an empty street. If nothing is
+within about 40 km it looks everywhere and says how far the nearest spots are; with neither a place nor a location it
+shows the whole collection. The banner counts the spots *in view*, and the list button lists everything loaded,
+nearest first, so a spot in another city is one tap away. If the base map is slow to load, the banner appears at once
+and says so, rather than giving up.

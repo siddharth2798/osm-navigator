@@ -123,7 +123,46 @@ test('list and create reject a wrong key, and list rejects a bad bbox', async ()
   assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=76.2,9.9,76.3,10.0', { key: 'wrong' })).status, 401);
   assert.equal((await createSpot(env, {}, { key: 'wrong' })).status, 401);
   assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=nonsense')).status, 400);
-  assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=0,0,50,50')).status, 400);
+  assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=-200,0,50,50')).status, 400); // outside the world
+  assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=76.3,9.9,76.2,10.0')).status, 400); // inverted
+});
+
+// Spots in four different cities, so a country-wide box and nearest-first ranking can be exercised for real.
+const CITIES = [
+  ['Mangaluru Spot', 12.8864, 74.8384], ['Kochi Spot', 9.9670, 76.2432],
+  ['Kozhikode Spot', 11.2517, 75.7792], ['Delhi Spot', 28.5338, 77.2089],
+];
+async function seedCities(env) {
+  for (const [name, lat, lon] of CITIES) {
+    const res = await call(env, 'POST', '/api/spots?c=food', { body: draft({ name, lat, lon }), ip: `10.0.0.${name.length}` });
+    assert.equal(res.status, 201, name);
+  }
+}
+
+test('a country-wide or world-wide box is accepted and returns every spot inside it', async () => {
+  const env = setup();
+  await seedCities(env);
+  const india = await (await call(env, 'GET', '/api/spots?c=food&bbox=68,6,98,36')).json();
+  assert.deepEqual(india.spots.map((s) => s.name).sort(), CITIES.map((c) => c[0]).sort());
+  assert.equal(india.truncated, false);
+  const world = await call(env, 'GET', '/api/spots?c=food&bbox=-180,-90,180,90');
+  assert.equal(world.status, 200);
+  assert.equal((await world.json()).spots.length, 4);
+});
+
+test('near=lat,lon returns nearest first, so a truncated result keeps the closest spots', async () => {
+  const env = setup();
+  await seedCities(env);
+  const fromKochi = '/api/spots?c=food&bbox=-180,-90,180,90&near=9.97,76.24';
+  const ranked = await (await call(env, 'GET', fromKochi)).json();
+  assert.deepEqual(ranked.spots.map((s) => s.name), ['Kochi Spot', 'Kozhikode Spot', 'Mangaluru Spot', 'Delhi Spot']);
+
+  const capped = await (await call(env, 'GET', `${fromKochi}&limit=2`)).json();
+  assert.deepEqual(capped.spots.map((s) => s.name), ['Kochi Spot', 'Kozhikode Spot']);
+  assert.equal(capped.truncated, true);
+
+  assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=-180,-90,180,90&near=nonsense')).status, 400);
+  assert.equal((await call(env, 'GET', '/api/spots?c=food&bbox=-180,-90,180,90&near=95,0')).status, 400);
 });
 
 test('create validates input, unknown categories and oversize or malformed bodies', async () => {
