@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bboxAround, googleMapsSpotUrl, hashKeyword, haversineM, keywordCandidates, matchCollection,
-  normalizeKeyword, parseBbox, safeEqual, validateSpotDraft,
+  normalizeKeyword, parseBbox, parseLatLon, safeEqual, validateSpotDraft,
 } from '../lib/collections.js';
 
 const CATEGORIES = ['street-food', 'cafe'];
@@ -82,13 +82,25 @@ test('googleMapsSpotUrl encodes awkward names and points at Google Maps search',
   assert.equal(url.searchParams.get('query'), "Tom & Jerry's #1 café 9.931200,76.267300");
 });
 
-test('parseBbox accepts sane boxes and rejects malformed, inverted or huge ones', () => {
+test('parseBbox accepts any box inside the world, and rejects malformed, inverted or out-of-range ones', () => {
   assert.deepEqual(parseBbox('76.2,9.9,76.3,10.0'), { w: 76.2, s: 9.9, e: 76.3, n: 10 });
+  assert.deepEqual(parseBbox('68,6,98,36'), { w: 68, s: 6, e: 98, n: 36 }); // all of India
+  assert.deepEqual(parseBbox('-180,-90,180,90'), { w: -180, s: -90, e: 180, n: 90 }); // the whole world
   assert.equal(parseBbox('76.3,9.9,76.2,10.0'), null);
   assert.equal(parseBbox('1,2,3'), null);
   assert.equal(parseBbox('a,b,c,d'), null);
-  assert.equal(parseBbox('0,0,10,10'), null); // spans more than the 4° cap
   assert.equal(parseBbox('-181,0,0,1'), null);
+  assert.equal(parseBbox('0,0,10,91'), null);
+  assert.equal(parseBbox('0,0,10,10', 5), null); // a caller can still ask for a tighter cap
+});
+
+test('parseLatLon accepts "lat,lon" and rejects the rest', () => {
+  assert.deepEqual(parseLatLon('12.87,74.84'), { lat: 12.87, lon: 74.84 });
+  assert.equal(parseLatLon('12.87'), null);
+  assert.equal(parseLatLon('a,b'), null);
+  assert.equal(parseLatLon('91,0'), null);
+  assert.equal(parseLatLon('0,181'), null);
+  assert.equal(parseLatLon(null), null);
 });
 
 test('bboxAround builds a parseable box centred on the point', () => {

@@ -3446,7 +3446,7 @@ async function handlePlaceToPlaceDirections(fromText, toText, isStale) {
 // ---- Secret spot collections (spots.js) — keyword-unlocked community map layers ----
 const spots = createSpots({
   map,
-  awaitMapLoad,
+  mapLoad,
   showStatus,
   pushBackLayer,
   forgetBackLayerIfTop,

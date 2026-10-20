@@ -57,19 +57,27 @@ test('a normal place query is not handled (null), and makes no spots-API call be
   assert.ok(requests.every((p) => p === '/api/spots/manifest'), `unexpected calls: ${requests}`);
 });
 
-test('the keyword lists the nearest spots first, as navigable results, within range only', async () => {
+test('the keyword lists the nearest spots first, as navigable results, even ones far away', async () => {
   const { spots } = setup();
   const results = await spots.nearestForCar('Secret Eats');
-  assert.deepEqual(results.map((r) => r.label), ['Near Puttu', 'Mid Chai', 'Marine Drive Corn', 'Far Cafe']);
+  assert.deepEqual(results.map((r) => r.label), ['Near Puttu', 'Mid Chai', 'Marine Drive Corn', 'Far Cafe', 'Out Of Range']);
   assert.ok(results.every((r) => typeof r.lat === 'number' && typeof r.lon === 'number' && r.distanceM >= 0));
-  assert.ok(results[0].distanceM < results[1].distanceM);
-  assert.ok(!results.some((r) => r.label === 'Out Of Range'));
+  assert.ok(results[0].distanceM < results[1].distanceM && results[3].distanceM < results[4].distanceM);
 });
 
-test('results are capped to what the car host will show', async () => {
+test('a driver far from every spot still gets the nearest ones, not an empty list', async () => {
+  const { spots } = setup({ live: [77.5946, 12.9716] }); // Bengaluru: hundreds of km from the seeded spots
+  const results = await spots.nearestForCar('secret eats', 3);
+  assert.equal(results.length, 3);
+  assert.equal(results[0].label, 'Out Of Range'); // (12.5N, 79E) is the closest of the lot to Bengaluru
+  assert.ok(results[0].distanceM > 100000);
+});
+
+test('results are capped to what the car host will show, with the nearest ones kept', async () => {
   const { spots } = setup();
-  assert.equal((await spots.nearestForCar('secret eats', 2)).length, 2);
-  assert.equal((await spots.nearestForCar('secret eats')).length, 4); // < the default cap of 6
+  const two = await spots.nearestForCar('secret eats', 2);
+  assert.deepEqual(two.map((r) => r.label), ['Near Puttu', 'Mid Chai']);
+  assert.equal((await spots.nearestForCar('secret eats')).length, 5); // fewer than the default cap of 6
 });
 
 test('"<keyword> near <place>" ranks and measures from that place, not from the car', async () => {

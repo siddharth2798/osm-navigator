@@ -26,6 +26,7 @@ DB.raw.prepare(
   { id: 'street-food', label: 'Street food', emoji: '🌮' },
   { id: 'restaurant', label: 'Restaurant', emoji: '🍽️' },
   { id: 'cafe', label: 'Café', emoji: '☕' },
+  { id: 'dessert', label: 'Dessert', emoji: '🍨' },
 ]), now);
 
 const DEMO_SPOTS = [
@@ -35,6 +36,11 @@ const DEMO_SPOTS = [
   ['Fort House Fish Fry', 9.9640, 76.2420, 'street-food', 'Karimeen pollichathu. Worth the queue.', ''],
   ['Marine Drive Corn', 9.9814, 76.2760, 'street-food', 'Roasted corn with lime, evenings.', ''],
   ['Bakery by the Jetty', 9.9672, 76.2420, 'cafe', 'Plum cake that sells out by noon.', ''],
+  // Other cities, so "near <city>" and the nearest-spots framing can be tried far from Kochi.
+  ["Pabba's", 12.8864, 74.8384, 'dessert', 'Parfait, Gadbad', ''],
+  ['Maharaja Family Restaurant', 12.8738, 74.8486, 'restaurant', 'Ghee roast', ''],
+  ['Hotel Rahmath', 11.2517, 75.7792, 'restaurant', 'Beef rib biriyani', ''],
+  ['Guppy', 28.5847, 77.2239, 'restaurant', 'Sushi, prawn tempura, pork belly rice bowl', ''],
 ];
 DEMO_SPOTS.forEach(([name, lat, lon, category, note, url], i) => DB.raw.prepare(
   `INSERT INTO spots (id, collection_id, name, lat, lon, category, note, url, created_at, updated_at, author_hash)
