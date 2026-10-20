@@ -25,4 +25,5 @@ android/.idea/
 seeds/*.local.sql
 
 places.json
+places.csv
 link.txt
